@@ -1,18 +1,72 @@
-# Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
 
-# Other files and folders
-.settings/
+# venv（仓库内的 ragsys/）
+ragsys/Include/
+ragsys/Lib/
+ragsys/Scripts/
+ragsys/pyvenv.cfg
+ragsys/.gitignore
 
-# Executables
-*.swf
-*.air
-*.ipa
-*.apk
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
 
-# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
-# should NOT be excluded as they contain compiler settings and other important
-# information for Eclipse / Flash Builder.
+# 应用数据（运行时产物，不入版本控制）
+data/input/*
+!data/input/.gitkeep
+data/pending/*
+!data/pending/.gitkeep
+data/output/*
+!data/output/.gitkeep
+data/parsed/*
+!data/parsed/.gitkeep
+data/chunks/*
+!data/chunks/.gitkeep
+data/error/*
+!data/error/.gitkeep
+data/manual_fix/*
+!data/manual_fix/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/manifest.xlsx
+
+# 环境
+backend/.env
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 计划与文档目录
+.tra/documents/
+
+# IDE internal data (not pushed)
+.trae/
+.codebuddy/
+
+# Runtime data / backups at data root
+data/*.xlsx
+data/*.json
+data/single_uploads/
+data/测试文档/
+data/转/
+
+# Build caches
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# backend runtime data
+backend/data/
+
+# backend logs
+backend/logs/

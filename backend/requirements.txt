@@ -1,0 +1,17 @@
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+openpyxl>=3.1,<4.0
+pydantic>=2.6,<3.0
+pydantic-settings>=2.2,<3.0
+python-multipart>=0.0.9
+aiofiles>=23.2
+python-dotenv>=1.0
+# 阿里云 OSS SDK（2026-08-04 用于公网图片托管，避免 cloudflared tunnel URL 失效）
+oss2>=2.18,<3.0
+# PDF 切分 fallback：v2 解析严重缺失时（GBK-EUC-H CMap / 扫描件 OCR 失败），
+# Tier 1 渲染 PDF 为图片重跑 VLM、Tier 2 纯文本提取都需要 PyMuPDF。
+# 没装时 chunker fallback 链全断，对应 PDF 会被标记为 error。
+pymupdf>=1.24,<2.0
+pytest>=8.0
+pytest-asyncio>=0.23
+httpx>=0.27,<1.0
