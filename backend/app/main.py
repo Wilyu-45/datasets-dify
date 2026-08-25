@@ -61,15 +61,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：开发期 Vite 5173 + 自托管 8000
+# CORS：允许跨域来源，见 backend/.env 的 RAG_CORS_ORIGINS（JSON 数组）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=list(settings.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

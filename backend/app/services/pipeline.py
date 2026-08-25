@@ -36,9 +36,17 @@ class PipelineStep:
     dry_run: bool = False
     # 各阶段专属参数
     force: bool = False  # chunk/dify 阶段：是否强制重做
+    strategy: Optional[str] = None  # chunk 阶段：切分策略（空 → 用 settings.chunk_strategy 默认）
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"enabled": self.enabled, "dry_run": self.dry_run, "force": self.force}
+        d: Dict[str, Any] = {
+            "enabled": self.enabled,
+            "dry_run": self.dry_run,
+            "force": self.force,
+        }
+        if self.strategy:
+            d["strategy"] = self.strategy
+        return d
 
 
 @dataclass
@@ -195,6 +203,7 @@ def run_pipeline(req: PipelineRequest) -> PipelineReport:
             "chunk", chunker.chunk_parsed,
             dry_run=req.chunk.dry_run, force=req.chunk.force,
             target_stems=req.target_stems,
+            strategy=req.chunk.strategy or "",
         )
         if err:
             errors.append(("chunk", err))

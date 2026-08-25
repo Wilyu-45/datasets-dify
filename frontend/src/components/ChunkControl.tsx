@@ -17,11 +17,13 @@ import {
   ScissorOutlined,
   ReloadOutlined,
   WarningOutlined,
+  SaveOutlined,
 } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import {
   triggerChunk,
   listChunkStrategies,
+  saveChunkConfig,
   type ChunkReport,
   type ChunkActionRecord,
   type ChunkStrategyOption,
@@ -62,6 +64,7 @@ export default function ChunkControl({
   const [force, setForce] = useState(false);
   const [strategy, setStrategy] = useState<string>("");
   const [strategies, setStrategies] = useState<ChunkStrategyOption[]>([]);
+  const [saving, setSaving] = useState(false);
   const [msgApi, contextHolder] = message.useMessage();
 
   // ★ 2026-08-24：加载可用切分策略（默认选中后端默认值）
@@ -97,6 +100,20 @@ export default function ChunkControl({
       (a) => a.action === "chunk_failed" || a.action === "no_parsed"
     ) ?? [];
 
+  // ★ 2026-08-25：保存当前策略为默认（写回 backend/.env 的 RAG_CHUNK_STRATEGY 并热更新）
+  const onSaveDefault = async () => {
+    if (!strategy) return;
+    setSaving(true);
+    try {
+      await saveChunkConfig(strategy);
+      msgApi.success(`默认切分策略已保存：${strategy}`);
+    } catch (e) {
+      msgApi.error(`保存失败：${(e as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Card
       title={
@@ -127,6 +144,17 @@ export default function ChunkControl({
                   label: s.name,
                 }))}
               />
+              <Tooltip title="把当前策略保存为默认（写回 backend/.env 的 RAG_CHUNK_STRATEGY）">
+                <Button
+                  size="small"
+                  icon={<SaveOutlined />}
+                  loading={saving}
+                  disabled={!strategy}
+                  onClick={onSaveDefault}
+                >
+                  保存默认
+                </Button>
+              </Tooltip>
             </Space>
           </Tooltip>
           <Tooltip title="开启后只识别不实际切分（不写盘、不移动文件、不动 manifest）">

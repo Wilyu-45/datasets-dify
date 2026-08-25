@@ -3,13 +3,12 @@ import {
   Button,
   Card,
   Col,
-  Descriptions,
   Progress,
   Row,
+  Select,
   Space,
   Statistic,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -25,9 +24,12 @@ import {
   WarningOutlined,
   ClockCircleOutlined,
 } from "@ant-design/icons";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  getChunkConfig,
+  listChunkStrategies,
   triggerPipeline,
+  type ChunkStrategyOption,
   type PipelineReport,
   type PipelineStatus,
 } from "../api/client";
@@ -74,11 +76,38 @@ export default function PipelineControl({
   const [dryRun, setDryRun] = useState(false);
   const [force, setForce] = useState(false);
   const [msgApi, contextHolder] = message.useMessage();
+  const [strategyOptions, setStrategyOptions] = useState<ChunkStrategyOption[]>([]);
+  const [strategy, setStrategy] = useState<string>("structure");
+
+  // 加载切分策略列表与当前默认策略
+  useEffect(() => {
+    let cancelled = false;
+    listChunkStrategies()
+      .then((r) => {
+        if (cancelled) return;
+        setStrategyOptions(r.strategies);
+        setStrategy(r.default || "structure");
+      })
+      .catch(() => {
+        if (!cancelled) msgApi.warning("切分策略列表加载失败");
+      });
+    getChunkConfig()
+      .then((c) => {
+        if (!cancelled) setStrategy(c.strategy || "structure");
+      })
+      .catch(() => {
+        /* 忽略：仍可用列表默认值 */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onRun = async () => {
     onLoadingChange(true);
     try {
-      const report = await triggerPipeline(dryRun, force);
+      const report = await triggerPipeline(dryRun, force, strategy);
       onAfterPipeline(report);
       const statusLabel = STATUS_LABELS[report.status] ?? report.status;
       if (report.status === "ok") {
@@ -186,6 +215,26 @@ export default function PipelineControl({
     >
       {contextHolder}
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        {/* 切分策略选择 */}
+        <Space wrap>
+          <Text strong>切分策略</Text>
+          <Select
+            value={strategy}
+            onChange={setStrategy}
+            options={strategyOptions.map((s) => ({
+              label: `${s.name}（${s.key}）`,
+              value: s.key,
+            }))}
+            style={{ width: 220 }}
+            placeholder="选择切分策略"
+            loading={strategyOptions.length === 0}
+          />
+          <Text type="secondary" style={{ fontSize: 12, maxWidth: 460 }}>
+            {strategyOptions.find((s) => s.key === strategy)?.desc ||
+              "切分阶段使用的策略，默认取 backend/.env 的 RAG_CHUNK_STRATEGY。"}
+          </Text>
+        </Space>
+
         {/* 总体状态 */}
         <Card
           size="small"

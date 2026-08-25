@@ -262,6 +262,35 @@ export interface ChunkStrategyListResponse {
 export const listChunkStrategies = () =>
   http<ChunkStrategyListResponse>("/chunk/strategies");
 
+/** 切分策略及相关配置变量（来自 backend/.env 集中配置）。 */
+export interface ChunkConfig {
+  strategy: string;
+  target_chars: number;
+  split_target: number;
+  overlap: number;
+  hard_limit: number;
+  appendix_threshold: number;
+  max_images_per_segment: number;
+  table_row_threshold: number;
+  table_max_chars: number;
+  fixed_size_chars: number;
+  fixed_overlap_chars: number;
+  semantic_threshold: number;
+  parent_size_chars: number;
+  child_size_chars: number;
+  llm_enabled: boolean;
+}
+
+/** 查看当前切分策略配置。 */
+export const getChunkConfig = () => http<ChunkConfig>("/chunk/config");
+
+/** 保存默认切分策略（写回 backend/.env 的 RAG_CHUNK_STRATEGY 并热更新）。 */
+export const saveChunkConfig = (strategy: string) =>
+  http<{ strategy: string }>("/chunk/config", {
+    method: "POST",
+    body: JSON.stringify({ strategy }),
+  });
+
 export interface ChunkPreview {
   stem: string;
   chunk_id: string;
@@ -379,6 +408,7 @@ export interface PipelineStepIn {
   enabled: boolean;
   dry_run: boolean;
   force: boolean;
+  strategy?: string; // chunk 阶段：切分策略（structure/fixed/semantic/parent_child 等）
 }
 
 export interface PipelineRunBody {
@@ -390,7 +420,7 @@ export interface PipelineRunBody {
 }
 
 /** 触发一键流水线（前端 3.0 入口）。 */
-export const triggerPipeline = (dryRun: boolean, force = false) =>
+export const triggerPipeline = (dryRun: boolean, force = false, strategy?: string) =>
   http<PipelineReport>("/pipeline/run", {
     method: "POST",
     body: JSON.stringify({
@@ -398,7 +428,7 @@ export const triggerPipeline = (dryRun: boolean, force = false) =>
       //   scan/parse/chunk/dify 都传 force，与手动单步的"强制"开关行为一致
       scan: { enabled: true, dry_run: dryRun, force },
       parse: { enabled: true, dry_run: dryRun, force },
-      chunk: { enabled: true, dry_run: dryRun, force },
+      chunk: { enabled: true, dry_run: dryRun, force, strategy: strategy ?? "" },
       dify: { enabled: true, dry_run: dryRun, force },
       stop_on_error: false,
     }),

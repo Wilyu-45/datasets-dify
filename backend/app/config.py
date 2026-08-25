@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     # 重试退避公式：wait = min(initial * factor^(attempt-1), max_wait)
     #  默认 30s / 2.0x / 300s → 30s, 60s, 120s（最多 3 次）
     mineru_max_retries: int = 3
-    mineru_retry_initial_wait: float = 15   # 首次重试等 30s（给 API 重启时间）
+    mineru_retry_initial_wait: float = 15   # 首次重试等 15s（给 API 重启时间）
     mineru_retry_backoff_factor: float = 2.0  # 指数退避倍数
     mineru_retry_max_wait: float = 300.0      # 单次重试最大等待（5 分钟，防无限等）
     # 兼容保留旧字段：以前的 5.0 倍重试公式；新代码不再读该字段
@@ -268,6 +268,17 @@ class Settings(BaseSettings):
     pg_pool_max: int = 10
     # 获取连接的超时（秒）
     pg_pool_timeout: float = 30.0
+
+    # ---- Web 服务 / CORS ----
+    # 允许的跨域来源（JSON 字符串数组）。默认覆盖本地开发 Vite(5173) 与自托管(8000)。
+    # 通过 backend/.env 的 RAG_CORS_ORIGINS 配置，例如：
+    #   RAG_CORS_ORIGINS=["http://localhost:5173","http://localhost:8000"]
+    cors_origins: tuple[str, ...] = (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    )
 
     # ---- 应用元数据 ----
     app_name: str = "RAG Batch Ingestion"

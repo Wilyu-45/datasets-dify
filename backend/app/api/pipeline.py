@@ -29,6 +29,7 @@ class PipelineStepIn(BaseModel):
     enabled: bool = True
     dry_run: bool = False
     force: bool = False  # chunk / dify 阶段：是否强制重做
+    strategy: Optional[str] = None  # chunk 阶段：切分策略（structure/fixed/semantic/parent_child 等）
 
 
 class PipelineRunRequest(BaseModel):
@@ -42,7 +43,12 @@ class PipelineRunRequest(BaseModel):
 
 
 def _to_step(in_step: PipelineStepIn) -> PipelineStep:
-    return PipelineStep(enabled=in_step.enabled, dry_run=in_step.dry_run, force=in_step.force)
+    return PipelineStep(
+        enabled=in_step.enabled,
+        dry_run=in_step.dry_run,
+        force=in_step.force,
+        strategy=in_step.strategy,
+    )
 
 
 @router.post("/pipeline/run", response_model=Dict[str, Any])

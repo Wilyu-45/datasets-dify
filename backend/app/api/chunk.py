@@ -4,6 +4,8 @@
 - GET  /api/chunks/{stem}/files  列出某文档切分产物的所有文件
 - GET  /api/chunks/{stem}/chunks 列出某文档的所有 chunk（带元数据）
 - GET  /api/chunks/{stem}/preview/{chunk_id}  返回某个 chunk 的内容
+- GET  /api/chunk/config         查看当前切分策略及相关配置变量
+- POST /api/chunk/config         保存默认切分策略（写回 backend/.env 持久化）
 """
 
 from __future__ import annotations
@@ -11,11 +13,12 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
-from app.config import settings
+from app.config import settings, REPO_ROOT
 from app.models.schemas import (
     ChunkFile,
     ChunkMeta,
@@ -69,6 +72,71 @@ def list_chunk_strategies() -> ChunkStrategyListResponse:
         ],
         default=default,
     )
+
+
+def _persist_env(key: str, value: str) -> None:
+    """把 ``key=value`` 写回 backend/.env（不存在则追加），UTF-8 无 BOM。"""
+    env_file = REPO_ROOT / "backend" / ".env"
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    replaced = False
+    out: List[str] = []
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_file.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+class ChunkConfigUpdate(BaseModel):
+    """保存默认切分策略的入参。"""
+
+    strategy: str = "structure"
+
+
+@router.get("/chunk/config")
+def get_chunk_config() -> Dict[str, Any]:
+    """返回当前切分策略及所有可调配置变量（均来自 backend/.env 集中配置）。"""
+    return {
+        "strategy": settings.chunk_strategy or "structure",
+        "target_chars": settings.chunk_target_chars,
+        "split_target": settings.chunk_split_target,
+        "overlap": settings.chunk_overlap,
+        "hard_limit": settings.chunk_hard_limit,
+        "appendix_threshold": settings.chunk_appendix_threshold,
+        "max_images_per_segment": settings.chunk_max_images_per_segment,
+        "table_row_threshold": settings.chunk_table_row_threshold,
+        "table_max_chars": settings.chunk_table_max_chars,
+        "fixed_size_chars": settings.chunk_fixed_size_chars,
+        "fixed_overlap_chars": settings.chunk_fixed_overlap_chars,
+        "semantic_threshold": settings.chunk_semantic_threshold,
+        "parent_size_chars": settings.chunk_parent_size_chars,
+        "child_size_chars": settings.chunk_child_size_chars,
+        "llm_enabled": settings.chunk_llm_enabled,
+    }
+
+
+@router.post("/chunk/config")
+def save_chunk_config(body: ChunkConfigUpdate) -> Dict[str, Any]:
+    """保存默认切分策略，写回 backend/.env 的 RAG_CHUNK_STRATEGY 并热更新。"""
+    valid = {m["key"] for m in chunk_strategies.list_strategies()}
+    if body.strategy not in valid:
+        raise HTTPException(status_code=400, detail=f"不支持的切分策略: {body.strategy}，可选: {sorted(valid)}")
+    try:
+        _persist_env("RAG_CHUNK_STRATEGY", body.strategy)
+        settings.chunk_strategy = body.strategy  # 热更新内存中的默认值
+        log.info(
+            "api /chunk/config saved strategy=%s",
+            body.strategy,
+            extra={"step": "api", "status": "chunk_config_save", "strategy": body.strategy},
+        )
+        return {"strategy": body.strategy}
+    except Exception as e:  # noqa: BLE001
+        log.exception("保存切分策略失败", extra={"step": "api", "error_msg": str(e)})
+        raise HTTPException(status_code=500, detail=f"保存切分策略失败: {e}") from e
 
 
 @router.get("/chunks", response_model=List[ChunkSummary])
