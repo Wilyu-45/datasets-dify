@@ -48,7 +48,7 @@ def _row(**kw):
 
 
 def _ensure_manifest_with_rows(path: Path, filenames: list[str]) -> None:
-    """在 manifest.xlsx 中创建 17 列表头并写入 filename 行。"""
+    """在 manifest 表（PostgreSQL）中写入 filename 行。"""
     from app.services import manifest_store
     manifest_store.ensure_exists(path)
     for name in filenames:
@@ -165,33 +165,30 @@ def _install_fake_client(monkeypatch, fake: FakeMinerUClient):
 # ============ 列扩展测试 ============
 
 
-def test_manifest_auto_adds_parse_and_chunks_columns(fresh_settings):
-    """旧 16 列的 manifest 启动时自动追加『parse』『chunks』『dify_doc_id』『dify_status』列到 20 列。"""
+def test_manifest_table_columns_fixed(fresh_settings):
+    """manifest 表（PostgreSQL）结构固定，无需补列。"""
     from app.services import manifest_store
     s = fresh_settings
 
-    # 16 列的 manifest
-    from openpyxl import Workbook
-
-    wb = Workbook()
-    ws = wb.active
-    ws.append([
-        "序号", "文件名称", "一级分类", "二级分类", "关键词标签",
-        "适用科室", "生效日期", "导入情况", "处理情况", "校对",
-        "处理说明", "status", "md5", "create_time", "update_time", "error_msg",
-    ])
-    ws.append([1, "x.pdf", "a", "b", "c", "d", "e", "已移入待处理", "已扫描", "", "", "pending", "abc", "2026-01-01", "", ""])
-    wb.save(s.manifest_path)
-    wb.close()
-
-    # bootstrap → 补列
+    # 表结构固定：ensure_columns 恒为 (False, [])
     changed, headers = manifest_store.ensure_columns(s.manifest_path)
-    assert changed is True
-    assert headers[-1] == "dify_status"
-    assert headers[-2] == "dify_doc_id"
-    assert headers[-3] == "chunks"
-    assert headers[-4] == "parse"
-    assert len(headers) == 20
+    assert changed is False
+    assert headers == []
+
+    # 字段默认值：不提供 parse/chunks 等系统列也能正常读写
+    manifest_store.upsert(
+        s.manifest_path,
+        _row(filename="x.pdf", seq=1, category_l1="a", category_l2="b",
+             keywords="c", department="d", effective_date="e",
+             md5="abc", create_time="2026-01-01"),
+    )
+    loaded = manifest_store.load()
+    row = loaded["x.pdf"]
+    assert row.filename == "x.pdf"
+    assert row.parse in (None, "")
+    assert row.chunks in (None, "")
+    assert row.dify_doc_id in (None, "")
+    assert row.dify_status in (None, "")
 
 
 def test_manifest_loads_parse_column(fresh_settings):

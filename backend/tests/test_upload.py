@@ -133,7 +133,7 @@ def test_upload_endpoint_creates_manifest_row(
 ) -> None:
     """单文件上传后应：
     1. 保存到 input/
-    2. 在 manifest.xlsx 追加一行
+    2. 在 manifest 表（PostgreSQL）插入一行
     3. auto_ingest=False 时不触发 pipeline
     """
     from fastapi.testclient import TestClient

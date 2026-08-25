@@ -8,9 +8,9 @@
  *   - 上传完成后展示：每个文件的状态 + 各阶段统计
  *
  * 业务价值：
- *   - 不需要先在 manifest.xlsx 加行
+ *   - 不需要先在 manifest 表加行
  *   - 一次选多个文件批量入库，1 个失败不影响其他
- *   - 测试完成后 Excel 留有记录可追溯
+ *   - 测试完成后 manifest 留有记录可追溯
  *
  * ★ 2026-08 改造点（与 SingleFileUpload 对比）：
  *   - 接受多个文件（antd Dragger `multiple=true`, `maxCount=50`）
@@ -571,8 +571,8 @@ export default function BatchFileUpload({
           ：选文件（可多选） → 选「自动入库」开关 → 点「上传」。
           若开启自动入库，全部文件上传后会自动跑一次 parse+chunk+dify 流水线；
           1 个文件失败不会影响其他文件。
-          测试文件可在 <code>data/pending/</code> 或{" "}
-          <code>data/manifest.xlsx</code> 找到。
+          测试文件可在 <code>data/pending/</code> 中或在 PostgreSQL{" "}
+          <code>manifest</code> 表中找到。
         </Paragraph>
       </Space>
     </Card>

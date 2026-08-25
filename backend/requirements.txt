@@ -1,6 +1,7 @@
 fastapi>=0.110,<1.0
 uvicorn[standard]>=0.27,<1.0
-openpyxl>=3.1,<4.0
+# PostgreSQL 驱动（manifest / doc_metadata 持久化；binary 免编译，pool 提供连接池）
+psycopg[binary,pool]>=3.1,<4.0
 pydantic>=2.6,<3.0
 pydantic-settings>=2.2,<3.0
 python-multipart>=0.0.9

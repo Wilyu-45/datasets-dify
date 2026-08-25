@@ -1,8 +1,8 @@
 """E2E 验证：§3.2 解析流程。
 
 场景：
-  1. 用户放入 11 列 Excel（文件名无扩展名）+ 把对应 .pdf 放入 input/
-  2. 启动 → bootstrap 自动补 6 列（5 系统 + 1 parse）
+  1. 用户写入 manifest 行（文件名无扩展名）+ 把对应 .pdf 放入 input/
+  2. 启动 → bootstrap 初始化 PostgreSQL manifest 表
   3. 模拟「扫描」：从 input/ 移到 pending/，manifest 标记「已移入待处理」
   4. mock 一个 MinerU API（POST /file_parse → 返回 md+json）
   5. 模拟「解析」：调 parser.parse_pending
@@ -34,13 +34,7 @@ INPUT = DATA / "input"
 PENDING = DATA / "pending"
 PARSED = DATA / "parsed"
 ERROR = DATA / "error"
-MANIFEST = DATA / "manifest.xlsx"
-
-BACKUP = DATA / "manifest.xlsx.bak"
-if BACKUP.exists():
-    BACKUP.unlink()
-if MANIFEST.exists():
-    shutil.copy2(MANIFEST, BACKUP)
+MANIFEST = DATA / "manifest.xlsx"  # 兼容占位：manifest 已迁移 PostgreSQL，此路径不再读写
 
 # 清空 input/pending/parsed/error（保留 .gitkeep）
 for d in (INPUT, PENDING, PARSED, ERROR):
@@ -52,30 +46,7 @@ for d in (INPUT, PENDING, PARSED, ERROR):
         else:
             f.unlink(missing_ok=True)
 
-# ============ 1) 准备用户的 11 列 Excel ============
-
-from openpyxl import Workbook
-
-wb = Workbook()
-ws = wb.active
-ws.title = "Sheet1"
-headers = [
-    "序号", "文件名称", "一级分类", "二级分类", "关键词标签",
-    "适用科室", "生效日期", "导入情况", "处理情况", "校对", "处理说明",
-]
-ws.append(headers)
-ws.append([1, "国标-001", "国标", "医用氧舱", "高压氧", "高压氧科", "2006-04-01", "", "", "", "用户原备注"])
-ws.append([2, "团标-002", "团标", "康复",   "智能", "康复科", "2024-01-01", "", "", "", ""])
-ws.append([3, "失败-003",  "规范", "院内",   "院感", "院感科", "2025-06-01", "", "", "", "这个会解析失败"])
-wb.save(MANIFEST)
-wb.close()
-
-# 放入 input 文件
-(INPUT / "国标-001.pdf").write_bytes(b"PDF content for guobiao")
-(INPUT / "团标-002.docx").write_bytes(b"DOCX content for tuibiao")
-(INPUT / "失败-003.pdf").write_bytes(b"PDF content for failure")
-
-# ============ 2) 启动 bootstrap ============
+# ============ 1) 初始化 PostgreSQL manifest 并写入用户数据 ============
 
 sys.path.insert(0, str(ROOT / "backend"))
 import os
@@ -84,23 +55,35 @@ os.environ.setdefault("RAG_DATA_ROOT", str(DATA))
 from app import config as cfg_mod
 importlib.reload(cfg_mod)
 settings = cfg_mod.settings
+from app.models.schemas import ManifestRow
 from app.services import scanner, parser, manifest_store
 scanner.settings = settings
 parser.settings = settings
 
+# bootstrap：PostgreSQL manifest 表结构固定（幂等建表）
 manifest_store.bootstrap(DATA)
 
-# 验证列数 = 17
-wb2 = __import__("openpyxl").load_workbook(MANIFEST, read_only=True)
-ws2 = wb2.active
-hdr = [str(c).strip() if c else "" for c in next(ws2.iter_rows(min_row=1, max_row=1, values_only=True))]
-wb2.close()
-assert len(hdr) == 20, f"列数应为 20（11+5+1+1+2），实际 {len(hdr)}"
-assert hdr[-1] == "dify_status", f"最后一列应为 dify_status，实际 {hdr[-1]}"
-assert hdr[-2] == "dify_doc_id"
-assert hdr[-3] == "chunks"
-assert hdr[-4] == "parse"
-print(f"✓ bootstrap 补列成功（11→20，最后一列=dify_status）")
+# 备份现有 manifest 表（测试结束后恢复）
+saved_manifest = list(manifest_store.load().values())
+manifest_store.clear()
+
+# 写入用户 manifest 行（文件名无扩展名）
+manifest_store.bulk_upsert([
+    ManifestRow(seq=1, filename="国标-001", category_l1="国标", category_l2="医用氧舱",
+                keywords="高压氧", department="高压氧科", effective_date="2006-04-01",
+                process_note="用户原备注"),
+    ManifestRow(seq=2, filename="团标-002", category_l1="团标", category_l2="康复",
+                keywords="智能", department="康复科", effective_date="2024-01-01"),
+    ManifestRow(seq=3, filename="失败-003", category_l1="规范", category_l2="院内",
+                keywords="院感", department="院感科", effective_date="2025-06-01",
+                process_note="这个会解析失败"),
+])
+print(f"✓ manifest 表（PostgreSQL）已写入 3 条用户记录")
+
+# 放入 input 文件
+(INPUT / "国标-001.pdf").write_bytes(b"PDF content for guobiao")
+(INPUT / "团标-002.docx").write_bytes(b"DOCX content for tuibiao")
+(INPUT / "失败-003.pdf").write_bytes(b"PDF content for failure")
 
 # ============ 3) 模拟「扫描」按钮 ============
 
@@ -257,19 +240,12 @@ print(f"✓ 第二次解析幂等: parsed=0, skipped=2")
 
 # 新增一行不会真解析
 (INPUT / "新文件-004.pdf").write_bytes(b"new content")
-manifest_store.upsert(
-    MANIFEST,
-    manifest_store.load(MANIFEST).get("新文件-004.pdf")  # type: ignore[arg-type]
-    or __import__("app.models.schemas", fromlist=["ManifestRow"]).ManifestRow(
-        filename="新文件-004.pdf", import_status=""
-    ),
-)
+manifest_store.upsert(ManifestRow(filename="新文件-004.pdf", import_status=""))
 # 用真扫描把它移入 pending
 (INPUT / "新文件-004.pdf").unlink()
 (PENDING / "新文件-004.pdf").write_bytes(b"new content")
 from app.models.schemas import ManifestRow
 manifest_store.upsert(
-    MANIFEST,
     ManifestRow(filename="新文件-004.pdf", import_status="已移入待处理", status="pending"),
 )
 report_dry = parser.parse_pending(dry_run=True)
@@ -278,11 +254,10 @@ print(f"✓ 试运行：dry_run=True 时不调 API、不移动")
 
 # ============ 清理 ============
 
-# 恢复 manifest
-if BACKUP.exists():
-    shutil.move(BACKUP, MANIFEST)
-else:
-    MANIFEST.unlink(missing_ok=True)
+# 恢复 manifest 表（PostgreSQL）
+manifest_store.clear()
+if saved_manifest:
+    manifest_store.bulk_upsert(saved_manifest)
 
 # 清掉测试文件（目录用 rmtree，文件用 unlink）
 for d in (PENDING, PARSED, ERROR, INPUT):

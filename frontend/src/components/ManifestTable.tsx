@@ -216,7 +216,7 @@ export default function ManifestTable({
   return (
     <Card
       size="small"
-      title={`📋 manifest.xlsx （${total} 行）`}
+      title={`📋 manifest 表 （${total} 行）`}
       extra={
         <Button size="small" icon={<ReloadOutlined />} onClick={() => load(page)}>
           刷新

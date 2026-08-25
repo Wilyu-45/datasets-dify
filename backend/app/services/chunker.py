@@ -2694,7 +2694,7 @@ def _write_manifest_chunk_done(
         update_kwargs["status"] = sys_status
     update_kwargs["error_msg"] = err
     new_row = row.model_copy(update=update_kwargs)
-    manifest_store.upsert(settings.manifest_path, new_row)
+    manifest_store.upsert(new_row)
 
 
 def chunk_parsed(
@@ -2723,7 +2723,7 @@ def chunk_parsed(
     )
     settings.ensure_dirs()
     manifest_store.bootstrap(settings.data_root)
-    manifest: Dict[str, ManifestRow] = manifest_store.load(settings.manifest_path)
+    manifest: Dict[str, ManifestRow] = manifest_store.load()
 
     # ★ target_stems 白名单：转 set 提高查找效率
     target_stem_set: Optional[set] = (
@@ -2824,7 +2824,7 @@ def chunk_parsed(
                         "update_time": now,
                     }
                 )
-                manifest_store.upsert(settings.manifest_path, corrected)
+                manifest_store.upsert(corrected)
             except Exception:  # noqa: BLE001
                 log.exception(
                     "chunk: 同步 manifest.parse 失败（不影响切分）",

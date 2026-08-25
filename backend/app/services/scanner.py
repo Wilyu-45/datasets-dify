@@ -1,7 +1,7 @@
-"""plan.md §3.1 — Excel 驱动的文件读取与状态管理。
+"""plan.md §3.1 — PostgreSQL 驱动的文件读取与状态管理。
 
-核心流程（以 manifest.xlsx 为主线，input/ 是文件来源）：
-    1. 读取 manifest.xlsx，定位每行的「文件名称」「导入情况」
+核心流程（以 manifest 表为主线，input/ 是文件来源）：
+    1. 读取 manifest 表，定位每行的「文件名称」「导入情况」
     2. 对每一行：
        - 如果「导入情况」非空（已标记） → 跳过（幂等）
        - 如果「导入情况」为空（未导入）：
@@ -12,7 +12,7 @@
     3. 返回 ScanReport
 
 启动约束：
-    - 服务启动时（main.lifespan）只调用 manifest_store.bootstrap() 来确保列齐全，
+    - 服务启动时（main.lifespan）只调用 manifest_store.bootstrap() 确保 PostgreSQL manifest 表就绪，
       **不会**调用本函数，也不会移动任何文件。
     - 本函数只在用户点击前端「扫描」按钮时由 /api/scan 触发。
 
@@ -87,9 +87,9 @@ def _collision_rename(target: Path) -> Path:
 
 
 def scan_and_stage(dry_run: bool = False, force: bool = False) -> ScanReport:
-    """§3.1 主入口（Excel 驱动）。
+    """§3.1 主入口（PostgreSQL manifest 表驱动）。
 
-    遍历 manifest.xlsx，对每行「导入情况」为空的记录：
+    遍历 manifest 表，对每行「导入情况」为空的记录：
         - 在 input/ 找同名文件 → 移到 pending/，更新 manifest
         - 找不到 → 记 MISSING，不动 manifest
 
@@ -109,7 +109,7 @@ def scan_and_stage(dry_run: bool = False, force: bool = False) -> ScanReport:
     manifest_store.bootstrap(settings.data_root)
 
     # 1) 加载 manifest
-    manifest: Dict[str, ManifestRow] = manifest_store.load(settings.manifest_path)
+    manifest: Dict[str, ManifestRow] = manifest_store.load()
     pending_names = _list_pending_files()
 
     actions: List[FileActionRecord] = []
@@ -309,7 +309,7 @@ def scan_and_stage(dry_run: bool = False, force: bool = False) -> ScanReport:
     # 3) 批量写 manifest
     if not dry_run and rows_to_write:
         try:
-            manifest_store.bulk_upsert(settings.manifest_path, rows_to_write)
+            manifest_store.bulk_upsert(rows_to_write)
         except Exception as e:  # noqa: BLE001
             log.exception(
                 "manifest 写盘失败",

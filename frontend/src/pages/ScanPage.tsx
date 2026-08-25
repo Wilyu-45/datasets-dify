@@ -24,7 +24,7 @@ export default function ScanPage() {
           步骤 3.1 · 文件读取与状态管理
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-          扫描 <code>data/input/</code> → 与 <code>manifest.xlsx</code> 比对 → 把未处理（status ≠ "done"）的文件移动到 <code>data/pending/</code>。
+          扫描 <code>data/input/</code> → 与 manifest 表比对 → 把未处理（status ≠ "done"）的文件移动到 <code>data/pending/</code>。
         </Paragraph>
       </div>
 

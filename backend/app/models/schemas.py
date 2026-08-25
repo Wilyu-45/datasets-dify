@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 
 class ProcessStatus(str, Enum):
-    """manifest.xlsx 中 `status` 列的取值。"""
+    """manifest 表（PostgreSQL）中 `status` 列的取值。"""
 
     NEW = "new"
     PENDING = "pending"
@@ -239,7 +239,7 @@ class ScanRequest(BaseModel):
 
 
 class ManifestRow(BaseModel):
-    """manifest.xlsx 的单行（顺序与 18 列表头对应）。
+    """manifest 表（PostgreSQL）的单行（对应 manifest 表 20 列）。
 
     字段命名与表头一一对应：用户原 11 列（按用户给的顺序可任意）+
     系统 5 列 + plan.md §3.2 新增 1 列 `parse` + plan.md §3.3 新增 1 列 `chunks`。

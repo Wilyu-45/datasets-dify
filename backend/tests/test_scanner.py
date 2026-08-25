@@ -43,7 +43,7 @@ def _row(**kw):
 
 
 def _ensure_manifest_with_rows(path: Path, filenames: list[str]) -> None:
-    """在 manifest.xlsx 中创建 16 列表头并写入 filename 行（导入情况留空）。"""
+    """在 manifest 表（PostgreSQL）中写入 filename 行（导入情况留空）。"""
     from app.services import manifest_store
     manifest_store.ensure_exists(path)
     for name in filenames:

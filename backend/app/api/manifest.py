@@ -17,7 +17,7 @@ def get_manifest(
     offset: int = Query(0, ge=0),
 ) -> ManifestPage:
     """分页读取 manifest 全表。"""
-    rows_dict = manifest_store.load(settings.manifest_path)
+    rows_dict = manifest_store.load()
     all_rows = list(rows_dict.values())
     # 按 update_time 倒序，缺失视为空串（稳定排序）
     all_rows.sort(

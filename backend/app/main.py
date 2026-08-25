@@ -21,6 +21,7 @@ from app.api import chunk as chunk_api
 from app.api import dify as dify_api
 from app.api import pipeline as pipeline_api
 from app.api import upload as upload_api
+from app import db
 from app.config import settings
 from app.logging_config import setup as setup_logging
 from app.services import manifest_store
@@ -30,25 +31,26 @@ log = logging.getLogger("ragsystem.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
-    """启动时初始化目录、manifest（含自动补列）、日志。"""
+    """启动时初始化数据目录、PostgreSQL 表结构（manifest / doc_metadata）与日志。"""
     setup_logging(
         logs_dir=settings.logs_dir,
         level=settings.log_level,
         retention_days=settings.log_retention_days,
     )
     settings.ensure_dirs()
-    # bootstrap：找到用户的 manifest.xlsx，必要时追加缺失的系统列
-    manifest_path = manifest_store.bootstrap(settings.data_root)
+    # 初始化 PostgreSQL 表结构（manifest / doc_metadata 持久化层）
+    manifest_store.bootstrap()
     log.info(
         "app started",
         extra={
             "step": "startup",
             "status": "ok",
             "data_root": str(settings.data_root),
-            "manifest": str(manifest_path),
+            "manifest": f"postgresql://{settings.pg_host}:{settings.pg_port}/{settings.pg_dbname}#manifest",
         },
     )
     yield
+    db.close_pool()
     log.info("app stopped", extra={"step": "shutdown", "status": "ok"})
 
 

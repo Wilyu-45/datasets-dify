@@ -1,11 +1,14 @@
-"""修复未匹配的文件名映射。"""
+"""修复未匹配的文件名映射（PostgreSQL manifest 表）。"""
 import re
+import sys
 from pathlib import Path
-from openpyxl import load_workbook
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+from app.services import manifest_store
 
 DATA = Path(r"d:\programmtools\tools\ragsystem\data")
 INPUT = DATA / "input"
-MANIFEST = DATA / "manifest.xlsx"
 
 # 手动映射：manifest stem → input 实际文件名
 MANUAL_MAP = {
@@ -21,49 +24,36 @@ MANUAL_MAP = {
     "医护人员手卫生规范_解读_李六亿": "医务人员手卫生规范_解读_李六亿.pdf",
 }
 
-wb = load_workbook(str(MANIFEST))
-ws = wb.active
-headers = [c.value for c in ws[1]]
-fname_col = headers.index("文件名称")
-
+manifest = manifest_store.load()
 fixed = 0
-for row in ws.iter_rows(min_row=2):
-    fname_cell = row[fname_col]
-    fname = str(fname_cell.value or "").strip()
+for filename, row in manifest.items():
+    fname = (filename or "").strip()
     if not fname:
         continue
-    
+
     # 检查文件是否存在
-    found = False
-    for ext in ["", ".pdf", ".docx", ".doc"]:
-        if (INPUT / (fname + ext)).exists():
-            found = True
-            break
-    
+    found = any((INPUT / (fname + ext)).exists() for ext in ["", ".pdf", ".docx", ".doc"])
     if found:
         continue
-    
+
     # 尝试手动映射
     actual = MANUAL_MAP.get(fname)
     if actual and (INPUT / actual).exists():
-        fname_cell.value = actual
+        manifest_store.upsert(row, filename=actual, update_time=manifest_store.now_iso())
         fixed += 1
         print(f"  修复: {fname} → {actual}")
         continue
-    
+
     # 尝试更宽松的匹配
-    fname_norm = re.sub(r'[\s\-_—（）()\[\]【】《》]', '', fname).lower()
+    fname_norm = re.sub(r"[\s\-_—（）()\[\]【】《》]", "", fname).lower()
     for f in INPUT.iterdir():
         if f.name == ".gitkeep":
             continue
-        f_norm = re.sub(r'[\s\-_—（）()\[\]【】《》]', '', f.stem).lower()
+        f_norm = re.sub(r"[\s\-_—（）()\[\]【】《》]", "", f.stem).lower()
         if fname_norm and f_norm and (fname_norm in f_norm or f_norm in fname_norm):
-            fname_cell.value = f.name
+            manifest_store.upsert(row, filename=f.name, update_time=manifest_store.now_iso())
             fixed += 1
             print(f"  模糊匹配: {fname} → {f.name}")
-            found = True
             break
 
-wb.save(str(MANIFEST))
-wb.close()
 print(f"\n共修复 {fixed} 个文件名")

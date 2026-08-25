@@ -1,83 +1,55 @@
 """
-检查当前 manifest 状态，统计各状态文件数。
+检查当前 manifest（PostgreSQL manifest 表）状态，统计各状态文件数。
 """
 import sys
-from pathlib import Path
-import openpyxl
+from collections import Counter
 
-sys.stdout.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding="utf-8")
 
-DATA_DIR = Path(r"d:\programmtools\tools\ragsystem\data")
-MANIFEST = DATA_DIR / "manifest.xlsx"
+from app.services import manifest_store
 
-wb = openpyxl.load_workbook(str(MANIFEST), data_only=True)
-ws = wb.active
-headers = [c.value for c in ws[1]]
+manifest = manifest_store.load()
+entries = list(manifest.values())
 
-# 找到关键列
-fname_col = headers.index("文件名称") if "文件名称" in headers else None
-status_col = headers.index("status") if "status" in headers else None
-parse_col = headers.index("parse") if "parse" in headers else None
-dify_col = headers.index("dify_doc_id") if "dify_doc_id" in headers else None
+print(f"manifest 总行数: {len(entries)}")
 
-print(f"关键列索引: 文件名称={fname_col}, status={status_col}, parse={parse_col}, dify_doc_id={dify_col}")
+stats = {"total": len(entries)}
+for e in entries:
+    status = str(e.status or "").strip()
+    parse_status = str(e.parse or "").strip()
+    dify_id = str(e.dify_doc_id or "").strip()
 
-# 统计各状态
-stats = {
-    "total": 0,
-    "pending": 0,
-    "parsing": 0,
-    "parsed": 0,
-    "chunked": 0,
-    "done": 0,
-    "error": 0,
-    "has_dify_id": 0,
-    "no_dify_id": 0,
-}
-
-pending_files = []
-error_files = []
-
-for row in ws.iter_rows(min_row=2, values_only=True):
-    fn = row[fname_col] if fname_col is not None else None
-    if not fn or not str(fn).strip():
-        continue
-    
-    stats["total"] += 1
-    status = str(row[status_col]).strip() if status_col is not None and row[status_col] else ""
-    parse_status = str(row[parse_col]).strip() if parse_col is not None and row[parse_col] else ""
-    dify_id = str(row[dify_col]).strip() if dify_col is not None and row[dify_col] else ""
-    
     if dify_id and dify_id != "None":
-        stats["has_dify_id"] += 1
+        stats["has_dify_id"] = stats.get("has_dify_id", 0) + 1
     else:
-        stats["no_dify_id"] += 1
-    
+        stats["no_dify_id"] = stats.get("no_dify_id", 0) + 1
+
     if status == "done":
-        stats["done"] += 1
+        stats["done"] = stats.get("done", 0) + 1
     elif status == "error":
-        stats["error"] += 1
-        error_files.append(fn)
+        stats["error"] = stats.get("error", 0) + 1
     elif status == "chunked":
-        stats["chunked"] += 1
+        stats["chunked"] = stats.get("chunked", 0) + 1
     elif status == "parsed" or parse_status == "done":
-        stats["parsed"] += 1
+        stats["parsed"] = stats.get("parsed", 0) + 1
     elif status == "parsing":
-        stats["parsing"] += 1
+        stats["parsing"] = stats.get("parsing", 0) + 1
     else:
-        stats["pending"] += 1
-        pending_files.append(fn)
+        stats["pending"] = stats.get("pending", 0) + 1
 
 print(f"\n=== Manifest 状态统计 ===")
 print(f"总计: {stats['total']}")
-print(f"  done (已上传 Dify): {stats['done']}")
-print(f"  chunked (已切分待上传): {stats['chunked']}")
-print(f"  parsed (已解析待切分): {stats['parsed']}")
-print(f"  parsing (解析中): {stats['parsing']}")
-print(f"  pending (待处理): {stats['pending']}")
-print(f"  error (错误): {stats['error']}")
-print(f"\n有 Dify ID: {stats['has_dify_id']}")
-print(f"无 Dify ID: {stats['no_dify_id']}")
+print(f"  done (已上传 Dify): {stats.get('done', 0)}")
+print(f"  chunked (已切分待上传): {stats.get('chunked', 0)}")
+print(f"  parsed (已解析待切分): {stats.get('parsed', 0)}")
+print(f"  parsing (解析中): {stats.get('parsing', 0)}")
+print(f"  pending (待处理): {stats.get('pending', 0)}")
+print(f"  error (错误): {stats.get('error', 0)}")
+print(f"\n有 Dify ID: {stats.get('has_dify_id', 0)}")
+print(f"无 Dify ID: {stats.get('no_dify_id', 0)}")
+
+pending_files = [e.filename for e in entries if (e.status or "").strip() == ""]
+error_files = [e.filename for e in entries if (e.status or "").strip() == "error"]
 
 if pending_files:
     print(f"\n=== 待处理文件 ({len(pending_files)}) ===")
@@ -90,5 +62,3 @@ if error_files:
     print(f"\n=== 错误文件 ({len(error_files)}) ===")
     for fn in error_files:
         print(f"  {fn}")
-
-wb.close()

@@ -47,7 +47,7 @@ flowchart TD
 ## 3. 详细步骤说明
 
 ### 3.1 文件读取与状态管理
-- **输入**：`./input/` 目录 + `manifest.xlsx`（列：`filename, status, md5, create_time, update_time`）
+- **输入**：`./input/` 目录 + PostgreSQL `manifest` 表（列：`filename, status, md5, create_time, update_time`）
 - **逻辑**：
   1. 扫描 `./input/` 所有文件。
   2. 与Excel中 `status != "done"` 的记录比对，筛选未处理文件。

@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.config import settings
 from app.models.schemas import HealthInfo, MinerUHealthInfo
+from app.services import manifest_store
 from app.services.mineru_client import MinerUClient
 
 log = logging.getLogger("ragsystem.api.health")
@@ -28,9 +29,15 @@ def health() -> HealthInfo:
             healthy=False, status="error", detail=str(e)
         )
 
+    try:
+        manifest_exists = manifest_store.exists()
+    except Exception as e:  # noqa: BLE001
+        log.warning("manifest 表检查异常: %s", e)
+        manifest_exists = False
+
     return HealthInfo(
         version=settings.app_version,
         data_root=str(settings.data_root),
-        manifest_exists=settings.manifest_path.exists(),
+        manifest_exists=manifest_exists,
         mineru=mineru_info,
     )

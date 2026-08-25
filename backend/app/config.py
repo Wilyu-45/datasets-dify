@@ -45,8 +45,6 @@ class Settings(BaseSettings):
     manual_fix_dirname: str = "manual_fix"
     logs_dirname: str = "logs"
 
-    manifest_filename: str = "manifest.xlsx"
-
     # ---- 行为 ----
     scan_chunk_size: int = 65536  # 64 KB
     # 扩展名按优先级排序：.pdf / .docx 最常用，放最前。
@@ -252,11 +250,22 @@ class Settings(BaseSettings):
     #   即使 Dify 拉图失败，content 里的 OSS URL 仍是永久的，召回时前端能直接拉。
     dify_skip_file_upload: bool = False
 
-    # ---- 文档元数据（Excel → Dify Metadata）----
-    # 文档元数据 Excel 文件路径（相对于 data_root 或绝对路径）。
-    # Excel 格式：第 1 行英文字段名，第 2 行中文列名（跳过），第 3 行起数据。
-    # 第 1 列为文件 stem（不含后缀），用于与 manifest / chunks 目录关联。
-    doc_metadata_excel_filename: str = "doc_metadata.xlsx"
+    # ---- 文档元数据（PostgreSQL doc_metadata 表 → Dify Metadata）----
+    # 元数据现存储于 PostgreSQL doc_metadata 表（见 app.db），
+    # 第 1 列（filename）为文件 stem（不含后缀），用于与 manifest / chunks 目录关联。
+
+    # ---- PostgreSQL（manifest / doc_metadata 持久化）----
+    # 连接信息可用 .env 或环境变量（前缀 RAG_）覆盖。
+    pg_host: str = "127.0.0.1"
+    pg_port: int = 5432
+    pg_dbname: str = "ragsystem"
+    pg_user: str = "postgres"
+    pg_password: str = "postgres"
+    # 连接池大小
+    pg_pool_min: int = 1
+    pg_pool_max: int = 10
+    # 获取连接的超时（秒）
+    pg_pool_timeout: float = 30.0
 
     # ---- 应用元数据 ----
     app_name: str = "RAG Batch Ingestion"
@@ -331,11 +340,19 @@ class Settings(BaseSettings):
 
     @property
     def doc_metadata_excel_path(self) -> Path:
-        return (self.data_root / self.doc_metadata_excel_filename).resolve()
+        """（已废弃）doc_metadata 已迁移至 PostgreSQL doc_metadata 表。
+
+        此属性仅为兼容旧调用保留，返回数据根目录；不再读写任何 Excel 文件。
+        """
+        return self.data_root.resolve()
 
     @property
     def manifest_path(self) -> Path:
-        return (self.data_root / self.manifest_filename).resolve()
+        """（已废弃）manifest 已迁移至 PostgreSQL manifest 表。
+
+        此属性仅为兼容旧调用保留，返回数据根目录；不再读写任何 Excel 文件。
+        """
+        return self.data_root.resolve()
 
     def ensure_dirs(self) -> None:
         """启动时创建所有数据目录（幂等）。"""

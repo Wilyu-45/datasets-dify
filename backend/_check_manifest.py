@@ -1,18 +1,16 @@
-"""Check manifest files against input/."""
-import openpyxl
+"""Check manifest (PostgreSQL) files against input/."""
 from pathlib import Path
 
+from app.services import manifest_store
+
 INPUT = Path(r"d:\programmtools\tools\ragsystem\data\input")
-wb = openpyxl.load_workbook(r"d:\programmtools\tools\ragsystem\data\manifest.xlsx", data_only=True)
-ws = wb.active
-headers = [c.value for c in ws[1]]
-fname_col = headers.index("文件名称")
+manifest = manifest_store.load()
 
 print("Checking manifest files against input/:")
 exist = 0
 missing = 0
-for row in ws.iter_rows(min_row=2, values_only=True):
-    fname = str(row[fname_col] or "").strip()
+for filename in manifest:
+    fname = str(filename or "").strip()
     if not fname:
         continue
     found = (INPUT / fname).exists()

@@ -1,11 +1,11 @@
 """E2E 验证：§3.3 自定义切分流程。
 
 场景：
-  1. 用户放入 18 列 Excel（11 用户 + 5 系统 + parse + chunks）
+  1. 用户写入 manifest 行（含 parse/chunks 列）
   2. 准备两个已解析文档（parsed/{stem}/）：
      - 文档 A：WST 809 风格（cover/toc/preface/body/appendix）
      - 文档 B：医院感染风格（cover + 直接第一章，无目录/前言）
-  3. 启动 → bootstrap 不动用户列
+  3. 启动 → bootstrap 初始化 PostgreSQL manifest 表
   4. 模拟「切分」按钮：调 chunker.chunk_parsed
   5. 验证：
        - chunks/{stem}/ 目录被创建
@@ -36,13 +36,7 @@ ROOT = Path("d:/programmtools/tools/ragsystem")
 DATA = ROOT / "data"
 PARSED = DATA / "parsed"
 CHUNKS = DATA / "chunks"
-MANIFEST = DATA / "manifest.xlsx"
-
-BACKUP = DATA / "manifest.xlsx.bak"
-if BACKUP.exists():
-    BACKUP.unlink()
-if MANIFEST.exists():
-    shutil.copy2(MANIFEST, BACKUP)
+MANIFEST = DATA / "manifest.xlsx"  # 兼容占位：manifest 已迁移 PostgreSQL，此路径不再读写
 
 # 本测试创建的两个 stem（仅清掉这两个子目录，不动其它真实数据）
 TEST_STEMS = ("国标-W809", "规范-医院感染")
@@ -58,10 +52,14 @@ for stem in TEST_STEMS:
 
 # ============ 清理函数：atexit 兜底，即使断言失败也恢复 manifest ============
 def _cleanup() -> None:
-    """恢复 manifest + 清掉本测试创建的子目录，不动其它真实数据。"""
-    # 恢复 manifest
-    if BACKUP.exists():
-        shutil.move(BACKUP, MANIFEST)
+    """恢复 manifest 表（PostgreSQL）+ 清掉本测试创建的子目录，不动其它真实数据。"""
+    # 恢复 manifest 表
+    try:
+        manifest_store.clear()
+        if saved_manifest:
+            manifest_store.bulk_upsert(saved_manifest)
+    except Exception:
+        pass
     # 清掉本测试创建的 chunks 子目录
     for stem in TEST_STEMS:
         test_chunks_dir = CHUNKS / stem
@@ -75,43 +73,7 @@ def _cleanup() -> None:
 import atexit
 atexit.register(_cleanup)
 
-# ============ 1) 准备用户的 18 列 Excel ============
-
-from openpyxl import Workbook
-
-wb = Workbook()
-ws = wb.active
-ws.title = "Sheet1"
-headers = [
-    # 11 用户列
-    "序号", "文件名称", "一级分类", "二级分类", "关键词标签",
-    "适用科室", "生效日期", "导入情况", "处理情况", "校对", "处理说明",
-    # 5 系统列
-    "status", "md5", "create_time", "update_time", "error_msg",
-    # §3.2 解析列
-    "parse",
-    # §3.3 切分列
-    "chunks",
-]
-ws.append(headers)
-# 文档 A：WST 809 风格（带 cover/toc/preface/appendix）
-ws.append([
-    1, "国标-W809", "国标", "视觉设计", "WST 809", "全科", "2022-01-01",
-    "已移入待处理", "已扫描", "", "WST 809 风格",
-    "parsing_done", "md5_w809", "2026-07-30 10:00:00", "2026-07-30 10:00:00", "",
-    str(PARSED / "国标-W809"),
-    "",  # chunks 空（裸 stem 或空字符串）
-])
-# 文档 B：医院感染风格（cover + 直接第一章，无目录/前言）
-ws.append([
-    2, "规范-医院感染", "规范", "院感", "暴发", "院感科", "2009-10-01",
-    "已移入待处理", "已扫描", "", "医院感染风格",
-    "parsing_done", "md5_yqgr", "2026-07-30 10:00:00", "2026-07-30 10:00:00", "",
-    str(PARSED / "规范-医院感染"),
-    "",  # chunks 空
-])
-wb.save(MANIFEST)
-wb.close()
+# ============ 1) 写入用户 manifest 行（见下方 PostgreSQL 初始化段） ============
 
 # ============ 2) 准备两个已解析文档（v2 + images）============
 
@@ -220,20 +182,35 @@ os.environ.setdefault("RAG_DATA_ROOT", str(DATA))
 from app import config as cfg_mod
 importlib.reload(cfg_mod)
 settings = cfg_mod.settings
+from app.models.schemas import ManifestRow
 from app.services import chunker, manifest_store
 chunker.settings = settings
 
+# bootstrap：PostgreSQL manifest 表结构固定（幂等建表）
 manifest_store.bootstrap(DATA)
 
-# 验证列数 = 18
-wb2 = __import__("openpyxl").load_workbook(MANIFEST, read_only=True)
-ws2 = wb2.active
-hdr = [str(c).strip() if c else "" for c in next(ws2.iter_rows(min_row=1, max_row=1, values_only=True))]
-wb2.close()
-assert len(hdr) == 18, f"列数应为 18，实际 {len(hdr)}"
-assert hdr[-1] == "chunks", f"最后一列应为 chunks，实际 {hdr[-1]}"
-assert hdr[-2] == "parse", f"倒数第二列应为 parse，实际 {hdr[-2]}"
-print(f"✓ bootstrap 补列成功（18 列，最后两列=parse/chunks）")
+# 备份现有 manifest 表（测试结束后恢复）
+saved_manifest = list(manifest_store.load().values())
+manifest_store.clear()
+
+# 写入用户 manifest 行（含 parse/chunks 列）
+manifest_store.bulk_upsert([
+    ManifestRow(
+        seq=1, filename="国标-W809", category_l1="国标", category_l2="视觉设计",
+        keywords="WST 809", department="全科", effective_date="2022-01-01",
+        process_note="WST 809 风格", status="parsing_done", md5="md5_w809",
+        create_time="2026-07-30 10:00:00", update_time="2026-07-30 10:00:00",
+        parse=str(PARSED / "国标-W809"), chunks="",
+    ),
+    ManifestRow(
+        seq=2, filename="规范-医院感染", category_l1="规范", category_l2="院感",
+        keywords="暴发", department="院感科", effective_date="2009-10-01",
+        process_note="医院感染风格", status="parsing_done", md5="md5_yqgr",
+        create_time="2026-07-30 10:00:00", update_time="2026-07-30 10:00:00",
+        parse=str(PARSED / "规范-医院感染"), chunks="",
+    ),
+])
+print(f"✓ manifest 表（PostgreSQL）已写入 2 条用户记录")
 
 # ============ 4) 模拟「切分」按钮 ============
 

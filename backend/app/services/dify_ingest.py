@@ -327,7 +327,7 @@ def _cleanup_after_upload(chunks_dir: Path, was_copied: bool, success: bool) -> 
 
 def _load_manifest_index() -> Dict[str, Any]:
     """读取 manifest（dict 形式），用于按 stem 关联 dify 状态。"""
-    return manifest_store.load(settings.manifest_path)
+    return manifest_store.load()
 
 
 def upload_one_doc(
@@ -963,7 +963,7 @@ def upload_all_docs(
     # 3) 批量写 manifest
     if rows_to_write:
         try:
-            manifest_store.bulk_upsert(settings.manifest_path, rows_to_write)
+            manifest_store.bulk_upsert(rows_to_write)
         except Exception as e:  # noqa: BLE001
             log.exception("dify manifest 写盘失败")
             # 不抛，避免已经入库的文档被回滚；只记录

@@ -1,7 +1,11 @@
-"""Reset manifest + clean parsed for Jining PDF."""
+"""Reset manifest (PostgreSQL) + clean parsed for Jining PDF."""
 import shutil
+import sys
 from pathlib import Path
-from openpyxl import load_workbook
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+from app.services import manifest_store
 
 # 1. Clean parsed dir
 parsed_dir = Path(r"D:\programmtools\tools\ragsystem\data\parsed\济宁市医疗卫生机构病死婴幼儿遗体处理暂行办法(1)")
@@ -11,24 +15,19 @@ if parsed_dir.exists():
 else:
     print(f"not exists: {parsed_dir}")
 
-# 2. Reset manifest parse column
-manifest_path = Path(r"D:\programmtools\tools\ragsystem\data\manifest.xlsx")
-wb = load_workbook(manifest_path)  # NOT read_only
-ws = wb.active
-headers = {cell.value: cell.column for cell in ws[1]}
-parse_col = headers.get("parse")
-status_col = headers.get("status")
-print(f"parse_col={parse_col}, status_col={status_col}")
-
-for row in ws.iter_rows(min_row=2):
-    if row[headers["文件名称"]-1].value and "济宁" in str(row[headers["文件名称"]-1].value):
-        old_parse = row[parse_col-1].value
-        old_status = row[status_col-1].value
-        row[parse_col-1].value = ""
-        row[status_col-1].value = "pending"
+# 2. Reset manifest parse column (PostgreSQL)
+manifest_store.bootstrap()
+manifest = manifest_store.load()
+for filename, row in manifest.items():
+    if filename and "济宁" in filename:
+        old_parse = row.parse
+        old_status = row.status
+        row.parse = ""
+        row.status = "pending"
+        row.update_time = manifest_store.now_iso()
+        manifest_store.upsert(row)
         print(f"reset Jining: parse={old_parse!r} → '', status={old_status!r} → pending")
         break
 else:
     print("Jining row not found")
-wb.save(manifest_path)
-print("manifest saved")
+print("manifest updated (PostgreSQL)")

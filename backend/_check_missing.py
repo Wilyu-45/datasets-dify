@@ -3,7 +3,7 @@ import os, sys
 from pathlib import Path
 
 # 强制 UTF-8 输出
-sys.stdout.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(r"d:\programmtools\tools\ragsystem\data\转\手卫生")
 PENDING = Path(r"d:\programmtools\tools\ragsystem\data\pending")
@@ -45,29 +45,17 @@ for f in all_files:
 
 print(f"\n缺失: {len(missing)} 个文件")
 
-# 4) 也检查 manifest 中的文件
-import openpyxl
-MANIFEST = Path(r"d:\programmtools\tools\ragsystem\data\manifest.xlsx")
-wb = openpyxl.load_workbook(str(MANIFEST), data_only=True)
-ws = wb.active
-headers = [c.value for c in ws[1]]
-fname_col = headers.index("文件名称") if "文件名称" in headers else None
+# 4) 也检查 manifest（PostgreSQL）中的文件
+from app.services import manifest_store
 
-if fname_col:
-    manifest_files = set()
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        fn = row[fname_col]
-        if fn and str(fn).strip():
-            manifest_files.add(str(fn).strip())
-    print(f"\n=== manifest 中有 {len(manifest_files)} 个文件 ===")
-    
-    # 检查哪些手卫生文件不在 manifest 中
-    print("\n=== 不在 manifest 中的手卫生文件 ===")
-    for f in all_files:
-        if f.name not in manifest_files:
-            # 也检查 stem 匹配
-            stem_in_manifest = any(f.stem in mf or mf in f.stem for mf in manifest_files)
-            if not stem_in_manifest:
-                print(f"  NOT IN MANIFEST: {f.relative_to(ROOT)}")
+manifest = manifest_store.load()
+manifest_files = set(manifest.keys())
+print(f"\n=== manifest 中有 {len(manifest_files)} 个文件 ===")
 
-wb.close()
+print("\n=== 不在 manifest 中的手卫生文件 ===")
+for f in all_files:
+    if f.name not in manifest_files:
+        # 也检查 stem 匹配
+        stem_in_manifest = any(f.stem in mf or mf in f.stem for mf in manifest_files)
+        if not stem_in_manifest:
+            print(f"  NOT IN MANIFEST: {f.relative_to(ROOT)}")

@@ -1,15 +1,13 @@
-"""文档元数据管理（excel.txt → Dify Metadata API）。
+"""文档元数据管理（doc_metadata 表 → Dify Metadata API）。
 
-从 Excel 文件读取文档元数据（按文件名 stem 关联），在 Dify 入库时：
+历史：文档元数据原先以 Excel（doc_metadata.xlsx，含英文字段名首行 + 中文列名第二行）
+存储，现已统一迁移到 PostgreSQL 的 doc_metadata 表（表结构见 app.db.DOC_METADATA_TABLE_SQL）。
+
+在 Dify 入库时：
     1. 确保知识库中存在对应的元数据字段（首次运行时自动创建）
     2. 文档入库成功后，批量设置该文档的元数据值
 
-Excel 格式约定（excel.txt）：
-    - 第 1 行：英文字段名（doc_type_primary, doc_type_secondary, ...）
-    - 第 2 行：中文列名（类型-一级, 类型-二级, ...）— 仅作展示，代码用英文列名
-    - 第 3 行起：数据行，第 1 列为文件 stem（不含后缀）
-
-元数据字段定义：
+doc_metadata 表字段定义：
     doc_type_primary    → string  (类型-一级)
     doc_type_secondary  → string  (类型-二级)
     topic_primary       → string  (主题-一级)
@@ -27,10 +25,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from openpyxl import load_workbook
-
+from app import db
 from app.config import settings
 
 log = logging.getLogger("ragsystem.doc_metadata")
@@ -39,7 +36,7 @@ log = logging.getLogger("ragsystem.doc_metadata")
 # ============ 字段定义 ============
 
 # 英文字段名 → Dify 元数据 type
-# 注意：effective_date 用 string 而非 time，因为用户 Excel 里有 "无" 这种非日期值
+# 注意：effective_date 用 string 而非 time，因为用户数据里有 "无" 这种非日期值
 METADATA_FIELD_DEFS: Dict[str, str] = {
     "doc_type_primary": "string",
     "doc_type_secondary": "string",
@@ -54,86 +51,85 @@ METADATA_FIELD_DEFS: Dict[str, str] = {
     "status": "string",
 }
 
+# doc_metadata 表的列（filename 为主键，其余与 METADATA_FIELD_DEFS 对应）
+DOC_METADATA_FIELDS = list(METADATA_FIELD_DEFS.keys())
 
-# ============ Excel 读取 ============
+
+# ============ PostgreSQL 读取 / 写入 ============
 
 
 def load_doc_metadata(excel_path: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
-    """读取文档元数据 Excel。
+    """读取文档元数据（PostgreSQL doc_metadata 表）。
 
     Returns:
         {stem: {field_name: value, ...}, ...}
-        stem = 第一列值（strip 后），field_name = 英文列名
+        stem = 文件名（不含后缀），field_name = 英文字段名
     """
-    path = Path(excel_path or settings.doc_metadata_excel_path)
-    if not path.exists():
-        log.warning("文档元数据 Excel 不存在: %s", path)
-        return {}
-
-    wb = load_workbook(str(path), read_only=True, data_only=True)
-    try:
-        ws = wb.active
-        rows_iter = ws.iter_rows(values_only=True)
-
-        # 第 1 行：英文字段名
-        header_row = next(rows_iter, None)
-        if header_row is None:
-            return {}
-        col_names = [str(c).strip() if c else "" for c in header_row]
-        # 第一列是 stem（可能为空），至少需要有其他列
-        if len(col_names) < 2:
-            return {}
-
-        # 第 2 行是中文列名，跳过
-        try:
-            next(rows_iter)
-        except StopIteration:
-            return {}
-
-        # 数据行
-        result: Dict[str, Dict[str, Any]] = {}
-        for raw in rows_iter:
-            if raw is None or all(c is None or str(c).strip() == "" for c in raw):
-                continue
-            # 第 1 列 = stem
-            stem_val = raw[0]
-            if stem_val is None:
-                continue
-            stem = str(stem_val).strip()
-            if not stem:
-                continue
-
-            row_data: Dict[str, Any] = {}
-            for i, col_name in enumerate(col_names):
-                if i >= len(raw):
-                    break
-                if i == 0:
-                    continue  # 跳过 stem 列
-                if not col_name or col_name not in METADATA_FIELD_DEFS:
-                    continue
-                val = raw[i]
-                if val is None or str(val).strip() == "":
-                    continue
-                # 按字段类型转换
-                field_type = METADATA_FIELD_DEFS[col_name]
-                if field_type == "number":
-                    try:
-                        row_data[col_name] = float(val) if not isinstance(val, (int, float)) else val
-                    except (TypeError, ValueError):
-                        continue
-                else:
-                    row_data[col_name] = str(val).strip()
-
-            if row_data:
-                result[stem] = row_data
-
-        log.info(
-            "文档元数据 Excel 加载完成: path=%s docs=%d",
-            path, len(result),
+    with db.get_conn() as conn:
+        cur = conn.execute(
+            f"SELECT filename, {', '.join(DOC_METADATA_FIELDS)} FROM doc_metadata"
         )
-        return result
-    finally:
-        wb.close()
+        records = cur.fetchall()
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for rec in records:
+        stem = (rec.get("filename") or "").strip()
+        if not stem:
+            continue
+        row_data: Dict[str, Any] = {}
+        for field in DOC_METADATA_FIELDS:
+            val = rec.get(field)
+            if val is None or str(val).strip() == "":
+                continue
+            if METADATA_FIELD_DEFS[field] == "number":
+                try:
+                    row_data[field] = float(val) if not isinstance(val, (int, float)) else val
+                except (TypeError, ValueError):
+                    continue
+            else:
+                row_data[field] = str(val).strip()
+        if row_data:
+            result[stem] = row_data
+
+    log.info("文档元数据加载完成: docs=%d", len(result))
+    return result
+
+
+def save_doc_metadata(rows: Dict[str, Dict[str, Any]]) -> int:
+    """批量写入文档元数据（upsert，按 filename 主键）。
+
+    Args:
+        rows: {stem: {field_name: value, ...}, ...}
+
+    Returns:
+        写入行数
+    """
+    if not rows:
+        return 0
+
+    columns = ["filename"] + DOC_METADATA_FIELDS
+    sql = f"""
+        INSERT INTO doc_metadata ({", ".join(columns)})
+        VALUES ({", ".join("%(" + c + ")s" for c in columns)})
+        ON CONFLICT (filename) DO UPDATE SET
+            {", ".join(f"{c} = EXCLUDED.{c}" for c in DOC_METADATA_FIELDS)}
+    """
+    params = []
+    for stem, values in rows.items():
+        param = {"filename": stem}
+        for field in DOC_METADATA_FIELDS:
+            val = values.get(field)
+            if val is None or str(val).strip() == "":
+                param[field] = None
+            else:
+                param[field] = val
+        params.append(param)
+
+    with db.get_conn() as conn:
+        conn.executemany(sql, params)
+        conn.commit()
+    log.info("文档元数据已写入: docs=%d", len(params))
+    return len(params)
 
 
 # ============ Dify 元数据字段同步 ============
@@ -143,89 +139,42 @@ def ensure_metadata_fields(client: Any) -> Dict[str, Dict[str, Any]]:
     """确保 Dify 知识库中存在所有元数据字段。
 
     已存在的字段跳过（不重复创建），缺失的自动创建。
-
-    Returns:
-        {field_name: {id, name, type}, ...}  — 所有字段的 Dify 映射
     """
-    from app.services.dify_uploader import DifyError
-
-    # 1) 获取已有字段
+    field_map: Dict[str, Dict[str, Any]] = {}
     existing = client.list_metadata_fields()
-    existing_by_name: Dict[str, Dict[str, Any]] = {
-        f.get("name", ""): f for f in existing if f.get("name")
-    }
+    existing_by_name = {f.get("name"): f for f in existing.get("data", [])}
 
-    result: Dict[str, Dict[str, Any]] = {}
-
-    # 2) 逐个检查 / 创建
-    for field_name, field_type in METADATA_FIELD_DEFS.items():
-        if field_name in existing_by_name:
-            result[field_name] = existing_by_name[field_name]
-            log.debug("元数据字段已存在: %s (id=%s)", field_name, result[field_name].get("id"))
+    for name, field_type in METADATA_FIELD_DEFS.items():
+        if name in existing_by_name:
+            field_map[name] = existing_by_name[name]
             continue
-        try:
-            created = client.create_metadata_field(field_name, field_type)
-            result[field_name] = created
-            log.info(
-                "元数据字段创建成功: %s (id=%s, type=%s)",
-                field_name, created.get("id"), created.get("type"),
-            )
-        except DifyError as e:
-            # 400 "already exists" → 并发创建场景，重新获取
-            if e.status_code == 400 and "already exists" in (e.body or "").lower():
-                fields = client.list_metadata_fields()
-                for f in fields:
-                    if f.get("name") == field_name:
-                        result[field_name] = f
-                        break
-                if field_name not in result:
-                    log.error("元数据字段创建报已存在但列表找不到: %s", field_name)
-            else:
-                log.error("元数据字段创建失败: %s — %s", field_name, e)
+        created = client.create_metadata_field(name=name, type=field_type)
+        field_map[name] = created
+        log.info("已创建 Dify 元数据字段: %s (%s)", name, field_type)
 
-    return result
-
-
-# ============ 文档元数据设置 ============
+    return field_map
 
 
 def build_metadata_operation(
-    document_id: str,
     stem: str,
+    doc_metadata_row: Dict[str, Any],
     field_map: Dict[str, Dict[str, Any]],
-    doc_meta: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """为单个文档构建 metadata batch update 的 operation_data 项。
 
     Args:
-        document_id: Dify 文档 ID
-        stem: 文档 stem（用于在 doc_meta 中查找）
-        field_map: ensure_metadata_fields 返回的 {field_name: {id, name, type}}
-        doc_meta: load_doc_metadata 返回的 {stem: {field: value}}
-
-    Returns:
-        operation_data 的一项，或 None（无匹配元数据时）
+        stem: 文档文件名（不含后缀）
+        doc_metadata_row: {field_name: value}（来自 doc_metadata 表）
+        field_map: {field_name: Dify metadata field dict}
     """
-    meta_values = doc_meta.get(stem)
-    if not meta_values:
-        return None
-
-    metadata_list: List[Dict[str, Any]] = []
-    for field_name, value in meta_values.items():
-        field_info = field_map.get(field_name)
-        if not field_info:
+    op_data: Dict[str, Any] = {}
+    for field, value in doc_metadata_row.items():
+        meta_field = field_map.get(field)
+        if meta_field is None:
             continue
-        metadata_list.append({
-            "id": field_info.get("id", ""),
-            "name": field_name,
-            "value": value,
-        })
-
-    if not metadata_list:
-        return None
+        op_data[meta_field["name"]] = value
 
     return {
-        "document_id": document_id,
-        "metadata_list": metadata_list,
-        "partial_update": True,
+        "doc_metadata_name": stem,
+        "operation_data": op_data,
     }

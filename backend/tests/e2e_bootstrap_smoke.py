@@ -1,8 +1,8 @@
-"""E2E 验证：用户放入 11 列 Excel（文件名无扩展名）→ 启动 bootstrap（不移动）→ 扫描按钮 → 自动补全扩展名并更新 manifest。"""
+"""E2E 验证：用户写入 manifest（PostgreSQL，文件名无扩展名）→ 启动 bootstrap（不移动）→ 扫描按钮 → 自动补全扩展名并更新 manifest。"""
 
 import importlib
 import logging
-import shutil
+import os
 import sys
 from pathlib import Path
 
@@ -13,14 +13,21 @@ ROOT = Path("d:/programmtools/tools/ragsystem")
 DATA = ROOT / "data"
 INPUT = DATA / "input"
 PENDING = DATA / "pending"
-MANIFEST = DATA / "manifest.xlsx"
 
-# 备份现有 manifest（如果存在）
-BACKUP = DATA / "manifest.xlsx.bak"
-if BACKUP.exists():
-    BACKUP.unlink()
-if MANIFEST.exists():
-    shutil.copy2(MANIFEST, BACKUP)
+# 备份现有 manifest 表（PostgreSQL），测试结束后恢复
+sys.path.insert(0, str(ROOT / "backend"))
+os.environ.setdefault("RAG_DATA_ROOT", str(DATA))
+
+from app import config as cfg_mod
+importlib.reload(cfg_mod)
+settings = cfg_mod.settings
+from app.models.schemas import ManifestRow
+from app.services import scanner, manifest_store
+scanner.settings = settings
+
+manifest_store.bootstrap(DATA)
+saved_manifest = list(manifest_store.load().values())
+manifest_store.clear()
 
 # 清空 input/pending
 for f in INPUT.iterdir():
@@ -30,51 +37,25 @@ for f in PENDING.iterdir():
     if f.name != ".gitkeep":
         f.unlink()
 
-# 1) 模拟用户放入一个 11 列的 Excel（文件名均无扩展名）
-from openpyxl import Workbook
-
-wb = Workbook()
-ws = wb.active
-ws.title = "Sheet1"
-headers = [
-    "序号", "文件名称", "一级分类", "二级分类", "关键词标签",
-    "适用科室", "生效日期", "导入情况", "处理情况", "校对", "处理说明",
-]
-ws.append(headers)
-# 关键：用户填的「文件名称」无扩展名
+# 1) 模拟用户写入 manifest 行（文件名称均无扩展名）
 data_rows = [
-    [1, "国标-001", "国标", "医用氧舱", "高压氧", "高压氧科", "2006-04-01", "", "", "", "用户原备注"],
-    [2, "团标-002", "团标", "康复", "智能", "康复科", "2024-01-01", "", "", "", ""],
-    [3, "新规-003", "规范", "院内", "院感", "院感科", "2025-06-01", "", "", "", "重要"],
-    [4, "已处理-004",  "规范", "院内", "已导入", "院感科", "2025-06-01", "已移入待处理", "已扫描", "", "上次扫描已处理"],
-    [5, "精确匹配-005", "国标", "测试", "ext", "测试科", "2025-01-01", "", "", "", "文件名带扩展名"],
+    ManifestRow(seq=1, filename="国标-001", category_l1="国标", category_l2="医用氧舱",
+                keywords="高压氧", department="高压氧科", effective_date="2006-04-01", process_note="用户原备注"),
+    ManifestRow(seq=2, filename="团标-002", category_l1="团标", category_l2="康复",
+                keywords="智能", department="康复科", effective_date="2024-01-01"),
+    ManifestRow(seq=3, filename="新规-003", category_l1="规范", category_l2="院内",
+                keywords="院感", department="院感科", effective_date="2025-06-01", process_note="重要"),
+    ManifestRow(seq=4, filename="已处理-004", category_l1="规范", category_l2="院内",
+                keywords="已导入", department="院感科", effective_date="2025-06-01",
+                import_status="已移入待处理", process_status="已扫描", process_note="上次扫描已处理"),
+    ManifestRow(seq=5, filename="精确匹配-005", category_l1="国标", category_l2="测试",
+                keywords="ext", department="测试科", effective_date="2025-01-01", process_note="文件名带扩展名"),
 ]
-for r in data_rows:
-    ws.append(r)
-wb.save(MANIFEST)
-wb.close()
+manifest_store.bulk_upsert(data_rows)
 
-# 2) 启动 bootstrap
-sys.path.insert(0, str(ROOT / "backend"))
-import os
-os.environ.setdefault("RAG_DATA_ROOT", str(DATA))
-
-from app import config as cfg_mod
-importlib.reload(cfg_mod)
-settings = cfg_mod.settings
-from app.services import scanner, manifest_store
-scanner.settings = settings
-
+# 2) 启动 bootstrap（PG 表结构固定，幂等）
 manifest_store.bootstrap(DATA)
-
-# 验证列数 = 17（11 用户 + 5 系统 + 1 parse，§3.2 新增 parse 列）
-wb2 = __import__("openpyxl").load_workbook(MANIFEST, read_only=True)
-ws2 = wb2.active
-hdr = [str(c).strip() if c else "" for c in next(ws2.iter_rows(min_row=1, max_row=1, values_only=True))]
-wb2.close()
-assert len(hdr) == 17
-assert hdr[-1] == "parse", f"最后一列应为 parse，实际 {hdr[-1]}"
-print("✓ bootstrap 补列成功（11→17，最后一列=parse）")
+print("✓ bootstrap 完成（PostgreSQL manifest 表结构固定）")
 
 # 3) 模拟用户放入文件：扩展名不同，覆盖常见情况
 (INPUT / "国标-001.pdf").write_bytes(b"PDF content for guobiao")
@@ -92,7 +73,7 @@ report = scanner.scan_and_stage(dry_run=False)
 print(f"✓ 扫描完成: staged={report.staged}, new={report.new}, skipped={report.skipped_done}, missing={report.missing_on_disk}")
 
 # 5) 验证 manifest 的 filename 字段被更新为带扩展名的真实文件名
-manifest = manifest_store.load(MANIFEST)
+manifest = manifest_store.load()
 
 # 国标-001: 无扩展名 → 应补为 .pdf
 assert "国标-001.pdf" in manifest, f"应存在 '国标-001.pdf'，实际 keys: {list(manifest.keys())}"
@@ -143,16 +124,18 @@ assert second.staged == 0, f"第二次应 staged=0, 实际={second.staged}"
 # 应有 3 个已导入 + 1 个 MISSING（团标-002）+ 1 个已处理（已处理-004）
 print(f"✓ 第二次扫描幂等: staged={second.staged}, skipped={second.skipped_done}, missing={second.missing_on_disk}")
 
-# 恢复
-if BACKUP.exists():
-    shutil.move(BACKUP, MANIFEST)
+# 恢复 manifest 表
+manifest_store.clear()
+if saved_manifest:
+    manifest_store.bulk_upsert(saved_manifest)
 
 # 清掉测试文件
 for d in (PENDING,):
     for f in d.iterdir():
         if f.name not in (".gitkeep",) and (f.name.startswith("国标") or f.name.startswith("新规") or f.name.startswith("精确匹配") or f.name.startswith("歧义")):
             if f.is_dir():
-                __import__("shutil").rmtree(f, ignore_errors=True)
+                import shutil
+                shutil.rmtree(f, ignore_errors=True)
             else:
                 f.unlink()
 for f in INPUT.iterdir():

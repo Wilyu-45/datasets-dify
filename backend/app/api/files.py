@@ -28,7 +28,7 @@ def list_files(dir: Literal["input", "pending"]) -> List[FileItem]:
     # 读 manifest，filename → status
     manifest = {}
     try:
-        manifest = manifest_store.load(settings.manifest_path)
+        manifest = manifest_store.load()
     except Exception:  # noqa: BLE001
         manifest = {}
 

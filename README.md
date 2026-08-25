@@ -1,6 +1,6 @@
 # RAG 批量入库系统
 
-面向企业知识库的 **文档批量入库工具**：将 PDF / DOCX / 扫描件等文档，经 **扫描 → MinerU 解析 → 多策略切分 → Dify 入库** 全流程自动化，构建高质量 RAG 知识库。内置 **8 种切分策略**，支持单文件上传即点即用与批量 Excel 流程。
+面向企业知识库的 **文档批量入库工具**：将 PDF / DOCX / 扫描件等文档，经 **扫描 → MinerU 解析 → 多策略切分 → Dify 入库** 全流程自动化，构建高质量 RAG 知识库。内置 **8 种切分策略**，支持单文件上传即点即用与批量台账流程。
 
 ## 核心功能
 
@@ -8,7 +8,7 @@
 将 **扫描 → 解析 → 切分 → Dify 入库** 四步串成一条流水线，前端一键触发。每步可独立启用 / 禁用，支持 `dry_run`（纯本地预检）、`stop_on_error`（失败即停）、`target_stems`（单文件白名单，配合单文件上传只处理当前文件）。
 
 ### 3.1 文件扫描（Scan）
-扫描 `data/input` 目录，识别待处理文档，生成并维护 `data/manifest.xlsx`（文件清单台账），支持增量更新。
+扫描 `data/input` 目录，识别待处理文档，维护 PostgreSQL `manifest` 表（文件清单台账），支持增量更新。
 
 ### 3.2 MinerU 解析（Parse）
 调用本地部署的 **MinerU API**（`POST /file_parse`）解析文档：
@@ -45,7 +45,7 @@
 
 ## 技术栈
 
-- **后端**：Python 3 + FastAPI + Pydantic v2 + openpyxl + oss2（阿里云 OSS）+ PyMuPDF + httpx
+- **后端**：Python 3 + FastAPI + Pydantic v2 + psycopg3（PostgreSQL）+ oss2（阿里云 OSS）+ PyMuPDF + httpx
 - **前端**：React 18 + TypeScript + Vite + Ant Design 5
 - **解析引擎**：MinerU（本地 FastAPI 服务，hybrid-engine / vlm-engine）
 - **知识库**：Dify（Cloud API / Knowledge API）
@@ -80,7 +80,7 @@ ragsystem/
 │   ├── input/                  # 待处理文档
 │   ├── parsed/                 # MinerU 解析产物
 │   ├── chunks/                 # 切分产物
-│   └── manifest.xlsx           # 文件清单台账
+│   └── ...                     # 文件清单台账存于 PostgreSQL manifest 表
 ├── run_dev.ps1                 # Windows 开发启动脚本
 └── README.md
 ```
@@ -156,7 +156,7 @@ npm run dev        # 默认 http://localhost:5173
 | 切分策略 | `GET /api/chunk/strategies` | 获取可用策略列表 |
 | Dify | `POST /api/dify/upload` | 上传 chunks 到 Dify 知识库 |
 | 上传 | `POST /api/upload` | 单文件上传 + 一键入库 |
-| 台账 | `GET/POST /api/manifest` | manifest.xlsx 清单读写 |
+| 台账 | `GET/POST /api/manifest` | manifest 清单读写（PostgreSQL） |
 | 文件 | `GET /api/files/...` | 切分 / 解析产物文件访问 |
 | 健康 | `GET /api/health` | 健康检查 |
 
@@ -172,6 +172,7 @@ data/
 ├── pending/     # 已扫描待解析
 ├── parsed/      # MinerU 解析产物（每文档一文件夹）
 ├── chunks/      # 切分产物（chunk 明细 + 报告）
-├── logs/        # 运行日志
-└── manifest.xlsx # 文件清单台账
+└── logs/        # 运行日志
+
+文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` 表），应用启动时自动建表，无需手工维护 Excel。
 ```

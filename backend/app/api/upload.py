@@ -4,14 +4,14 @@
         1 个失败不影响其他。
 
 业务背景：
-  用户需要测试一个文件能否顺利入库，无需先把文件信息写进 manifest.xlsx。
-  之前流程：input/ 放文件 → manifest.xlsx 加行 → scan → parse → chunk → dify。
-  痛点：测试一个文件要改 Excel，繁琐。
+  用户需要测试一个文件能否顺利入库，无需先把文件信息写进 manifest。
+  之前流程：input/ 放文件 → manifest 加行 → scan → parse → chunk → dify。
+  痛点：测试一个文件要手动改 manifest 记录，繁琐。
 
 新流程（单文件上传 + 一键全流程）：
   1. 前端选文件 → POST /api/upload/single (multipart/form-data)
   2. 后端把文件保存到 data/single_uploads/{stem}/source.{ext}
-  3. 在 manifest.xlsx 追加一行（filename 字段 = 原文件名，import_status="已上传"）
+  3. 在 manifest 表插入一行（filename 字段 = 原文件名，import_status="已上传"）
   4. 把文件从 single_uploads/ 移到 input/ 等待 scan 自动处理
   5. 同步触发一次 scan + parse + chunk + dify 流水线（仅限该文件）
   6. 返回 PipelineReport，前端展示各阶段结果
@@ -332,7 +332,7 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
         process_note=f"上传，大小 {total} 字节",
     )
     try:
-        manifest_store.upsert(settings.manifest_path, new_row)
+        manifest_store.upsert(new_row)
         log.info(
             "save_and_stage: manifest row added for %s",
             saved_filename,
@@ -374,14 +374,14 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
         return {"ok": False, "error": f"移入 pending/ 失败: {e}", "filename": saved_filename}
 
     # 4) 更新 manifest 的 import_status 为"已移入待处理"
-    updated_row = manifest_store.load(settings.manifest_path).get(saved_filename)
+    updated_row = manifest_store.load().get(saved_filename)
     if updated_row:
         updated_row = updated_row.model_copy(update={
             "import_status": "已移入待处理",
             "process_status": "已移入待处理",
             "update_time": _now_iso(),
         })
-        manifest_store.upsert(settings.manifest_path, updated_row)
+        manifest_store.upsert(updated_row)
 
     return {
         "ok": True,
@@ -408,7 +408,7 @@ async def post_upload_single(
     流程：
         1. 保存文件到 data/single_uploads/{stem}/{stem}{ext}
         2. 算 MD5
-        3. 在 manifest.xlsx 追加一行（import_status="已上传"）
+        3. 在 manifest 表插入一行（import_status="已上传"）
         4. 把文件移动到 pending/ 等待 parse 直接读取
         5. （可选）触发全流程：parse → chunk → dify（仅限该文件）
         6. 返回结果

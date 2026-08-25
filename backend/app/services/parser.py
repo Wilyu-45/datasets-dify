@@ -1,6 +1,6 @@
 """plan.md §3.2 — 调用 MinerU API 解析。
 
-核心流程（以 manifest.xlsx + pending/ 为主线）：
+核心流程（以 manifest 表 + pending/ 为主线）：
     1. 加载 manifest；筛选「import_status 非空 + parse 列为空」的行
        —— 即：已扫描移入待处理、但尚未解析。
     2. 对每行：
@@ -181,7 +181,7 @@ def _sync_manifest_filename(
     后续没有 pending 文件它会一直被 _resolve_pending_path 返回 None，自然被跳过。
     """
     new_row = row.model_copy(update={"filename": new_filename})
-    manifest_store.upsert(settings.manifest_path, new_row)
+    manifest_store.upsert(new_row)
     log.info(
         "manifest filename 已同步",
         extra={
@@ -328,7 +328,7 @@ def parse_pending(
 
     client = client or MinerUClient()
 
-    manifest: Dict[str, ManifestRow] = manifest_store.load(settings.manifest_path)
+    manifest: Dict[str, ManifestRow] = manifest_store.load()
 
     # ★ target_stems 白名单：转 set 提高查找效率
     target_stem_set: Optional[set] = (
@@ -697,4 +697,4 @@ def _write_manifest_row(
     update_kwargs["error_msg"] = err
 
     new_row = row.model_copy(update=update_kwargs)
-    manifest_store.upsert(settings.manifest_path, new_row)
+    manifest_store.upsert(new_row)
