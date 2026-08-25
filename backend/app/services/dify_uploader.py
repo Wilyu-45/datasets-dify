@@ -545,6 +545,39 @@ class DifyClient:
         result["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
         return result
 
+    def list_datasets(
+        self,
+        *,
+        page: int = 1,
+        limit: int = 100,
+        keyword: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """GET /datasets — 列出当前 API Key 可见的知识库（供用户选择目标知识库）。
+
+        Dify 分页：page / limit（上限 100）。返回
+        ``{"data": [Dataset, ...], "has_more": bool, "total": int, "page": int}``。
+        Dataset 主要字段：``id / name / description / permission /
+        indexing_technique / document_count / created_at / updated_at``。
+        """
+        params: Dict[str, Any] = {"page": page, "limit": limit}
+        if keyword:
+            params["keyword"] = keyword
+
+        def _do() -> Dict[str, Any]:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.get(
+                    f"{self.api_url}/datasets",
+                    headers=self._auth_headers(),
+                    params=params,
+                )
+            return self._parse(resp, expect_json=True)
+
+        log.info(
+            "dify list_datasets start",
+            extra={"step": "dify", "status": "list_datasets", "page": page, "limit": limit},
+        )
+        return self._with_retry(_do, label=f"list_datasets(page={page})")
+
     @staticmethod
     def _hint_for_status(status_code: int, body: str) -> str:
         """根据 HTTP 状态码给可操作的修复建议。"""

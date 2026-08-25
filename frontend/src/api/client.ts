@@ -331,6 +331,25 @@ export interface DifyConfigInfo {
 
 export const getDifyConfig = () => http<DifyConfigInfo>("/dify/config");
 
+/** Dify 知识库条目（用户选择目标知识库用）。 */
+export interface DifyDatasetItem {
+  id: string;
+  name: string;
+  description: string;
+  permission: string;
+  indexing_technique: string;
+  document_count: number;
+  created_at: number | null;
+}
+
+export const listDifyDatasets = () => http<DifyDatasetItem[]>("/dify/datasets");
+
+export const updateDifyDatasetId = (datasetId: string) =>
+  http<DifyConfigInfo>("/dify/config", {
+    method: "POST",
+    body: JSON.stringify({ dataset_id: datasetId }),
+  });
+
 export const triggerDifyUpload = (dryRun: boolean, force: boolean) =>
   http<DifyUploadReport>("/dify/upload", {
     method: "POST",

@@ -1,5 +1,6 @@
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Col,
@@ -25,9 +26,12 @@ import {
 import { useEffect, useState } from "react";
 import {
   getDifyConfig,
+  listDifyDatasets,
   triggerDifyUpload,
+  updateDifyDatasetId,
   type DifyActionRecord,
   type DifyConfigInfo,
+  type DifyDatasetItem,
   type DifyUploadReport,
 } from "../api/client";
 
@@ -64,6 +68,10 @@ export default function DifyControl({
   const [configLoading, setConfigLoading] = useState(false);
   const [dryRun, setDryRun] = useState(false);
   const [force, setForce] = useState(false);
+  const [datasets, setDatasets] = useState<DifyDatasetItem[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  const [datasetIdInput, setDatasetIdInput] = useState("");
+  const [savingDataset, setSavingDataset] = useState(false);
   const [msgApi, contextHolder] = message.useMessage();
 
   const loadConfig = async () => {
@@ -71,6 +79,7 @@ export default function DifyControl({
     try {
       const c = await getDifyConfig();
       setConfig(c);
+      setDatasetIdInput(c.dataset_id);
     } catch (e) {
       msgApi.error(`加载 Dify 配置失败：${(e as Error).message}`);
     } finally {
@@ -78,9 +87,54 @@ export default function DifyControl({
     }
   };
 
+  const loadDatasets = async () => {
+    if (!config?.has_api_key) return;
+    setDatasetsLoading(true);
+    try {
+      const list = await listDifyDatasets();
+      setDatasets(list);
+    } catch (e) {
+      msgApi.warning(
+        `知识库列表加载失败（仍可手动粘贴 ID）：${(e as Error).message}`
+      );
+    } finally {
+      setDatasetsLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadConfig();
   }, []);
+
+  useEffect(() => {
+    if (config?.has_api_key) {
+      loadDatasets();
+    }
+  }, [config?.has_api_key]);
+
+  const applyDatasetId = async (id?: string) => {
+    const target = (id ?? datasetIdInput).trim();
+    if (!target) {
+      msgApi.warning("请输入知识库 ID");
+      return;
+    }
+    setSavingDataset(true);
+    try {
+      const c = await updateDifyDatasetId(target);
+      setConfig(c);
+      setDatasetIdInput(c.dataset_id);
+      msgApi.success("目标知识库已切换（已写回 backend/.env）");
+    } catch (e) {
+      msgApi.error(`切换知识库失败：${(e as Error).message}`);
+    } finally {
+      setSavingDataset(false);
+    }
+  };
+
+  const datasetOptions = datasets.map((d) => ({
+    value: d.id,
+    label: `${d.name}${d.document_count > 0 ? `（${d.document_count} 文档）` : ""}`,
+  }));
 
   const onRun = async () => {
     onLoadingChange(true);
@@ -161,8 +215,11 @@ export default function DifyControl({
             <Button
               size="small"
               icon={<ReloadOutlined />}
-              onClick={loadConfig}
-              loading={configLoading}
+              onClick={() => {
+                loadConfig();
+                loadDatasets();
+              }}
+              loading={configLoading || datasetsLoading}
             >
               刷新
             </Button>
@@ -180,8 +237,44 @@ export default function DifyControl({
                 },
                 {
                   key: "dataset_id",
-                  label: "知识库 ID",
-                  children: <code>{config.dataset_id}</code>,
+                  label: "目标知识库",
+                  span: 2,
+                  children: config.has_api_key ? (
+                    <Space direction="vertical" style={{ width: "100%" }} size={4}>
+                      <Space.Compact style={{ width: "100%" }}>
+                        <AutoComplete
+                          style={{ width: "100%" }}
+                          value={datasetIdInput}
+                          options={datasetOptions}
+                          onChange={setDatasetIdInput}
+                          onSelect={(v) => applyDatasetId(v)}
+                          placeholder="选择知识库或手动粘贴 dataset_id"
+                          allowClear
+                          notFoundContent={
+                            datasetsLoading
+                              ? "加载中…"
+                              : "无匹配知识库（可手动粘贴 ID）"
+                          }
+                        />
+                        <Button
+                          type="primary"
+                          loading={savingDataset}
+                          onClick={() => applyDatasetId()}
+                        >
+                          应用
+                        </Button>
+                      </Space.Compact>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        从下拉选择或手动输入知识库 ID，点「应用」立即生效并写回
+                        backend/.env（RAG_DIFY_DATASET_ID），重启后依然有效。
+                      </Text>
+                    </Space>
+                  ) : (
+                    <Tag color="red">
+                      未配置 API Key，无法选择知识库（请在 backend/.env
+                      配置 RAG_DIFY_API_KEY）
+                    </Tag>
+                  ),
                 },
                 {
                   key: "api_key",

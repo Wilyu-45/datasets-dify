@@ -180,13 +180,15 @@ class Settings(BaseSettings):
     # Dify 服务地址（Dify Cloud 默认 https://api.dify.ai/v1；自托管请改为自己的实例）。
     dify_api_url: str = "https://api.dify.ai/v1"
     # Dify Knowledge API Key（dataset-xxx 开头，用于 /datasets/... 知识库写操作）。
-    dify_api_key: str = "dataset-c0aDelJrCtEjgLMhRqc5SRBG"
+    # 必须通过 backend/.env 的 RAG_DIFY_API_KEY 配置。
+    dify_api_key: str = ""
     # ★ Dify App API Key（app-xxx 开头，用于 /files/upload 上传图片）。
     #   Knowledge API Key 没有 /files/upload 权限，必须用 App API Key。
     #   留空则降级到公网 URL 策略（cloudflared/OSS）。
     dify_app_api_key: str = ""
     # 目标知识库 ID。
-    dify_dataset_id: str = "b2c4f340-97c9-474c-bfb2-0fdb71e23250"
+    # 可在前端「Dify 设置」的知识库下拉中选择；也可手动在 backend/.env 配置 RAG_DIFY_DATASET_ID。
+    dify_dataset_id: str = ""
     # 索引技术：high_quality（embedding）/ economy（关键词）
     dify_indexing_technique: str = "high_quality"
     # 文档形态：text_model / hierarchical_model / qa_model

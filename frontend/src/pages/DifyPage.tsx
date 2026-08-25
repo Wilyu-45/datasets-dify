@@ -25,7 +25,7 @@ export default function DifyPage() {
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
           遍历 <code>data/chunks/</code> 下所有以文档命名的子目录，对每个目录在
-          Dify 知识库（dataset_id 来自配置）创建一个独立文档（文档名 = stem，
+          Dify 知识库（目标知识库可在「Dify 设置」中选择）创建一个独立文档（文档名 = stem，
           方便溯源），等待其 <code>indexing_status=completed</code> →
           逐 chunk 上传 chunk 内 <code>![](images/xxx)</code> 引用的图片到 Dify
           → 调 <code>add_segments</code> 把 chunk 内容 + 关联图片

@@ -363,3 +363,21 @@ class DifyTestResult(BaseModel):
     elapsed_ms: int = 0
     error: Optional[str] = None
     error_code: Optional[int] = None  # HTTP 状态码
+
+
+class DifyDatasetItem(BaseModel):
+    """Dify 知识库列表条目（GET /api/dify/datasets，供用户选择目标知识库）。"""
+
+    id: str
+    name: str
+    description: str = ""
+    permission: str = "only_me"
+    indexing_technique: str = ""
+    document_count: int = 0
+    created_at: Optional[int] = None
+
+
+class DifyConfigUpdate(BaseModel):
+    """POST /api/dify/config 入参（切换目标知识库）。"""
+
+    dataset_id: Optional[str] = None
