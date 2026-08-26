@@ -14,10 +14,23 @@
 
 | 策略 | 在本项目中的具体应用 |
 | :--- | :--- |
-| **递归切分** | 先按一级标题切分，若内容超过1500字符，继续按二级标题贪心合并切分；若二级标题仍超长，按三级标题切分 |
+| **递归切分** | 以段落为最小分隔单元：段落长于目标长度（`chunk_target_chars`，默认 1500）时，按句号、分号、逗号等标点逐级切细直到满足长度约束；按标题层级的贪心合并由 `structure` / `hierarchical` 策略承担 |
 | **基于文档结构切分** | 利用MinerU解析出的标题层级（`level=1`、`level=2`、`level=3`）和页面/块级结构进行切分 |
 | **滑动窗口/重叠切分** | 长段落按句号切分时，添加100字符的overlap（上段末尾100字符重复到下段开头），保证上下文连贯 |
 | **父-子切分** | 按标题层级切分时，父块包含完整章节内容，子块为各分段；检索时子块匹配，父块提供完整上下文 |
+
+### 本项目实际实现的策略（chunk_strategies.py，共 8 个）
+
+| 策略 key | 对应上表方法 | 实现说明 |
+| :--- | :--- | :--- |
+| `fixed` | 固定长度切分 | 按固定字符数硬切（`chunk_fixed_size_chars=800`，overlap `chunk_fixed_overlap_chars=100`） |
+| `overlap` | 句子级切分 | 以句子为边界切分，长段落切分时添加 overlap（`chunk_overlap=100`） |
+| `semantic` | 语义切分 | 按标题层级聚合段落，用句子向量相似度（`chunk_semantic_threshold=0.78`）识别语义转折点切分 |
+| `parent_child` | 父-子切分 | 父块为章节上下文（`chunk_parent_size_chars=1500`），子块为检索单元（`chunk_child_size_chars=400`） |
+| `structural` | 基于文档结构切分 | 利用 MinerU 标题层级（level=1/2/3）贪心合并段落，目标 `chunk_target_chars=1500`（默认策略） |
+| `hierarchical` | 基于文档结构切分 | 按标题层级 1→4 逐级切分，最深层超长时按句子递归切细 |
+| `llm` | 基于 LLM 的切分 | 调用大模型（OpenAI 兼容 `/chat/completions`）返回切分段落 JSON 数组，需配置 `llm_api_base_url` / `llm_api_key` / `llm_model`（默认关闭） |
+| `embedding` | 晚切分 | 计算 chunk 嵌入向量后按语义切分（需配置 `chunk_embedding_api_url` / `chunk_embedding_api_key`，默认走 Dify 嵌入） |
 
 ### 关键参数与技巧
 

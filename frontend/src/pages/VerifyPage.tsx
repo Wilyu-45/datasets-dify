@@ -42,6 +42,7 @@ import {
   type DifySegmentItem,
 } from "../api/client";
 import ActiveConfigCard from "../components/ActiveConfigCard";
+import MarkdownPreview from "../components/MarkdownPreview";
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -430,13 +431,13 @@ export default function VerifyPage() {
                                     #{s.position}
                                   </Tag>
                                   {!s.enabled && <Tag color="red">禁用</Tag>}
-                                  {s.attachments.length > 0 && (
+                                  {(s.attachments ?? []).length > 0 && (
                                     <Tag
                                       color="purple"
                                       icon={<PictureOutlined />}
                                       style={{ fontSize: 11 }}
                                     >
-                                      {s.attachments.length}
+                                      {(s.attachments ?? []).length}
                                     </Tag>
                                   )}
                                 </Space>
@@ -587,63 +588,12 @@ export default function VerifyPage() {
                           borderRadius: 4,
                           fontSize: 13,
                           lineHeight: 1.7,
-                          whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
                         }}
                       >
-                        {editContent || (
-                          <Text type="secondary">(空内容)</Text>
-                        )}
+                        <MarkdownPreview content={editContent} />
                       </div>
                     ),
-                  },
-                  {
-                    key: "attachments",
-                    label: `图片附件 (${activeSegment.attachments.length})`,
-                    children:
-                      activeSegment.attachments.length === 0 ? (
-                        <Empty
-                          image={Empty.PRESENTED_IMAGE_SIMPLE}
-                          description="此分段无图片附件"
-                          style={{ padding: 24 }}
-                        />
-                      ) : (
-                        <Row gutter={[8, 8]}>
-                          {activeSegment.attachments.map((a) => (
-                            <Col key={a.id} xs={12} md={8}>
-                              <Card
-                                size="small"
-                                hoverable
-                                onClick={() => {
-                                  if (a.source_url || a.url) {
-                                    window.open(
-                                      a.source_url ?? a.url!,
-                                      "_blank"
-                                    );
-                                  }
-                                }}
-                              >
-                                {a.source_url || a.url ? (
-                                  <img
-                                    src={a.source_url ?? a.url}
-                                    alt={a.name}
-                                    style={{
-                                      maxWidth: "100%",
-                                      maxHeight: 120,
-                                      objectFit: "contain",
-                                    }}
-                                  />
-                                ) : (
-                                  <Text type="secondary">无 URL</Text>
-                                )}
-                                <div style={{ fontSize: 11, marginTop: 4 }}>
-                                  {a.name ?? a.id}
-                                </div>
-                              </Card>
-                            </Col>
-                          ))}
-                        </Row>
-                      ),
                   },
                   {
                     key: "meta",
@@ -698,7 +648,9 @@ export default function VerifyPage() {
                         </Paragraph>
                         <Paragraph style={{ marginBottom: 0, fontSize: 12 }}>
                           <Text type="secondary">附件数：</Text>
-                          <Tag color="purple">{activeSegment.attachments.length}</Tag>
+                          <Tag color="purple">
+                            {(activeSegment.attachments ?? []).length}
+                          </Tag>
                         </Paragraph>
                         <Space wrap>
                           <Tag

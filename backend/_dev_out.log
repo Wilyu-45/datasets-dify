@@ -1,28 +1,169 @@
-INFO:     Started server process [112412]
+INFO:     Started server process [124584]
 INFO:     Waiting for application startup.
-{"timestamp": "2026-08-26 12:40:15", "level": "INFO", "msg": "PostgreSQL 连接池已就绪: 127.0.0.1:5432/ragsystem", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
-{"timestamp": "2026-08-26 12:40:15", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
-{"timestamp": "2026-08-26 12:40:15", "level": "INFO", "msg": "app started", "file_name": "", "step": "startup", "status": "ok", "duration_ms": 0, "error_msg": "", "data_root": "D:\\programmtools\\tools\\ragsystem\\data", "manifest": "postgresql://127.0.0.1:5432/ragsystem#manifest"}
+{"timestamp": "2026-08-26 14:30:19", "level": "INFO", "msg": "PostgreSQL 连接池已就绪: 127.0.0.1:5432/ragsystem", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 14:30:19", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 14:30:19", "level": "INFO", "msg": "app started", "file_name": "", "step": "startup", "status": "ok", "duration_ms": 0, "error_msg": "", "data_root": "D:\\programmtools\\tools\\ragsystem\\data", "manifest": "postgresql://127.0.0.1:5432/ragsystem#manifest"}
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:10435 - "GET /api/config/schema HTTP/1.1" 200 OK
-INFO:     127.0.0.1:10450 - "GET /api/config/active HTTP/1.1" 200 OK
-INFO:     127.0.0.1:10449 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:10451 - "GET /api/config/active HTTP/1.1" 200 OK
-INFO:     127.0.0.1:10452 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11279 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11280 - "GET /api/config/active HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11283 - "GET /api/config/active HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11282 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
-{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
-{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
-INFO:     127.0.0.1:11293 - "GET /api/config/schema HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11295 - "GET /api/chunk/strategies HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11292 - "GET /api/config/profiles HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11297 - "GET /api/config/schema HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11299 - "GET /api/chunk/strategies HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11301 - "GET /api/config/profiles HTTP/1.1" 200 OK
-INFO:     127.0.0.1:11294 - "GET /api/dify/datasets HTTP/1.1" 200 OK
-{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
-{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
-INFO:     127.0.0.1:11304 - "GET /api/dify/datasets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13236 - "GET /api/config/schema HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13351 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13350 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13352 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13353 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:31:55", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 14:31:55", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+INFO:     127.0.0.1:13397 - "GET /api/config/schema HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13396 - "GET /api/config/profiles HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13399 - "GET /api/chunk/strategies HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13401 - "GET /api/config/schema HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13405 - "GET /api/chunk/strategies HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13404 - "GET /api/config/profiles HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13398 - "GET /api/dify/datasets HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:31:56", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 14:31:56", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+INFO:     127.0.0.1:13408 - "GET /api/dify/datasets HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:12", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13418 - "GET /api/config/active HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:12", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13420 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13423 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13425 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13421 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:12", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:32:12", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13428 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:14", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 14:32:14", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+INFO:     127.0.0.1:13431 - "GET /api/dify/documents/ff55b160-b506-4c38-bce3-d17ad5272ce7/segments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13464 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13463 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13465 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13466 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:41", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:32:41", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13467 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13469 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13472 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13474 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13470 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:42", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:32:42", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13477 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:32:44", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 14:32:44", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+INFO:     127.0.0.1:13480 - "GET /api/dify/documents/ff55b160-b506-4c38-bce3-d17ad5272ce7/segments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13527 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13528 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13529 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13530 - "GET /api/config/active HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:33:39", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:33:39", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13531 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13533 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13536 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13538 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13534 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:33:39", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:33:39", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13541 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:36:13", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "dbee8c89-dd9e-4816-8454-ed4b003608f1"}
+{"timestamp": "2026-08-26 14:36:13", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "dbee8c89-dd9e-4816-8454-ed4b003608f1"}
+INFO:     127.0.0.1:13619 - "GET /api/dify/documents/dbee8c89-dd9e-4816-8454-ed4b003608f1/segments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13689 - "GET /api/config/active HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:38:10", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:38:10", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13691 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13694 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13696 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13692 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:38:10", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:38:10", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13702 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13699 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:38:11", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:38:11", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13704 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:38:16", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:38:16", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13711 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13712 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:38:17", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:38:17", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13717 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13719 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13763 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13762 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13764 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13765 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13827 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13828 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13830 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13829 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:40:58", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:40:58", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13831 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13833 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13836 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13838 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13834 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:40:59", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:40:59", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:13841 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:41:00", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 14:41:00", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+INFO:     127.0.0.1:13844 - "GET /api/dify/documents/ff55b160-b506-4c38-bce3-d17ad5272ce7/segments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13983 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13984 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13987 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:13986 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14006 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14007 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14008 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14009 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14033 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14032 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14034 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14036 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14569 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14568 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14570 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14571 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:59:08", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:59:08", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:14572 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14574 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14577 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14579 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14575 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:59:08", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:59:08", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:14582 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:59:10", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 14:59:10", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+INFO:     127.0.0.1:14586 - "GET /api/dify/documents/ff55b160-b506-4c38-bce3-d17ad5272ce7/segments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14608 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14609 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14610 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14611 - "GET /api/config/active HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:59:56", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:59:56", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:14612 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14614 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14617 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14619 - "GET /api/dify/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:14615 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:59:57", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 14:59:57", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+INFO:     127.0.0.1:14622 - "GET /api/dify/documents?limit=50 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 14:59:57", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "dbee8c89-dd9e-4816-8454-ed4b003608f1"}
+{"timestamp": "2026-08-26 14:59:57", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "dbee8c89-dd9e-4816-8454-ed4b003608f1"}
+INFO:     127.0.0.1:14625 - "GET /api/dify/documents/dbee8c89-dd9e-4816-8454-ed4b003608f1/segments HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 15:00:15", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "7d16c99d-4b8f-476e-aac2-5cdbd6e5d43e"}
+{"timestamp": "2026-08-26 15:00:15", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "7d16c99d-4b8f-476e-aac2-5cdbd6e5d43e"}
+INFO:     127.0.0.1:14632 - "GET /api/dify/documents/7d16c99d-4b8f-476e-aac2-5cdbd6e5d43e/segments HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 15:00:16", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "e0543535-c6f7-4a1b-b891-52e68a73408e"}
+{"timestamp": "2026-08-26 15:00:16", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "e0543535-c6f7-4a1b-b891-52e68a73408e"}
+INFO:     127.0.0.1:14636 - "GET /api/dify/documents/e0543535-c6f7-4a1b-b891-52e68a73408e/segments HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 15:01:09", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 15:01:09", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+INFO:     127.0.0.1:14647 - "GET /api/dify/documents/ff55b160-b506-4c38-bce3-d17ad5272ce7/segments HTTP/1.1" 200 OK

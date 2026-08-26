@@ -3,8 +3,24 @@
 
 # 知识库批量入库自动化方案文档
 
-> 版本：V1.0  
+> 版本：V1.0（历史规划文档）
 > 目标：实现大批量文档（PDF/Word/扫描件等）自动化解析、切分、入库，并确保内容一致性与可溯源性。
+
+> **状态：V1.0 设计初稿，绝大部分功能已实现并演进。**
+> 实际实现以 [README.md](./README.md) 为准；切分规则以 [cutrule.md](./cutrule.md) /
+> [cutstrategy.md](./cutstrategy.md) / [strategies.md](./strategies.md) 为准；
+> Dify 集成以 [Dify.md](./Dify.md) 为准。
+>
+> 与本文件相比的关键演进：
+> - **状态管理**：Excel 状态表 → PostgreSQL `manifest` 表（scan / parse / chunks / dify 状态列）；
+> - **切分**：单一切分脚本 → `chunk_strategies.py` **8 策略引擎**（`fixed` / `overlap` /
+>   `semantic` / `parent_child` / `structural` / `hierarchical` / `llm` / `embedding`），
+>   配置中心多方案持久化与激活；
+> - **LLM 切分**：直接调用大模型 OpenAI 兼容 `/chat/completions`
+>   （`llm_api_base_url` / `llm_api_key` / `llm_model`），默认关闭；
+> - **人工校验**：Web 界面从 Dify 实时拉取文档 / 分段，分段编辑（content / enabled）写回 Dify；
+> - **入库**：Dify 批量分段（默认 30/批）＋落库核对；图片支持公网 URL 直嵌
+>   （`RAG_DIFY_SKIP_FILE_UPLOAD=true`）或 `/files/upload` 附件两种模式。
 
 ---
 
@@ -113,9 +129,9 @@ flowchart TD
 ### 3.4 调用Dify API入库
 - **接口**：`POST /v1/datasets/{dataset_id}/document/create-by-text`（或对应批量接口）
 - **操作步骤**：
-  1. 以**文件名**命名创建空白文档（`POST /documents`）。
-  2. 对每个chunk调用 **“新增分段”** 接口（`POST /documents/{doc_id}/segments`），批量提交（建议每10个chunk一次批量请求）。
-- **同步保证**：每个文档所有分段全部成功后，才标记Excel状态为 `done`；若中途失败，回滚该文档所有分段。
+  1. 以**文件名**命名创建空白文档（`create_by_text`，等待索引完成后才能写分段）。
+  2. 对每个 chunk 调用 **“新增分段”** 接口批量提交（默认每 30 个 chunk 一批，`RAG_DIFY_SEGMENTS_PER_REQUEST`），提交后**核对落库**数量。
+- **同步保证**：每个文档所有分段全部落库核对通过后，才标记 manifest 状态为 `done`；超长分段按句号拆分后批量提交。
 
 ### 3.5 人工校验确认
 - **时机**：每个文档入库后（或每日批次结束后）。
@@ -151,11 +167,11 @@ flowchart TD
 ## 5. 待完成开发清单
 
 - [✅] Web框架搭建（FastAPI + 基础路由）
-- [✅] 文件处理脚本（扫描、移动、Excel读写）
-- [✅] Mineru API 调用脚本（multipart/form-data，5 个 return_* 显式开启）
-- [✅] 切分脚本（基于JSON结构 + 长度控制 + 图片内联）— §3.3
-- [ ] Web操作逻辑（批次启动、进度展示、校验界面）
-- [ ] Dify API调用脚本（含重试、批量分段、回滚）
+- [✅] 文件处理（扫描、manifest 台账、input/pending 目录管理）
+- [✅] Mineru API 调用脚本（multipart/form-data，5 个 return_* 显式开启；hybrid-engine/vlm-engine 双后端 + 指数退避）
+- [✅] 切分脚本（8 策略引擎 + 长度控制 + 图片内联）— §3.3，见 strategies.md
+- [✅] Web操作逻辑（入库工作台 / 解析 / 切分 / 人工校验 / 配置中心 5 个页面）
+- [✅] Dify API调用脚本（含重试、批量分段、落库核对、元数据管理）
 - [ ] （后续）自动化测试脚本（用于检索效果调优）
 
 ---

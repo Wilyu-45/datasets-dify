@@ -587,25 +587,25 @@ def _chunk_body_late_chunking(region: Region) -> List[Chunk]:
 
 
 def _chunk_body_llm(region: Region) -> List[Chunk]:
-    """LLM 切分：调用 Dify App API 让大模型返回切分后的段落。
+    """LLM 切分：调用大语言模型（OpenAI 兼容 Chat Completions）让模型返回切分后的段落。
 
     默认关闭（settings.chunk_llm_enabled=False），开启时需配置
-    settings.dify_app_api_key。失败/超时自动降级为结构切分。
+    settings.llm_api_base_url / llm_api_key / llm_model。失败/超时自动降级为结构切分。
     """
     if not settings.chunk_llm_enabled:
         log.warning("llm 策略未启用（chunk_llm_enabled=False）→ 降级为 structure")
         return chunk_body(region)
 
-    app_key = getattr(settings, "dify_app_api_key", "") or ""
-    if not app_key:
-        log.warning("llm 策略缺少 dify_app_api_key → 降级为 structure")
+    base = (settings.llm_api_base_url or "").rstrip("/")
+    api_key = (settings.llm_api_key or "").strip()
+    model = (settings.llm_model or "").strip()
+    if not (base and api_key and model):
+        log.warning(
+            "llm 策略缺少 llm_api_base_url / llm_api_key / llm_model → 降级为 structure"
+        )
         return chunk_body(region)
 
-    base = (settings.dify_api_url or "").rstrip("/")
-    chat_url = f"{base}/chat-messages" if base else ""
-    if not chat_url:
-        return chunk_body(region)
-
+    chat_url = f"{base}/chat/completions"
     text = "\n".join(
         _block_to_plain_text(b) for b in region.blocks if b.block_type != "title"
     )
@@ -617,17 +617,25 @@ def _chunk_body_llm(region: Region) -> List[Chunk]:
         resp = requests.post(
             chat_url,
             json={
-                "inputs": {},
-                "query": f"{prompt}\n\n{text}",
-                "response_mode": "blocking",
-                "user": "ragsystem-chunker",
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是一名文档切分专家，请按要求完成切分并只输出 JSON。",
+                    },
+                    {"role": "user", "content": f"{prompt}\n\n{text}"},
+                ],
+                "temperature": 0.2,
             },
-            headers={"Authorization": f"Bearer {app_key}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=max(60, settings.dify_timeout or 60),
         )
         resp.raise_for_status()
         data = resp.json()
-        answer = data.get("answer") or ""
+        answer = (
+            ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        )
         # 期望模型返回 JSON 数组（切分后的段落）；兼容 JSON 代码块
         answer_clean = answer.strip()
         if answer_clean.startswith("```"):

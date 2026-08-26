@@ -1,3 +1,6 @@
+> **说明：本文档为 MinerU 官方 README 的外部参考副本（API 使用说明），并非本系统的实现文档。**
+> 本系统对 MinerU 的调用见 [README.md](./README.md) §3.2 与本系统后端 `app/services/parser.py`。
+
 <div align="center" xmlns="http://www.w3.org/1999/html">
 <!-- logo -->
 <p align="center">

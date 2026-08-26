@@ -37,6 +37,9 @@ def _chunk_params(monkeypatch):
     monkeypatch.setattr(settings, "chunk_parent_size_chars", 1500)
     monkeypatch.setattr(settings, "chunk_child_size_chars", 400)
     monkeypatch.setattr(settings, "chunk_llm_enabled", False)
+    monkeypatch.setattr(settings, "llm_api_base_url", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "llm_model", "")
     monkeypatch.setattr(settings, "chunk_embedding_api_url", "")
     monkeypatch.setattr(settings, "chunk_embedding_api_key", "")
     monkeypatch.setattr(settings, "dify_api_key", "")
@@ -203,6 +206,69 @@ def test_llm_strategy_disabled_falls_back_to_structure(monkeypatch):
     chunks = chunk_strategies.chunk_region_with_strategy(region, "llm")
     ref = chunk_body(region)
     assert [c.body for c in chunks] == [c.body for c in ref]
+
+
+def test_llm_strategy_missing_config_falls_back_to_structure(monkeypatch):
+    """llm 启用但缺 base_url/key/model 时降级为 structure，不发起请求。"""
+    monkeypatch.setattr(settings, "chunk_llm_enabled", True)
+    monkeypatch.setattr(settings, "llm_api_base_url", "")
+    monkeypatch.setattr(settings, "llm_api_key", "sk-test")
+    monkeypatch.setattr(settings, "llm_model", "deepseek-chat")
+    region = _body_region([_para("字" * 1000), _title("1.1 小节", 2), _para("字" * 800)])
+    chunks = chunk_strategies.chunk_region_with_strategy(region, "llm")
+    ref = chunk_body(region)
+    assert [c.body for c in chunks] == [c.body for c in ref]
+
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_llm_strategy_calls_chat_completions(monkeypatch):
+    """llm 启用且配齐 base_url/key/model 时调用 OpenAI 兼容 /chat/completions。"""
+    import json as _json
+
+    calls: dict = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls["url"] = url
+        calls["json"] = json
+        calls["headers"] = headers
+        return _FakeResp(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": _json.dumps(
+                                ["第一段内容", "第二段内容"], ensure_ascii=False
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(settings, "chunk_llm_enabled", True)
+    monkeypatch.setattr(settings, "llm_api_base_url", "https://api.deepseek.com/v1")
+    monkeypatch.setattr(settings, "llm_api_key", "sk-test")
+    monkeypatch.setattr(settings, "llm_model", "deepseek-chat")
+    monkeypatch.setattr(chunk_strategies.requests, "post", fake_post)
+    region = _body_region([_para("字" * 1000), _title("1.1 小节", 2), _para("字" * 800)])
+    chunks = chunk_strategies.chunk_region_with_strategy(region, "llm")
+    assert calls["url"] == "https://api.deepseek.com/v1/chat/completions"
+    assert calls["json"]["model"] == "deepseek-chat"
+    assert calls["json"]["messages"][1]["role"] == "user"
+    assert calls["headers"]["Authorization"] == "Bearer sk-test"
+    assert len(chunks) == 2
+    assert "第一段内容" in chunks[0].body
+    assert "第二段内容" in chunks[1].body
 
 
 # ============================================================

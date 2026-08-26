@@ -7,7 +7,7 @@
 
 | 原则 | 说明 |
 |------|------|
-| **图片不独立成块** | 图片作为内联元素，嵌入到其上下文所在的文本 chunk 中，用 `[图: xxx]` 占位符标记 |
+| **图片不独立成块** | 图片作为内联元素，嵌入到其上下文所在的文本 chunk 中，保留 MD 原生图片语法 `![](images/xxx)` 内联标记 |
 | **保留阅读顺序** | 严格按照页面顺序，图片出现在其原文位置（文字 → 图片 → 文字） |
 | **标题层级传递** | 每个 chunk 携带完整的 `title_path`，追溯性强 |
 | **长度可控** | 每个 chunk 在1500中文字符以下 |
@@ -69,7 +69,7 @@ title_stack = ["4", "4.2", "4.2.1"]  → 后续内容属于 "4.2.1"
 
 ```python
 chunk_buffer = {
-    "text_parts": [],        # ["正文内容", "[图: 图A.1 入口外观效果图]", "后续正文"]
+    "text_parts": [],        # ["正文内容", "![](images/60de63a2...jpg)", "后续正文"]
     "image_paths": [],       # ["images/xxx.jpg"]
     "title_path": "4.2 入口外观",
     "page_num": 4,
@@ -91,11 +91,9 @@ chunk_buffer = {
 
 #### 4.2 遇到 `image`
 
-1. **不落盘**，而是向缓冲区插入一个**占位符**：
-   - 若图片有 `image_caption`，插入 `[图: {caption}]`
-   - 若无图注，插入 `[图: {图片文件路径}]`
+1. **不落盘**，而是向缓冲区插入 **MD 原生图片语法**：`![](images/{图片文件名})`（不替换为 `[图: ...]` 占位符；图注 text 已由 MinerU 输出为相邻正文，保持原样）。
 2. 将 `img_path` 加入 `image_paths` 列表（用于入库时上传）。
-3. **`char_count` 不增加**（占位符不计入文本长度阈值，避免图片导致误切）。
+3. **`char_count` 不增加**（图片语法不计入文本长度阈值，避免图片导致误切）。
 4. **★ 2026-07 增加**：`image_paths_count` 单独累计。
 
 #### 4.3 遇到 `title`
@@ -178,7 +176,7 @@ def should_finalize(buffer, next_block):
   "chunk_id": "WST809-4.2.1-001",
   "doc_id": "WST 809—2022",
   "title_path": "4.2 入口外观 > 4.2.1",
-  "content": "在入口的醒目位置悬挂带有基层医疗卫生机构标识的牌匾。[图: 图A.1 入口外观效果图]入口应造型简洁...",
+  "content": "在入口的醒目位置悬挂带有基层医疗卫生机构标识的牌匾。![](images/60de63a2...jpg)入口应造型简洁...",
   "image_paths": ["images/60de63a2...jpg"],
   "page_num": 4,
   "char_count": 312,
@@ -188,7 +186,7 @@ def should_finalize(buffer, next_block):
 ```
 
 **关键点**：
-- `content` 是拼接后的完整文本，其中图片以 `[图: ...]` 占位符形式嵌入。
+- `content` 是拼接后的完整文本，其中图片以 MD 原生语法 `![](images/...)` 形式内联嵌入。
 - `image_paths` 是该 chunk 中所有图片的路径列表，用于后续入库上传。
 
 ---
@@ -209,7 +207,7 @@ flowchart TD
     A[遍历 _content_list_v2.json] --> B{元素类型}
     B -->|title| C[更新标题栈]\n若缓冲区非空则落盘
     B -->|paragraph| D[追加文本到缓冲区]\n若 chars > 1500\n或 images > 10\n则切分落盘
-    B -->|image| E[插入占位符到缓冲区]\n记录 image_path\n累加 image_count
+    B -->|image| E[内联 ![]() 图片语法到缓冲区]\n记录 image_path\n累加 image_count
     B -->|header/footer| F[丢弃]
     C --> G[继续遍历]
     D --> G
@@ -276,9 +274,9 @@ flowchart TD
 
 ## 七、后续优化方向
 
-1. **图片 caption 缺失时**：可调用轻量级 VLM（如 BLIP）生成简短描述，替代空占位符。
-2. **表格内容**：若出现 `table` 类型，可将其转换为 Markdown 表格文本，与普通文本混合。
-3. **检索增强**：在 `[图: ...]` 占位符周围，可主动加入图片所在章节的摘要，提升图片相关检索命中率。
+1. **图片 caption 缺失时**：可调用轻量级 VLM（如 BLIP）生成简短描述，追加到图片语法前后文本中（当前实现保留原样 `![](images/xxx)`）。
+2. **表格内容**：`table` 类型保留 HTML `<table>` 文本与 caption，与普通文本混合；表格超过阈值（`chunk_table_row_threshold`，默认 20 行）时独立成段（见 cutrule.md 规则 5.7）。
+3. **检索增强**：在 `![](images/...)` 图片语法周围，可主动加入图片所在章节的摘要，提升图片相关检索命中率。
 
 ---
 
@@ -297,7 +295,7 @@ flowchart TD
 | `semantic` | 语义切分 | Embedding 相似度低谷处切分（主题转变点） | **需 Embedding** | 专业领域高精度检索 |
 | `parent_child` | 父-子切分 | 大父块（上下文）+ 小个子块（检索），metadata 用 `parent_id` 关联 | 无 | 需精确检索 + 完整上下文 |
 | `late_chunking` | 晚切分 | 先整文 Embedding 感知全局上下文，再按主题相关度切分 | **需 Embedding** | 存在大量指代/歧义的长文档 |
-| `llm` | LLM 切分 | 大模型自主决定切分点（JSON 数组返回） | **需 Dify App API** | 小规模高质量文档（默认关闭） |
+| `llm` | LLM 切分 | 大模型自主决定切分点（JSON 数组返回） | **需 LLM API（OpenAI 兼容）** | 小规模高质量文档（默认关闭） |
 
 ### 8.2 选择建议
 
@@ -320,13 +318,16 @@ flowchart TD
 | `chunk_child_size_chars` | `400` | `parent_child` 子块目标字符数 |
 | `chunk_llm_enabled` | `false` | `llm` 开关 |
 | `chunk_llm_chunk_prompt` | … | `llm` 提示词 |
+| `llm_api_base_url` | `""` | `llm` 调用的模型 API 地址（OpenAI 兼容 Chat Completions，如 `https://api.deepseek.com/v1`） |
+| `llm_api_key` | `""` | `llm` 调用的模型 API Key |
+| `llm_model` | `""` | `llm` 使用的模型名（如 `deepseek-chat` / `gpt-4o-mini`） |
 | `chunk_embedding_api_url` | `""` | 自定义 Embedding 端点（OpenAI 兼容 / Dify 格式）；留空用 Dify |
 | `chunk_embedding_api_key` | `""` | 自定义 Embedding Key；留空用 `dify_api_key` |
 
 ### 8.4 降级策略
 
 - `semantic` / `late_chunking`：未配置 Embedding 或调用失败 → **自动降级为 `sentence`**。
-- `llm`：未开启 / 缺少 `dify_app_api_key` / 调用失败 → **自动降级为 `structure`**。
+- `llm`：未开启 / 缺少 `llm_api_base_url`·`llm_api_key`·`llm_model` / 调用失败 → **自动降级为 `structure`**。
 - 未知策略名 → 归一化为 `structure`（不会报错）。
 
 ### 8.5 调用方式

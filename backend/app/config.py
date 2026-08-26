@@ -203,6 +203,14 @@ class Settings(BaseSettings):
         "3) 保留原文顺序，不遗漏、不改写原文；4) 片段长度 300~800 字。"
         "只输出一个 JSON 数组，数组元素是切分后的原文段落字符串，不要输出其他内容。"
     )
+    # LLM 切分调用的模型 API（OpenAI 兼容 Chat Completions 接口）。
+    # base_url 示例：OpenAI https://api.openai.com/v1、DeepSeek https://api.deepseek.com/v1、
+    # 阿里云百炼 https://dashscope.aliyuncs.com/compatible-mode/v1、本地 vLLM http://127.0.0.1:8000/v1
+    llm_api_base_url: str = ""
+    # 调用大模型接口的 API Key
+    llm_api_key: str = ""
+    # 模型名，如 gpt-4o-mini / deepseek-chat / qwen-plus
+    llm_model: str = ""
 
     # ---- Dify 入库（plan.md §3.4）----
     # Dify 服务地址（Dify Cloud 默认 https://api.dify.ai/v1；自托管请改为自己的实例）。
