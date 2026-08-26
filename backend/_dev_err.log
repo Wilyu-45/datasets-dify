@@ -1,0 +1,111 @@
+INFO:     Started server process [93912]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-08-26 11:18:40", "level": "INFO", "msg": "PostgreSQL 连接池已就绪: 127.0.0.1:5432/ragsystem", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:40", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:40", "level": "INFO", "msg": "app started", "file_name": "", "step": "startup", "status": "ok", "duration_ms": 0, "error_msg": "", "data_root": "D:\\programmtools\\tools\\ragsystem\\data", "manifest": "postgresql://127.0.0.1:5432/ragsystem#manifest"}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "save_and_stage: saved D:\\programmtools\\tools\\ragsystem\\data\\single_uploads\\_smoke_xlsx_设备清单\\_smoke_xlsx_设备清单.xlsx (5013 bytes, md5=72767896fd2140e3f8840fb4f74485ae)", "file_name": "_smoke_xlsx_设备清单.xlsx", "step": "upload", "status": "saved", "duration_ms": 0, "error_msg": "", "size": 5013}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "save_and_stage: manifest row added for _smoke_xlsx_设备清单.xlsx", "file_name": "_smoke_xlsx_设备清单.xlsx", "step": "upload", "status": "manifest_added", "duration_ms": 0, "error_msg": ""}
+Exception in thread Thread-4 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\YCSJ\AppData\Local\Programs\Python\Python310\lib\threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "C:\Users\YCSJ\AppData\Local\Programs\Python\Python310\lib\threading.py", line 953, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\YCSJ\AppData\Local\Programs\Python\Python310\lib\subprocess.py", line 1499, in _readerthread
+    buffer.append(fh.read())
+UnicodeDecodeError: 'gbk' codec can't decode byte 0xa4 in position 72: illegal multibyte sequence
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "pipeline start: scan=False parse=True chunk=True dify=True stop_on_error=False", "file_name": "", "step": "pipeline", "status": "start", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "pipeline scan skipped", "file_name": "", "step": "pipeline", "status": "skipped", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "parse started", "file_name": "", "step": "parse", "status": "start", "duration_ms": 0, "error_msg": "", "dry_run": false, "force": false, "target_stems": ["_smoke_xlsx_设备清单"]}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "mineru api ok", "file_name": "_smoke_xlsx_设备清单.xlsx", "step": "mineru", "status": "ok", "duration_ms": 125, "error_msg": "", "attempts": 1, "backend": "hybrid-engine", "effort": "high"}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "parse ok", "file_name": "_smoke_xlsx_设备清单.xlsx", "step": "parse", "status": "parsed", "duration_ms": 146, "error_msg": "", "parse_dir": "D:\\programmtools\\tools\\ragsystem\\data\\parsed\\_smoke_xlsx_设备清单", "file_count": 2, "attempts": 1, "fallback_used": false}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "parse finished", "file_name": "", "step": "parse", "status": "done", "duration_ms": 152, "error_msg": "", "parsed": 1, "skipped": 0, "failed": 0}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "pipeline parse done in 153ms", "file_name": "", "step": "pipeline", "status": "step_done", "duration_ms": 0, "error_msg": "", "step_name": "parse"}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "chunk started", "file_name": "", "step": "chunk", "status": "start", "duration_ms": 0, "error_msg": "", "dry_run": false, "force": false, "target_stems": ["_smoke_xlsx_设备清单"], "strategy": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "chunk ok", "file_name": "_smoke_xlsx_设备清单.xlsx", "step": "chunk", "status": "chunked", "duration_ms": 5, "error_msg": "", "chunks_dir": "D:\\programmtools\\tools\\ragsystem\\data\\chunks\\_smoke_xlsx_设备清单", "chunk_count": 1, "total_chars": 39, "image_count": 0}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "chunk finished", "file_name": "", "step": "chunk", "status": "done", "duration_ms": 14, "error_msg": "", "chunked": 1, "skipped": 0, "failed": 0}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "pipeline chunk done in 14ms", "file_name": "", "step": "pipeline", "status": "step_done", "duration_ms": 0, "error_msg": "", "step_name": "chunk"}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "dify upload all start", "file_name": "", "step": "dify", "status": "start", "duration_ms": 0, "error_msg": "", "dry_run": false, "target_stems": ["_smoke_xlsx_设备清单"]}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "文档元数据加载完成: docs=0", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:58", "level": "INFO", "msg": "dify: chunks 已预复制到 output", "file_name": "", "step": "dify", "status": "staged", "duration_ms": 0, "error_msg": "", "stem": "_smoke_xlsx_设备清单", "from": "D:\\programmtools\\tools\\ragsystem\\data\\chunks\\_smoke_xlsx_设备清单", "to": "D:\\programmtools\\tools\\ragsystem\\data\\output\\_smoke_xlsx_设备清单"}
+{"timestamp": "2026-08-26 11:18:59", "level": "INFO", "msg": "OSS 跳过：chunks_dir 没有 images/ 子目录: stem=_smoke_xlsx_设备清单", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:18:59", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+{"timestamp": "2026-08-26 11:18:59", "level": "INFO", "msg": "dify create_document_by_text start", "file_name": "", "step": "dify", "status": "create", "duration_ms": 0, "error_msg": "", "doc_name": "_smoke_xlsx_设备清单", "text_len": 16}
+{"timestamp": "2026-08-26 11:19:01", "level": "INFO", "msg": "dify document ready", "file_name": "", "step": "dify", "status": "ready", "duration_ms": 0, "error_msg": "", "document_id": "da9bdf80-e117-4659-aa7d-eeb6a1cea7c8"}
+{"timestamp": "2026-08-26 11:19:03", "level": "INFO", "msg": "dify add_segments batch 1/1: requested=1 created=1", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:03", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "da9bdf80-e117-4659-aa7d-eeb6a1cea7c8"}
+{"timestamp": "2026-08-26 11:19:04", "level": "INFO", "msg": "dify add_segments 核对通过: 1 段全部落库", "file_name": "", "step": "dify", "status": "verify_ok", "duration_ms": 0, "error_msg": "", "document_id": "da9bdf80-e117-4659-aa7d-eeb6a1cea7c8"}
+{"timestamp": "2026-08-26 11:19:04", "level": "INFO", "msg": "dify add_segments 结果: stem=_smoke_xlsx_设备清单 requested=1 created=1", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+Exception in thread Thread-8 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\YCSJ\AppData\Local\Programs\Python\Python310\lib\threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "C:\Users\YCSJ\AppData\Local\Programs\Python\Python310\lib\threading.py", line 953, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\YCSJ\AppData\Local\Programs\Python\Python310\lib\subprocess.py", line 1499, in _readerthread
+    buffer.append(fh.read())
+UnicodeDecodeError: 'gbk' codec can't decode byte 0xa4 in position 64: illegal multibyte sequence
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "dify upload all done", "file_name": "", "step": "dify", "status": "done", "duration_ms": 6292, "error_msg": "", "scanned": 1, "uploaded": 1, "skipped": 0, "failed": 0}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "pipeline dify done in 6293ms", "file_name": "", "step": "pipeline", "status": "step_done", "duration_ms": 0, "error_msg": "", "step_name": "dify"}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "pipeline done: status=ok duration=6464ms", "file_name": "", "step": "pipeline", "status": "done", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "single upload: pipeline done, status=ok", "file_name": "_smoke_xlsx_设备清单.xlsx", "step": "upload", "status": "pipeline_done", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "save_and_stage: saved D:\\programmtools\\tools\\ragsystem\\data\\single_uploads\\_smoke_html_指南\\_smoke_html_指南.html (96 bytes, md5=e8ab87cf898669914ac171b5db8f0ffc)", "file_name": "_smoke_html_指南.html", "step": "upload", "status": "saved", "duration_ms": 0, "error_msg": "", "size": 96}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "save_and_stage: manifest row added for _smoke_html_指南.html", "file_name": "_smoke_html_指南.html", "step": "upload", "status": "manifest_added", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "pipeline start: scan=False parse=True chunk=True dify=True stop_on_error=False", "file_name": "", "step": "pipeline", "status": "start", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "pipeline scan skipped", "file_name": "", "step": "pipeline", "status": "skipped", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "parse started", "file_name": "", "step": "parse", "status": "start", "duration_ms": 0, "error_msg": "", "dry_run": false, "force": false, "target_stems": ["_smoke_html_指南"]}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "parse ok (本地解析)", "file_name": "_smoke_html_指南.html", "step": "parse", "status": "parsed", "duration_ms": 2, "error_msg": "", "parse_dir": "D:\\programmtools\\tools\\ragsystem\\data\\parsed\\_smoke_html_指南", "fallback_used": false}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "parse finished", "file_name": "", "step": "parse", "status": "done", "duration_ms": 8, "error_msg": "", "parsed": 1, "skipped": 0, "failed": 0}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "pipeline parse done in 10ms", "file_name": "", "step": "pipeline", "status": "step_done", "duration_ms": 0, "error_msg": "", "step_name": "parse"}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "chunk started", "file_name": "", "step": "chunk", "status": "start", "duration_ms": 0, "error_msg": "", "dry_run": false, "force": false, "target_stems": ["_smoke_html_指南"], "strategy": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "chunk: parsed_dir stem 模糊匹配", "file_name": "_smoke_html_指南.html", "step": "chunk", "status": "stem_matched", "duration_ms": 0, "error_msg": "", "desired": "D:\\programmtools\\tools\\ragsystem\\data\\parsed\\_smoke_html_指南 [本地解析]", "resolved": "D:\\programmtools\\tools\\ragsystem\\data\\parsed\\_smoke_html_指南", "effective_stem": "_smoke_html_指南"}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "chunk ok", "file_name": "_smoke_html_指南.html", "step": "chunk", "status": "chunked", "duration_ms": 7, "error_msg": "", "chunks_dir": "D:\\programmtools\\tools\\ragsystem\\data\\chunks\\_smoke_html_指南", "chunk_count": 1, "total_chars": 22, "image_count": 0}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "chunk finished", "file_name": "", "step": "chunk", "status": "done", "duration_ms": 15, "error_msg": "", "chunked": 1, "skipped": 0, "failed": 0}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "pipeline chunk done in 16ms", "file_name": "", "step": "pipeline", "status": "step_done", "duration_ms": 0, "error_msg": "", "step_name": "chunk"}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "dify upload all start", "file_name": "", "step": "dify", "status": "start", "duration_ms": 0, "error_msg": "", "dry_run": false, "target_stems": ["_smoke_html_指南"]}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "文档元数据加载完成: docs=0", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "dify: chunks 已预复制到 output", "file_name": "", "step": "dify", "status": "staged", "duration_ms": 0, "error_msg": "", "stem": "_smoke_html_指南", "from": "D:\\programmtools\\tools\\ragsystem\\data\\chunks\\_smoke_html_指南", "to": "D:\\programmtools\\tools\\ragsystem\\data\\output\\_smoke_html_指南"}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "OSS 跳过：chunks_dir 没有 images/ 子目录: stem=_smoke_html_指南", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:05", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+{"timestamp": "2026-08-26 11:19:06", "level": "INFO", "msg": "dify create_document_by_text start", "file_name": "", "step": "dify", "status": "create", "duration_ms": 0, "error_msg": "", "doc_name": "_smoke_html_指南", "text_len": 14}
+{"timestamp": "2026-08-26 11:19:08", "level": "INFO", "msg": "dify document ready", "file_name": "", "step": "dify", "status": "ready", "duration_ms": 0, "error_msg": "", "document_id": "8d319b0c-dd77-4937-b183-dee56d735f6a"}
+{"timestamp": "2026-08-26 11:19:10", "level": "INFO", "msg": "dify add_segments batch 1/1: requested=1 created=1", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:10", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "8d319b0c-dd77-4937-b183-dee56d735f6a"}
+{"timestamp": "2026-08-26 11:19:10", "level": "INFO", "msg": "dify add_segments 核对通过: 1 段全部落库", "file_name": "", "step": "dify", "status": "verify_ok", "duration_ms": 0, "error_msg": "", "document_id": "8d319b0c-dd77-4937-b183-dee56d735f6a"}
+{"timestamp": "2026-08-26 11:19:10", "level": "INFO", "msg": "dify add_segments 结果: stem=_smoke_html_指南 requested=1 created=1", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:11", "level": "INFO", "msg": "dify upload all done", "file_name": "", "step": "dify", "status": "done", "duration_ms": 5481, "error_msg": "", "scanned": 1, "uploaded": 1, "skipped": 0, "failed": 0}
+{"timestamp": "2026-08-26 11:19:11", "level": "INFO", "msg": "pipeline dify done in 5481ms", "file_name": "", "step": "pipeline", "status": "step_done", "duration_ms": 0, "error_msg": "", "step_name": "dify"}
+{"timestamp": "2026-08-26 11:19:11", "level": "INFO", "msg": "pipeline done: status=ok duration=5510ms", "file_name": "", "step": "pipeline", "status": "done", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:19:11", "level": "INFO", "msg": "single upload: pipeline done, status=ok", "file_name": "_smoke_html_指南.html", "step": "upload", "status": "pipeline_done", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:22:45", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 11:22:45", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+{"timestamp": "2026-08-26 11:31:28", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:31:28", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:31:28", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:31:28", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:31:40", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "7d16c99d-4b8f-476e-aac2-5cdbd6e5d43e"}
+{"timestamp": "2026-08-26 11:31:40", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "7d16c99d-4b8f-476e-aac2-5cdbd6e5d43e"}
+{"timestamp": "2026-08-26 11:32:03", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 11:32:03", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "ff55b160-b506-4c38-bce3-d17ad5272ce7"}
+{"timestamp": "2026-08-26 11:32:41", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:32:41", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:32:41", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:32:41", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:33:02", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:33:02", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:33:02", "level": "INFO", "msg": "api /dify/documents called", "file_name": "", "step": "api", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:33:02", "level": "INFO", "msg": "dify list_documents start", "file_name": "", "step": "dify", "status": "list_documents", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 50}
+{"timestamp": "2026-08-26 11:33:06", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "353b6f94-8c32-4da6-b2cd-371d48c8881e"}
+{"timestamp": "2026-08-26 11:33:06", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "353b6f94-8c32-4da6-b2cd-371d48c8881e"}
+{"timestamp": "2026-08-26 11:33:12", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "e0543535-c6f7-4a1b-b891-52e68a73408e"}
+{"timestamp": "2026-08-26 11:33:12", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "e0543535-c6f7-4a1b-b891-52e68a73408e"}
+{"timestamp": "2026-08-26 11:33:40", "level": "INFO", "msg": "api /dify/documents/{doc_id}/segments called", "file_name": "", "step": "api", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "f168cac9-5679-4436-a9f6-f9d59683ea10"}
+{"timestamp": "2026-08-26 11:33:40", "level": "INFO", "msg": "dify list_segments start", "file_name": "", "step": "dify", "status": "list_segments", "duration_ms": 0, "error_msg": "", "document_id": "f168cac9-5679-4436-a9f6-f9d59683ea10"}

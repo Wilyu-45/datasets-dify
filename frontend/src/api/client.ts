@@ -18,45 +18,6 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ============ 类型 ============
 
-export interface FileItem {
-  name: string;
-  size: number;
-  mtime: string;
-  md5?: string | null;
-  status?: string | null;
-}
-
-export type FileAction =
-  | "staged"
-  | "new"
-  | "skipped"
-  | "renamed"
-  | "missing"
-  | "failed"
-  | "dry_run";
-
-export interface FileActionRecord {
-  filename: string;
-  action: FileAction;
-  md5?: string | null;
-  from_path?: string | null;
-  to_path?: string | null;
-  error?: string | null;
-  duration_ms?: number | null;
-}
-
-export interface ScanReport {
-  dry_run: boolean;
-  scanned: number;
-  staged: number;
-  new: number;
-  skipped_done: number;
-  renamed: number;
-  missing_on_disk: number;
-  failed: number;
-  actions: FileActionRecord[];
-}
-
 export interface ManifestRow {
   seq?: number | null;
   filename: string;
@@ -95,6 +56,88 @@ export interface HealthInfo {
   data_root: string;
   manifest_exists: boolean;
 }
+
+// ============ 配置中心（2026-08 新增）============
+
+/** 可配置字段定义（后端 config_store.PROFILE_FIELDS 动态下发，前端据此渲染表单）。 */
+export interface ConfigFieldDef {
+  key: string;
+  label: string;
+  type: "int" | "float" | "bool" | "str" | "select_dataset" | "select_strategy";
+  default: number | boolean | string;
+  description?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  /** 该字段生效的切分策略列表；不填/空数组表示所有策略通用。 */
+  strategies?: string[];
+}
+
+/** 一个配置方案 = 知识库 ID + 切分策略 + 全部切分参数。 */
+export interface ConfigProfile {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  config: Record<string, number | boolean | string>;
+}
+
+export interface ConfigProfilesResponse {
+  profiles: ConfigProfile[];
+  active_profile_id: string | null;
+}
+
+export interface ActiveConfigResponse {
+  profile: ConfigProfile | null;
+  fields: ConfigFieldDef[];
+}
+
+export interface ConfigSchemaResponse {
+  fields: ConfigFieldDef[];
+}
+
+/** 列出所有配置方案 + 当前激活 id。 */
+export const listConfigProfiles = () =>
+  http<ConfigProfilesResponse>("/config/profiles");
+
+/** 创建配置方案。 */
+export const createConfigProfile = (
+  name: string,
+  config: Record<string, number | boolean | string>
+) =>
+  http<ConfigProfile>("/config/profiles", {
+    method: "POST",
+    body: JSON.stringify({ name, config }),
+  });
+
+/** 更新配置方案。 */
+export const updateConfigProfile = (
+  profileId: string,
+  body: { name?: string; config?: Record<string, number | boolean | string> }
+) =>
+  http<ConfigProfile>(`/config/profiles/${encodeURIComponent(profileId)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+
+/** 删除配置方案。 */
+export const deleteConfigProfile = (profileId: string) =>
+  http<{ ok: boolean; active_profile_id: string | null }>(
+    `/config/profiles/${encodeURIComponent(profileId)}`,
+    { method: "DELETE" }
+  );
+
+/** 激活配置方案。 */
+export const activateConfigProfile = (profileId: string) =>
+  http<ConfigProfile>(`/config/profiles/${encodeURIComponent(profileId)}/activate`, {
+    method: "POST",
+  });
+
+/** 当前激活配置方案 + 字段定义（前端「当前配置」卡片用）。 */
+export const getActiveConfig = () => http<ActiveConfigResponse>("/config/active");
+
+/** 可配置字段定义（配置中心表单用）。 */
+export const getConfigSchema = () => http<ConfigSchemaResponse>("/config/schema");
 
 // ============ §3.2 解析相关 ============
 
@@ -165,16 +208,29 @@ export interface ParsedFileItem {
 
 export const health = () => http<HealthInfo>("/health");
 
-export const listFiles = (dir: "input" | "pending") =>
-  http<FileItem[]>(`/files?dir=${dir}`);
-
 export const getManifest = (limit = 50, offset = 0) =>
   http<ManifestPage>(`/manifest?limit=${limit}&offset=${offset}`);
 
-export const triggerScan = (dryRun: boolean, force = false) =>
-  http<ScanReport>("/scan", {
-    method: "POST",
-    body: JSON.stringify({ dry_run: dryRun, force }),
+/** PATCH /api/manifest/{filename} 可更新的元数据字段（web 端编辑，替代原 Excel 填列）。 */
+export interface ManifestUpdateFields {
+  seq?: number | null;
+  category_l1?: string | null;
+  category_l2?: string | null;
+  keywords?: string | null;
+  department?: string | null;
+  effective_date?: string | null;
+  verified?: string | null;
+  process_note?: string | null;
+}
+
+/** 更新清单行元数据（仅更新传入字段，其余列保持不变）。 */
+export const updateManifestRow = (
+  filename: string,
+  fields: ManifestUpdateFields
+) =>
+  http<ManifestRow>(`/manifest/${encodeURIComponent(filename)}`, {
+    method: "PATCH",
+    body: JSON.stringify(fields),
   });
 
 export const triggerParse = (dryRun: boolean, force = false) =>
@@ -397,7 +453,6 @@ export interface PipelineReport {
   dry_run: boolean;
   duration_ms: number;
   step_timings_ms: Record<string, number>;
-  scan?: ScanReport;
   parse?: ParseReport;
   chunk?: ChunkReport;
   dify?: DifyUploadReport;
@@ -424,9 +479,11 @@ export const triggerPipeline = (dryRun: boolean, force = false, strategy?: strin
   http<PipelineReport>("/pipeline/run", {
     method: "POST",
     body: JSON.stringify({
-      // ★ 2026-08 修复（流水线一致性）：force 标志对所有阶段都生效
-      //   scan/parse/chunk/dify 都传 force，与手动单步的"强制"开关行为一致
-      scan: { enabled: true, dry_run: dryRun, force },
+      // ★ 2026-08 起只支持「上传文档」驱动处理：
+      //   scan 步骤默认禁用（不再扫描 input/ 目录），
+      //   文档上传时已自动登记进清单，流水线直接解析/切分/入库。
+      //   force 标志对所有阶段都生效，与手动单步的"强制"开关行为一致。
+      scan: { enabled: false, dry_run: dryRun, force },
       parse: { enabled: true, dry_run: dryRun, force },
       chunk: { enabled: true, dry_run: dryRun, force, strategy: strategy ?? "" },
       dify: { enabled: true, dry_run: dryRun, force },
@@ -530,11 +587,13 @@ export interface SingleUploadResponse {
  */
 export const uploadSingleFile = async (
   file: File,
-  autoIngest: boolean
+  autoIngest: boolean,
+  profileId?: string
 ): Promise<SingleUploadResponse> => {
   const form = new FormData();
   form.append("file", file);
   form.append("auto_ingest", String(autoIngest));
+  if (profileId) form.append("profile_id", profileId);
   const res = await fetch(`${BASE}/upload/single`, {
     method: "POST",
     body: form,
@@ -547,9 +606,11 @@ export const uploadSingleFile = async (
 };
 
 /** 对已上传文件触发全流程入库（不重新上传文件） */
-export const ingestSingleFile = (filename: string) =>
+export const ingestSingleFile = (filename: string, profileId?: string) =>
   http<PipelineReport>(
-    `/upload/single/ingest?filename=${encodeURIComponent(filename)}`,
+    `/upload/single/ingest?filename=${encodeURIComponent(filename)}${
+      profileId ? `&profile_id=${encodeURIComponent(profileId)}` : ""
+    }`,
     { method: "POST" }
   );
 
@@ -604,13 +665,15 @@ export interface BatchUploadResponse {
  */
 export const uploadBatchFiles = async (
   files: File[],
-  autoIngest: boolean
+  autoIngest: boolean,
+  profileId?: string
 ): Promise<BatchUploadResponse> => {
   const form = new FormData();
   for (const f of files) {
     form.append("files", f);
   }
   form.append("auto_ingest", String(autoIngest));
+  if (profileId) form.append("profile_id", profileId);
   const res = await fetch(`${BASE}/upload/batch`, {
     method: "POST",
     body: form,

@@ -1,23 +1,16 @@
 /**
- * 批量文件上传 + 一键入库组件（2026-08 替代 SingleFileUpload）。
+ * 批量文件上传 + 自动入库组件。
  *
  * 用法：
- *   - 用户拖拽或点击选择多个文件（最多 50 个）
- *   - 选 auto_ingest 开关：上传后自动跑 parse+chunk+dify 全流程
+ *   - 用户拖拽或点击选择多个文件
  *   - 点"上传并入库"按钮
+ *   - 上传后自动跑 parse+chunk+dify 全流程
  *   - 上传完成后展示：每个文件的状态 + 各阶段统计
  *
  * 业务价值：
- *   - 不需要先在 manifest 表加行
+ *   - 上传即处理，无需手动触发各阶段
  *   - 一次选多个文件批量入库，1 个失败不影响其他
- *   - 测试完成后 manifest 留有记录可追溯
- *
- * ★ 2026-08 改造点（与 SingleFileUpload 对比）：
- *   - 接受多个文件（antd Dragger `multiple=true`, `maxCount=50`）
- *   - 文件列表实时展示（antd `showUploadList`）
- *   - 后端走 /api/upload/batch 端点，一次 run_pipeline 跑所有文件
- *   - 结果按文件列表渲染，每行展示 per-file 状态
- *   - 标题改为"批量文件上传 + 一键入库"
+ *   - 处理完成后 manifest 留有记录可追溯
  */
 
 import {
@@ -26,13 +19,11 @@ import {
   Button,
   Card,
   Col,
-  Descriptions,
   Empty,
   Progress,
   Row,
   Space,
   Statistic,
-  Switch,
   Table,
   Tag,
   Tooltip,
@@ -64,13 +55,19 @@ import {
 const { Text, Paragraph } = Typography;
 const { Dragger } = Upload;
 
-const ACCEPT_EXTS = [".pdf", ".docx", ".doc", ".pptx", ".xlsx"];
+const ACCEPT_EXTS = [".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".html", ".htm"];
 const MAX_BATCH_COUNT = 600;
 
 interface Props {
   onAfterUpload?: (r: BatchUploadResponse) => void;
   loading?: boolean;
   onLoadingChange?: (v: boolean) => void;
+  /** ★ 2026-08：当前激活配置方案 id（为空则提示先配置） */
+  profileId?: string;
+  /** ★ 2026-08：当前激活配置方案名称（用于展示） */
+  profileName?: string;
+  /** ★ 2026-08：点击「去配置」的回调（跳转配置中心） */
+  onOpenConfig?: () => void;
 }
 
 const STATUS_COLORS: Record<PipelineStatus, string> = {
@@ -123,9 +120,11 @@ export default function BatchFileUpload({
   onAfterUpload,
   loading = false,
   onLoadingChange,
+  profileId,
+  profileName,
+  onOpenConfig,
 }: Props) {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
-  const [autoIngest, setAutoIngest] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<BatchUploadResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -143,6 +142,11 @@ export default function BatchFileUpload({
   const handleUpload = async () => {
     if (fileList.length === 0) {
       msgApi.warning("请先选择文件");
+      return;
+    }
+    if (!profileId) {
+      msgApi.warning("请先在「配置中心」配置知识库 ID 与切分策略并选择配置方案");
+      onOpenConfig?.();
       return;
     }
     // 拿到原生 File 对象（originFileObj 是 RcFile，RcFile 继承自 File 实际就是 File，
@@ -168,7 +172,7 @@ export default function BatchFileUpload({
         }
       }, 1000);
 
-      const resp = await uploadBatchFiles(rawFiles, autoIngest);
+      const resp = await uploadBatchFiles(rawFiles, true, profileId);
       clearInterval(progressInterval);
       
       // ★ 2026-08-07：最后一次查询进度（确保拿到最终状态）
@@ -197,9 +201,7 @@ export default function BatchFileUpload({
           `⚠️ 全部上传成功，但流水线部分阶段异常`
         );
       } else {
-        msgApi.success(
-          `✅ 批量上传成功：${resp.succeeded}/${resp.total} 个文件（未触发入库）`
-        );
+        msgApi.success(`✅ 批量上传成功：${resp.succeeded}/${resp.total} 个文件`);
       }
     } catch (e) {
       const msg = (e as Error).message;
@@ -371,40 +373,70 @@ export default function BatchFileUpload({
       title={
         <Space>
           <CloudUploadOutlined style={{ color: "#1677ff" }} />
-          <span>批量文件上传 + 一键入库（§3.x 升级）</span>
-          <Tag color="blue">无需 Excel</Tag>
+          <span>批量文件上传 + 自动入库</span>
+          <Tag color="blue">自动登记清单</Tag>
           <Tag color="cyan">最多 {MAX_BATCH_COUNT} 个</Tag>
         </Space>
       }
       extra={
-        <Space>
-          <Tooltip title="上传后自动触发 parse + chunk + dify 全流程；关闭则只上传到 pending/，不自动入库">
-            <Space>
-              <RocketOutlined />
-              <Text>上传后自动入库</Text>
-              <Switch
-                checked={autoIngest}
-                onChange={setAutoIngest}
-                disabled={isLoading}
-              />
-            </Space>
-          </Tooltip>
-          <Button
-            type="primary"
-            icon={<CloudUploadOutlined />}
-            loading={isLoading}
-            onClick={handleUpload}
-            disabled={fileList.length === 0}
-          >
-            {autoIngest
-              ? `上传并入库（${fileList.length}）`
-              : `仅上传（${fileList.length}）`}
-          </Button>
-        </Space>
+        <Button
+          type="primary"
+          icon={<CloudUploadOutlined />}
+          loading={isLoading}
+          onClick={handleUpload}
+          disabled={fileList.length === 0 || !profileId}
+        >
+          上传并入库（{fileList.length}）
+        </Button>
       }
     >
       {contextHolder}
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        {/* ★ 2026-08：当前配置方案（上传处理将使用所选配置） */}
+        {profileId ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ backgroundColor: "#e6f4ff", borderColor: "#91caff" }}
+            message={
+              <Space>
+                <span>
+                  本次上传将使用配置方案：
+                  <Text strong style={{ marginLeft: 4 }}>
+                    {profileName || "当前配置"}
+                  </Text>
+                </span>
+                <Tag color="blue" style={{ marginLeft: 8 }}>
+                  知识库 + 切分策略已配置
+                </Tag>
+                {onOpenConfig && (
+                  <Button size="small" type="link" onClick={onOpenConfig}>
+                    切换配置
+                  </Button>
+                )}
+              </Space>
+            }
+          />
+        ) : (
+          <Alert
+            type="warning"
+            showIcon
+            message={
+              <Space>
+                <WarningOutlined />
+                <Text>
+                  尚未配置配置方案：处理前必须先配置「知识库 ID + 切分策略」并选择一个方案激活。
+                </Text>
+                {onOpenConfig && (
+                  <Button size="small" type="primary" onClick={onOpenConfig}>
+                    去配置
+                  </Button>
+                )}
+              </Space>
+            }
+          />
+        )}
+
         {/* 拖拽上传区 */}
         <Dragger {...uploadProps} style={{ padding: 8 }}>
           <p className="ant-upload-drag-icon">
@@ -416,9 +448,9 @@ export default function BatchFileUpload({
               : "点击或拖拽多个文件到此区域上传"}
           </p>
           <p className="ant-upload-hint" style={{ fontSize: 12 }}>
-            支持格式：PDF / DOCX / DOC / PPTX / XLSX（一次最多 {MAX_BATCH_COUNT} 个）
+            支持格式：PDF / DOCX / DOC / PPTX / XLSX / HTML（一次最多 {MAX_BATCH_COUNT} 个）
             <br />
-            上传后自动在 manifest.xlsx 追加行，并移动到 pending/ 等待处理
+            上传后自动登记到文件清单，并自动完成解析 → 切分 → Dify 入库
             <br />
             <Text type="secondary">
               1 个文件失败不影响其他文件，可与混合格式 / 混合大小一起提交
@@ -568,11 +600,10 @@ export default function BatchFileUpload({
 
         <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
           <Badge color="blue" text="用法说明" />
-          ：选文件（可多选） → 选「自动入库」开关 → 点「上传」。
-          若开启自动入库，全部文件上传后会自动跑一次 parse+chunk+dify 流水线；
-          1 个文件失败不会影响其他文件。
-          测试文件可在 <code>data/pending/</code> 中或在 PostgreSQL{" "}
-          <code>manifest</code> 表中找到。
+          ：选择文件（可多选） → 点「上传并入库」。
+          全部文件上传后会自动完成解析 → 切分 → Dify 入库；
+          1 个文件失败不会影响其他文件，可重新上传失败的文件重试。
+          处理记录可在文件清单中查看。
         </Paragraph>
       </Space>
     </Card>

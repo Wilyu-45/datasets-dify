@@ -285,6 +285,23 @@ class ManifestPage(BaseModel):
     rows: List[ManifestRow]
 
 
+class ManifestUpdate(BaseModel):
+    """PATCH /api/manifest/{filename} 可更新字段（均为可选，仅更新显式传入的字段）。
+
+    这些列原本靠用户在 Excel 清单里维护（已删除 Excel 依赖），现改为 web 端直接编辑：
+    一级分类 / 二级分类 / 关键词 / 部门 / 生效日期，另支持序号、已核对、处理备注。
+    """
+
+    seq: Optional[int] = None
+    category_l1: Optional[str] = None
+    category_l2: Optional[str] = None
+    keywords: Optional[str] = None
+    department: Optional[str] = None
+    effective_date: Optional[str] = None
+    verified: Optional[str] = None
+    process_note: Optional[str] = None
+
+
 # ============ 通用响应 ============
 
 

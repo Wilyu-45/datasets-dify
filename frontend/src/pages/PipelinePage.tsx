@@ -1,9 +1,9 @@
 import { Space, Typography } from "antd";
-import { useState } from "react";
-import PipelineControl from "../components/PipelineControl";
+import { useEffect, useState } from "react";
 import BatchFileUpload from "../components/BatchFileUpload";
 import ManifestTable from "../components/ManifestTable";
 import {
+  getActiveConfig,
   type BatchUploadResponse,
   type ChunkReport,
   type DifyUploadReport,
@@ -14,17 +14,32 @@ import DifyReportTable from "../components/DifyReportTable";
 
 const { Title, Paragraph } = Typography;
 
-export default function PipelinePage() {
+interface Props {
+  /** ★ 2026-08：跳转配置中心 */
+  onOpenConfig?: () => void;
+}
+
+export default function PipelinePage({ onOpenConfig }: Props) {
   const [refreshKey, setRefreshKey] = useState(0);
-  const [loading, setLoading] = useState(false);
   const [lastReport, setLastReport] = useState<PipelineReport | null>(null);
+  // ★ 2026-08：当前激活配置方案
+  const [activeProfileId, setActiveProfileId] = useState<string | undefined>();
+  const [activeProfileName, setActiveProfileName] = useState<string | undefined>();
 
-  const onAfterPipeline = (r: PipelineReport) => {
-    setLastReport(r);
-    setRefreshKey((k) => k + 1);
-  };
+  // 加载当前激活配置方案（上传处理将使用它）
+  useEffect(() => {
+    getActiveConfig()
+      .then((r) => {
+        setActiveProfileId(r.profile?.id);
+        setActiveProfileName(r.profile?.name);
+      })
+      .catch(() => {
+        setActiveProfileId(undefined);
+        setActiveProfileName(undefined);
+      });
+  }, []);
 
-  // 批量上传后刷新 manifest；如果开启了 auto_ingest，整批 pipeline 报告也会回填
+  // 批量上传后刷新 manifest；上传即自动入库，整批 pipeline 报告也会回填
   const onAfterBatchUpload = (r: BatchUploadResponse) => {
     setRefreshKey((k) => k + 1);
     if (r.pipeline) {
@@ -47,32 +62,26 @@ export default function PipelinePage() {
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <div>
         <Title level={4} style={{ margin: 0 }}>
-          步骤 3.0 · 一键流水线
+          入库工作台
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-          按顺序串联执行 <code>① 扫描</code> → <code>② 解析</code> →{" "}
-          <code>③ 切分</code> → <code>④ 入库</code> 4 个阶段。 单阶段失败
-          不会中断后续阶段（除非显式 stop_on_error），下方按阶段展开明细报告。
+          上传文档后自动登记并全流程处理：
+          <code>① 解析</code> → <code>② 切分</code> → <code>③ 入库</code>。
+          处理前请先在<strong>配置中心</strong>配置知识库 ID 与切分策略并选择配置方案。
+          下方可查看入库明细与文件清单。
         </Paragraph>
       </div>
-
-      {/* 批量文件上传（2026-08 新版，替代 SingleFileUpload） */}
       <BatchFileUpload
         onAfterUpload={onAfterBatchUpload}
-        onLoadingChange={setLoading}
-      />
-
-      <PipelineControl
-        onAfterPipeline={onAfterPipeline}
-        lastReport={lastReport}
-        loading={loading}
-        onLoadingChange={setLoading}
+        profileId={activeProfileId}
+        profileName={activeProfileName}
+        onOpenConfig={onOpenConfig}
       />
 
       {lastReport?.dify && (
         <Space direction="vertical" size="small" style={{ width: "100%" }}>
           <Title level={5} style={{ margin: 0 }}>
-            ④ 入库阶段明细
+            入库阶段明细
           </Title>
           <DifyReportTable lastReport={difyReport} />
         </Space>

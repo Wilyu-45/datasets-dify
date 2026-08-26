@@ -39,7 +39,10 @@ def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    settings = cfg_mod.settings
+    # ★ .env 优先级高于环境变量（settings_customise_sources），
+    #   必须用 init kwargs 覆盖 data_root 才能真正隔离测试目录
+    settings = cfg_mod.Settings(data_root=test_data_root)
+    cfg_mod.settings = settings
 
     from app.services import chunker
     chunker.settings = settings

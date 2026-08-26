@@ -19,13 +19,18 @@ logging.disable(logging.CRITICAL)
 
 @pytest.fixture(autouse=True)
 def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """每个用例：设置 RAG_DATA_ROOT → tmp_path/<uuid>，重新实例化 settings。"""
+    """每个用例：隔离数据目录到 tmp_path。
+
+    注意：.env 的 RAG_DATA_ROOT 优先级高于环境变量（config.settings_customise_sources），
+    必须用 init kwargs 构造 Settings 才能真正隔离 data_root。
+    """
     test_data_root = tmp_path / "data"
     monkeypatch.setenv("RAG_DATA_ROOT", str(test_data_root))
 
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    settings = cfg_mod.settings
+    settings = cfg_mod.Settings(data_root=test_data_root)
+    cfg_mod.settings = settings
 
     # 把 services 引用的 settings 同步替换
     from app.services import scanner, parser
@@ -34,6 +39,19 @@ def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     settings.ensure_dirs()
     yield settings
+
+
+@pytest.fixture(autouse=True)
+def pg_ready(fresh_settings):
+    """确保 manifest 表存在；测试结束后恢复原表内容，避免污染开发库。"""
+    from app.services import manifest_store
+    manifest_store.bootstrap()
+    saved = list(manifest_store.load().values())
+    manifest_store.clear()
+    yield
+    manifest_store.clear()
+    if saved:
+        manifest_store.bulk_upsert(saved)
 
 
 def _put(path: Path, content: bytes = b"hello") -> Path:
@@ -803,8 +821,8 @@ def test_parse_handles_zip_with_no_json(fresh_settings, monkeypatch):
     def _zip_only_md():
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
-            # ZIP 内的路径不含 stem（zip 整体被解压到 parsed_dir=parsed/no_json/）
-            zf.writestr("hybrid_auto/no_json.md", "# title\n")
+            # ZIP 内路径第一层是 stem 目录（mineru_client 解压时会剥掉第一层）
+            zf.writestr("no_json/hybrid_auto/no_json.md", "# title\n")
         return buf.getvalue()
 
     class _Resp:
@@ -1108,3 +1126,183 @@ def test_mineru_client_pipeline_in_request_upgraded(fresh_settings, monkeypatch)
     assert captured["data"]["backend"] == "hybrid-engine", (
         f"pipeline 应被自动升级，实际请求 backend={captured['data']['backend']}"
     )
+
+
+# ============ 本地解析（.xlsx / .html，MinerU 不支持） ============
+
+
+def test_local_parse_xlsx_to_markdown(fresh_settings):
+    """openpyxl 提取 .xlsx 全部 sheet → markdown 表格。"""
+    import openpyxl
+
+    from app.services.parser import _extract_xlsx_text
+
+    s = fresh_settings
+    src = s.pending_dir / "数据表.xlsx"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(["姓名", "科室", "分值"])
+    ws.append(["张三", "ICU", 95.5])
+    ws2 = wb.create_sheet("汇总")
+    ws2.append(["合计", 300])
+    wb.save(src)
+
+    text = _extract_xlsx_text(src)
+    assert "Sheet1" in text and "汇总" in text
+    assert "姓名" in text and "张三" in text and "ICU" in text
+    assert "合计" in text and "300" in text
+    assert "|" in text  # markdown 表格分隔符
+
+
+def test_local_parse_html_to_markdown(fresh_settings):
+    """标准库 html.parser 提取 HTML 可见文本 → 简单 markdown。"""
+    from app.services.parser import _extract_html_text
+
+    s = fresh_settings
+    html = """<!DOCTYPE html>
+<html><head><title>标题</title><style>body{margin:0}</style></head>
+<body>
+<h1>医院感染管理办法</h1>
+<p>第一条 为了加强医院感染管理，有效预防和控制医院感染。</p>
+<ul><li>制度建设</li><li>人员培训</li></ul>
+<table><tr><th>项目</th><th>分值</th></tr><tr><td>手卫生</td><td>20</td></tr></table>
+</body></html>"""
+    src = s.pending_dir / "制度.html"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(html, encoding="utf-8")
+
+    text = _extract_html_text(src)
+    assert "医院感染管理办法" in text
+    assert "有效预防和控制医院感染" in text
+    assert "制度建设" in text and "人员培训" in text
+    assert "手卫生" in text and "20" in text
+    # 脚本 / 样式 / 原始标签不残留
+    assert "body{margin" not in text
+    assert "<html" not in text
+
+
+def test_local_parse_document_writes_md(fresh_settings):
+    """_parse_local_document 生成 parsed/{stem}/{stem}.md。"""
+    import openpyxl
+
+    from app.services.parser import _parse_local_document
+
+    s = fresh_settings
+    src = s.pending_dir / "登记表.xlsx"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "清单"
+    ws.append(["序号", "名称"])
+    ws.append([1, "呼吸机"])
+    wb.save(src)
+
+    md_path = _parse_local_document(src, s.parsed_dir / "登记表")
+    assert md_path == s.parsed_dir / "登记表" / "登记表.md"
+    assert md_path.is_file()
+    assert "呼吸机" in md_path.read_text(encoding="utf-8")
+
+
+def test_parse_pending_mineru_xlsx_and_local_html(fresh_settings, monkeypatch):
+    """parse_pending：.xlsx 走 MinerU，.html 走本地解析；manifest 正确更新。"""
+    import openpyxl
+
+    from app.models.schemas import ManifestRow
+    from app.services import manifest_store, parser
+
+    s = fresh_settings
+    fake = FakeMinerUClient()
+    _install_fake_client(monkeypatch, fake)
+
+    # .xlsx
+    xlsx_src = s.pending_dir / "登记表.xlsx"
+    xlsx_src.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "清单"
+    ws.append(["序号", "名称"])
+    ws.append([1, "呼吸机"])
+    wb.save(xlsx_src)
+
+    # .html
+    html_src = s.pending_dir / "指南.html"
+    html_src.write_text(
+        "<html><body><h1>指南</h1><p>感染防控指南内容。</p></body></html>",
+        encoding="utf-8",
+    )
+
+    for name in ("登记表.xlsx", "指南.html"):
+        manifest_store.upsert(
+            s.manifest_path,
+            ManifestRow(
+                filename=name,
+                import_status="已移入待处理",
+                process_status="已扫描",
+            ),
+        )
+
+    report = parser.parse_pending(dry_run=False, force=False)
+    assert report.parsed == 2, f"parsed 应为 2，实际 {report.parsed}"
+    assert report.failed == 0
+
+    m = manifest_store.load()
+    assert m["登记表.xlsx"].status == "parsing_done"
+    assert m["指南.html"].status == "parsing_done"
+    # xlsx 走 MinerU：parse 列不应含 [本地解析]
+    assert "[本地解析]" not in (m["登记表.xlsx"].parse or "")
+    assert "[本地解析]" in (m["指南.html"].parse or "")
+
+    # MinerU 只处理了 xlsx，本地解析只处理了 html
+    assert any(p.name == "登记表.xlsx" for p in fake.calls)
+    assert not any(p.name == "指南.html" for p in fake.calls)
+
+    assert (s.parsed_dir / "登记表" / "登记表.md").is_file()
+    assert (s.parsed_dir / "指南" / "指南.md").is_file()
+    md_text = (s.parsed_dir / "指南" / "指南.md").read_text(encoding="utf-8")
+    assert "感染防控指南内容" in md_text
+
+
+def test_parse_pending_xlsx_mineru_fail_then_local_fallback(fresh_settings, monkeypatch):
+    """MinerU 调用失败时 .xlsx 用本地解析兜底：PARSED + [本地解析] 标记。"""
+    import openpyxl
+
+    from app.models.schemas import ManifestRow
+    from app.services import manifest_store, parser, mineru_client
+
+    s = fresh_settings
+    fake = FakeMinerUClient(raise_with=mineru_client.MinerUError("api down"))
+    _install_fake_client(monkeypatch, fake)
+
+    xlsx_src = s.pending_dir / "评分表.xlsx"
+    xlsx_src.parent.mkdir(parents=True, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "评分"
+    ws.append(["项目", "分值"])
+    ws.append(["手卫生", 20])
+    ws.append(["隔离", 30])
+    wb.save(xlsx_src)
+
+    manifest_store.upsert(
+        s.manifest_path,
+        ManifestRow(
+            filename="评分表.xlsx",
+            import_status="已移入待处理",
+            process_status="已扫描",
+        ),
+    )
+
+    report = parser.parse_pending(dry_run=False, force=False)
+    assert report.parsed == 1, f"parsed 应为 1（本地兜底成功），实际 {report.parsed}"
+    assert report.failed == 0
+
+    m = manifest_store.load()
+    row = m["评分表.xlsx"]
+    assert row.status == "parsing_done"
+    assert "[本地解析]" in (row.parse or "")
+    assert "本地解析兜底" in (row.error_msg or "")
+    assert (s.parsed_dir / "评分表" / "评分表.md").is_file()
+    # 源文件不应被移入 error/
+    assert not list(s.error_dir.glob("评分表*"))

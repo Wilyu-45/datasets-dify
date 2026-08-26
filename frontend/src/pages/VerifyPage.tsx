@@ -41,6 +41,7 @@ import {
   type DifyDocumentItem,
   type DifySegmentItem,
 } from "../api/client";
+import ActiveConfigCard from "../components/ActiveConfigCard";
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -215,14 +216,16 @@ export default function VerifyPage() {
       {ctxHolder}
       <div>
         <Title level={4} style={{ margin: 0 }}>
-          步骤 3.5 · 人工校验
+          人工校验
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-          拉取 Dify 数据集中的所有文档 → 选中一个文档查看其所有分段 →
-          编辑分段 <code>content</code> / <code>enabled</code> → 保存后会调
-          <code> POST /datasets/{`{id}`}/documents/{`{doc}`}/segments/{`{seg}`}</code> 写回 Dify。
+          从 Dify 知识库拉取已入库文档，查看并修正各分段的
+          <code>content</code> / <code>enabled</code>，保存后写回 Dify。
         </Paragraph>
       </div>
+
+      {/* ★ 2026-08：展示当前激活配置（知识库 ID 等），配置中心修改后刷新即变 */}
+      <ActiveConfigCard />
 
       {/* 三栏布局 */}
       <Row gutter={12}>

@@ -53,12 +53,13 @@ class PipelineStep:
 class PipelineRequest:
     """一键流水线的入参。
 
-    ★ 2026-08 新增 target_stems 白名单（单文件上传 + 一键入库）：
+    ★ 2026-08 起只支持「上传文档」驱动处理：
+        - scan 步骤默认禁用（enabled=False）——不再扫描 input/ 目录；
+          文档通过上传接口自动登记进 manifest 后，流水线直接解析/切分/入库。
         - target_stems=None（默认）：流水线处理所有待处理文档
         - target_stems=[stem1, stem2, ...]：流水线只处理这些 stem 对应的文档
-          用于「单文件上传 + 一键入库」场景——用户上传单文件后，
-          流水线只处理这一个文件，不应该处理 manifest / chunks 目录里其他
-          走完整 Excel 流程的文档。
+          用于「上传 + 一键入库」场景——用户上传后，流水线只处理该文件，
+          不应处理 manifest / chunks 目录里其他走完整清单流程的文档。
     """
 
     scan: PipelineStep = None  # type: ignore
@@ -69,8 +70,10 @@ class PipelineRequest:
     target_stems: Optional[list] = None  # type: ignore
 
     def __post_init__(self) -> None:
-        # 默认全开 + dry_run=False
-        self.scan = self.scan or PipelineStep(enabled=True, dry_run=False)
+        # 默认全开 + dry_run=False；但 scan 步骤默认关闭——
+        # 只支持上传驱动处理，不再默认扫描 input/ 目录；
+        # 如需目录扫描可显式传 scan.enabled=True。
+        self.scan = self.scan or PipelineStep(enabled=False, dry_run=False)
         self.parse = self.parse or PipelineStep(enabled=True, dry_run=False)
         self.chunk = self.chunk or PipelineStep(enabled=True, dry_run=False)
         self.dify = self.dify or PipelineStep(enabled=True, dry_run=False)

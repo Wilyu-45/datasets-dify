@@ -1,5 +1,5 @@
 """plan.md §3 单文件上传 + 全流程入库 API（新增于 2026-08-04）。
-★ 2026-08 扩展为批量上传（§3 改造）：去掉 Excel 驱动流程依赖，
+★ 2026-08 扩展为批量上传（§3 改造）：去掉预登记流程依赖，
         用户在 web 一次性选多个文件上传，每个文件独立跑 parse → chunk → dify 全流程，
         1 个失败不影响其他。
 
@@ -28,7 +28,7 @@
 为什么用 single_uploads/ 而不是直接放 input/：
   - single_uploads/ 是临时中转区，便于清理（测试完后用户可手动删）
   - input/ 是用户管理自己文件的目录，混入会污染
-  - manifest 自动添加行后用户也能在 Excel 里看到本次测试记录
+  - manifest 自动添加行后用户也能在清单里看到本次测试记录
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from app.config import settings
 from app.models.schemas import ManifestRow
 from app.services import (
     chunker,
+    config_store,
     dify_ingest,
     manifest_store,
     parser,
@@ -125,9 +126,9 @@ def _build_pipeline_request(target_stem: str) -> Any:
     """构造一个针对单文件的 PipelineRequest（仅跑 parse + chunk + dify）。
 
     ★ 2026-08 单文件上传 + 一键入库：
-        - scan 阶段：enabled=False（不走 Excel 扫描流程）
+        - scan 阶段：enabled=False（不执行扫描流程）
         - parse/chunk/dify：enabled=True，但通过 target_stems 白名单只处理这一个文件
-          —— 这样 manifest 里其他待处理的文档不会被处理（那些要走完整 Excel 流程）
+          —— 这样 manifest 里其他待处理的文档不会被处理（那些要走完整清单流程）
     """
     from app.services.pipeline import PipelineRequest, PipelineStep
 
@@ -141,16 +142,38 @@ def _build_pipeline_request(target_stem: str) -> Any:
     )
 
 
-def _run_single_file_pipeline(target_stem: str) -> Dict[str, Any]:
+def _resolve_run_config(profile_id: Optional[str]) -> Dict[str, Any]:
+    """解析上传处理要使用的配置方案。
+
+    显式 profile_id > 当前激活方案。
+    显式指定但不存在 → 404；两者都没有 → 400（提示先去配置中心配置）。
+    """
+    if profile_id:
+        profile = config_store.get_profile(profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail=f"配置方案不存在：{profile_id}")
+        return profile
+    profile = config_store.get_active_profile()
+    if not profile:
+        raise HTTPException(
+            status_code=400,
+            detail="尚未配置任何配置方案：请先到「配置中心」配置知识库 ID 与切分策略，并选择一个方案激活",
+        )
+    return profile
+
+
+def _run_single_file_pipeline(target_stem: str, profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """对单文件运行 parse → chunk → dify 流水线（只处理这一个文件）。
 
     Args:
         target_stem: 文件 stem（不含扩展名），例如 "report_2024"
+        profile: 配置方案（含 config 字段）。传了则在 pipeline 执行期间临时应用其配置。
     """
     from app.services.pipeline import run_pipeline
 
     req = _build_pipeline_request(target_stem)
-    report = run_pipeline(req)
+    with config_store.apply_config(profile["config"] if profile else None):
+        report = run_pipeline(req)
     return report.to_dict()
 
 
@@ -168,16 +191,18 @@ def _build_batch_pipeline_request(target_stems: List[str]) -> Any:
     )
 
 
-def _run_batch_pipeline(target_stems: List[str]) -> Dict[str, Any]:
+def _run_batch_pipeline(target_stems: List[str], profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """对一批文件运行 parse → chunk → dify 流水线（只处理这批文件）。
 
     ★ 2026-08 批量上传优化：与单文件版共用 run_pipeline，
     但用 target_stems=[s1, s2, ...] 一次性传所有 stem，避免对每个文件跑一次完整 pipeline。
+    若传了 profile 配置方案，则在 pipeline 执行期间临时应用其配置。
     """
     from app.services.pipeline import run_pipeline
 
     req = _build_batch_pipeline_request(target_stems)
-    report = run_pipeline(req)
+    with config_store.apply_config(profile["config"] if profile else None):
+        report = run_pipeline(req)
     return report.to_dict()
 
 
@@ -397,10 +422,14 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
 
 @router.post("/upload/single", response_model=SingleUploadResponse)
 async def post_upload_single(
-    file: UploadFile = File(..., description="待入库的单个文件（PDF / DOCX / DOC / PPTX / XLSX）"),
+    file: UploadFile = File(..., description="待入库的单个文件（PDF / DOCX / DOC / PPTX / XLSX / HTML）"),
     auto_ingest: bool = Form(
         True,
         description="上传后是否自动触发 parse + chunk + dify 全流程入库",
+    ),
+    profile_id: str = Form(
+        "",
+        description="配置方案 ID；为空则使用当前激活配置方案（必选，未配置则拒绝处理）",
     ),
 ) -> SingleUploadResponse:
     """单文件上传（multipart/form-data）。
@@ -431,8 +460,10 @@ async def post_upload_single(
     pipeline_report: Optional[Dict[str, Any]] = None
     error_text: Optional[str] = None
     if auto_ingest:
+        # ★ 2026-08 配置中心：处理前必须已配置好方案（显式 profile_id > 激活方案）
+        profile = _resolve_run_config(profile_id or None)
         try:
-            pipeline_report = _run_single_file_pipeline(stem)
+            pipeline_report = _run_single_file_pipeline(stem, profile)
             log.info(
                 "single upload: pipeline done, status=%s",
                 pipeline_report.get("status"),
@@ -464,11 +495,15 @@ _MAX_BATCH_UPLOAD = 600
 @router.post("/upload/batch", response_model=BatchUploadResponse)
 async def post_upload_batch(
     files: List[UploadFile] = File(
-        ..., description="待入库的多个文件（PDF / DOCX / DOC / PPTX / XLSX）"
+        ..., description="待入库的多个文件（PDF / DOCX / DOC / PPTX / XLSX / HTML）"
     ),
     auto_ingest: bool = Form(
         True,
         description="上传后是否自动触发 parse + chunk + dify 全流程入库（一次性跑所有文件）",
+    ),
+    profile_id: str = Form(
+        "",
+        description="配置方案 ID；为空则使用当前激活配置方案（必选，未配置则拒绝处理）",
     ),
 ) -> BatchUploadResponse:
     """批量文件上传（multipart/form-data，2026-08 新增）。
@@ -568,8 +603,10 @@ async def post_upload_batch(
     # 2) 一次性触发全流程（仅对成功保存的 stem）
     pipeline_report: Optional[Dict[str, Any]] = None
     if auto_ingest and successful_stems:
+        # ★ 2026-08 配置中心：处理前必须已配置好方案（显式 profile_id > 激活方案）
+        profile = _resolve_run_config(profile_id or None)
         try:
-            pipeline_report = _run_batch_pipeline(successful_stems)
+            pipeline_report = _run_batch_pipeline(successful_stems, profile)
             log.info(
                 "batch upload: pipeline done, status=%s stems=%d",
                 pipeline_report.get("status"), len(successful_stems),
@@ -627,14 +664,17 @@ async def post_upload_batch(
 
 
 @router.post("/upload/single/ingest")
-def post_upload_single_ingest(filename: str) -> Dict[str, Any]:
+def post_upload_single_ingest(
+    filename: str,
+    profile_id: str = "",
+) -> Dict[str, Any]:
     """对已上传的单文件触发全流程入库（不重复上传文件）。
 
     使用场景：用户在第一步上传后关掉了 auto_ingest，或想重跑全流程。
     调用前确保文件已通过 /api/upload/single 上传并在 manifest 中。
 
     ★ 2026-08：只处理这个文件（target_stems=[stem]），
-    不处理 manifest / chunks 目录里其他走完整 Excel 流程的文档。
+    不处理 manifest / chunks 目录里其他走完整清单流程的文档。
     """
     log.info(
         "api /upload/single/ingest called: filename=%s",
@@ -643,35 +683,15 @@ def post_upload_single_ingest(filename: str) -> Dict[str, Any]:
     )
     # 从 filename 提取 stem（去除扩展名），作为 target_stems
     target_stem = Path(filename).stem
-    try:
-        return _run_single_file_pipeline(target_stem)
-    except Exception as e:  # noqa: BLE001
-        log.exception(
-            "single ingest 接口异常",
-            extra={"step": "api", "status": "single_ingest_error", "error_msg": str(e)},
+    # ★ 2026-08 配置中心：处理前必须已配置好方案
+    profile = _resolve_run_config(profile_id or None)
+    if not profile:
+        raise HTTPException(
+            status_code=400,
+            detail="尚未配置任何配置方案：请先到「配置中心」配置知识库 ID 与切分策略，并选择一个方案激活",
         )
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/upload/single/ingest")
-def post_upload_single_ingest(filename: str) -> Dict[str, Any]:
-    """对已上传的单文件触发全流程入库（不重复上传文件）。
-
-    使用场景：用户在第一步上传后关掉了 auto_ingest，或想重跑全流程。
-    调用前确保文件已通过 /api/upload/single 上传并在 manifest 中。
-
-    ★ 2026-08：只处理这个文件（target_stems=[stem]），
-    不处理 manifest / chunks 目录里其他走完整 Excel 流程的文档。
-    """
-    log.info(
-        "api /upload/single/ingest called: filename=%s",
-        filename,
-        extra={"step": "api", "status": "single_ingest", "file_name": filename},
-    )
-    # 从 filename 提取 stem（去除扩展名），作为 target_stems
-    target_stem = Path(filename).stem
     try:
-        return _run_single_file_pipeline(target_stem)
+        return _run_single_file_pipeline(target_stem, profile)
     except Exception as e:  # noqa: BLE001
         log.exception(
             "single ingest 接口异常",

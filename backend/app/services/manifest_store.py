@@ -32,7 +32,7 @@ HEADERS_ZH = [
     "创建时间", "更新时间", "错误信息", "解析", "切块", "dify文档ID", "dify状态",
 ]
 
-# 系统自动维护的列（不要求用户在 Excel 里提供，现由数据库管理）
+# 系统自动维护的列（由系统/数据库自动维护，用户无需填写）
 SYSTEM_HEADERS_ZH = [
     "导入状态", "处理状态", "已核对", "处理备注", "状态", "MD5",
     "创建时间", "更新时间", "错误信息", "解析", "切块", "dify文档ID", "dify状态",
@@ -183,8 +183,33 @@ def bulk_upsert(path: Optional[Path] = None, rows: Optional[Iterable[ManifestRow
         params.append(data)
     with _write_lock:
         with db.get_conn() as conn:
-            conn.executemany(_UPSERT_SQL, params)
+            # 注：部分 psycopg 构建（C 扩展版）的 Connection 不暴露 executemany，
+            # 统一用单条 execute 循环，保证兼容。
+            for data in params:
+                conn.execute(_UPSERT_SQL, data)
             conn.commit()
+
+
+def update_fields(filename: str, fields: Dict[str, object]) -> Optional[ManifestRow]:
+    """按文件名部分更新一行（仅更新 fields 中出现的列），自动刷新 update_time。
+
+    仅允许更新 MANIFEST_FIELDS 中的字段，且禁止改写 filename 主键。
+    清单中不存在该文件名时返回 None。
+    """
+    row = fetch(filename)
+    if row is None:
+        return None
+    clean = {k: v for k, v in fields.items() if k in MANIFEST_FIELDS and k != "filename"}
+    if not clean:
+        return row
+    data = _row_to_dict(row)
+    data.update(clean)
+    data["update_time"] = now_iso()
+    with _write_lock:
+        with db.get_conn() as conn:
+            conn.execute(_UPSERT_SQL, data)
+            conn.commit()
+    return fetch(filename)
 
 
 def delete(filename: str) -> None:

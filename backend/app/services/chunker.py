@@ -2709,7 +2709,7 @@ def chunk_parsed(
         - target_stems=None（默认）：处理所有 parse 列非空的行
         - target_stems=[stem1, stem2, ...]：只处理这些 stem 对应的行
           用于「单文件上传 + 一键入库」场景——只切分这一个文件，
-          不应该处理 manifest 里其他已解析的文档（那些需要走完整 Excel 流程）。
+          不应该处理 manifest 里其他已解析的文档（那些需要走完整清单流程）。
 
     ★ 2026-08-24 多策略切分：strategy 指定切分策略
       （structure/recursive/fixed/sentence/semantic/parent_child/late_chunking/llm），
@@ -2874,9 +2874,14 @@ def chunk_parsed(
 
         # 6) 实际切分
         try:
-            # 6.0) 解析质量预检：识别 MinerU 解析严重缺失的情况
-            #   典型场景：扫描件 OCR 失败、纯图片 PDF（v2 只有 page_number/header）
-            is_trivial, trivial_reason = _is_parse_content_trivial(parse_path)
+            # 6.0) 解析质量预检（仅 .pdf）：识别 MinerU 解析严重缺失的情况
+            #   典型场景：扫描件 OCR 失败、纯图片 PDF（v2 只有 page_number/header）。
+            #   PyMuPDF fallback 只适用于 PDF；.xlsx/.html 等非 PDF 文档跳过此检查，
+            #   避免 office 产物（v2 块少）或本地解析产物（md 短）被误判 trivial 后
+            #   走无效的 pdf_fallback 链。
+            is_trivial, trivial_reason = False, ""
+            if Path(fname).suffix.lower() == ".pdf":
+                is_trivial, trivial_reason = _is_parse_content_trivial(parse_path)
             if is_trivial:
                 # ★ 2026-07-31：自动 fallback 重解析（不再直接报错）
                 # 优先级：v2 严重缺失 → 找原 PDF → pdf_fallback.maybe_fallback_after_mineru_failure

@@ -421,11 +421,11 @@ class MetadataSyncRequest(BaseModel):
 
 @router.post("/dify/metadata/sync")
 def post_sync_metadata(body: Optional[MetadataSyncRequest] = None) -> Dict[str, Any]:
-    """从 Excel 同步文档元数据到已入库的 Dify 文档。
+    """从元数据表同步文档元数据到已入库的 Dify 文档。
 
     用于：
     1. 首次导入元数据（文档已入库但无元数据）
-    2. Excel 更新后重新同步
+    2. 元数据更新后重新同步
     """
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置")
@@ -435,10 +435,10 @@ def post_sync_metadata(body: Optional[MetadataSyncRequest] = None) -> Dict[str, 
         client = DifyClient()
         # 1) 确保字段存在
         field_map = doc_metadata.ensure_metadata_fields(client)
-        # 2) 加载 Excel
+        # 2) 加载文档元数据
         doc_meta = doc_metadata.load_doc_metadata()
         if not doc_meta:
-            return {"ok": True, "synced": 0, "message": "Excel 无数据或文件不存在"}
+            return {"ok": True, "synced": 0, "message": "元数据表无数据"}
         # 3) 获取已入库的文档列表（通过 manifest）
         manifest = dify_ingest._load_manifest_index()
         operations = []

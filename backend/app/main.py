@@ -18,6 +18,7 @@ from app.api import parse as parse_api
 from app.api import parse_progress as parse_progress_api  # ★ 2026-08-07
 from app.api import scan as scan_api
 from app.api import chunk as chunk_api
+from app.api import config_api
 from app.api import dify as dify_api
 from app.api import pipeline as pipeline_api
 from app.api import upload as upload_api
@@ -78,6 +79,7 @@ app.include_router(scan_api.router, prefix="/api")
 app.include_router(parse_api.router, prefix="/api")
 app.include_router(parse_progress_api.router, prefix="/api")  # ★ 2026-08-07
 app.include_router(chunk_api.router, prefix="/api")
+app.include_router(config_api.router, prefix="/api")
 app.include_router(dify_api.router, prefix="/api")
 app.include_router(pipeline_api.router, prefix="/api")
 app.include_router(upload_api.router, prefix="/api")

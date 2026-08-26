@@ -1,0 +1,28 @@
+INFO:     Started server process [112412]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-08-26 12:40:15", "level": "INFO", "msg": "PostgreSQL 连接池已就绪: 127.0.0.1:5432/ragsystem", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 12:40:15", "level": "INFO", "msg": "数据库表结构已就绪（manifest / doc_metadata）", "file_name": "", "step": "", "status": "", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 12:40:15", "level": "INFO", "msg": "app started", "file_name": "", "step": "startup", "status": "ok", "duration_ms": 0, "error_msg": "", "data_root": "D:\\programmtools\\tools\\ragsystem\\data", "manifest": "postgresql://127.0.0.1:5432/ragsystem#manifest"}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:10435 - "GET /api/config/schema HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10450 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10449 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10451 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:10452 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11279 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11280 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11283 - "GET /api/config/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11282 - "GET /api/manifest?limit=50&offset=0 HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+INFO:     127.0.0.1:11293 - "GET /api/config/schema HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11295 - "GET /api/chunk/strategies HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11292 - "GET /api/config/profiles HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11297 - "GET /api/config/schema HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11299 - "GET /api/chunk/strategies HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11301 - "GET /api/config/profiles HTTP/1.1" 200 OK
+INFO:     127.0.0.1:11294 - "GET /api/dify/datasets HTTP/1.1" 200 OK
+{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "api /dify/datasets called", "file_name": "", "step": "api", "status": "list_datasets", "duration_ms": 0, "error_msg": ""}
+{"timestamp": "2026-08-26 13:43:07", "level": "INFO", "msg": "dify list_datasets start", "file_name": "", "step": "dify", "status": "list_datasets", "duration_ms": 0, "error_msg": "", "page": 1, "limit": 100}
+INFO:     127.0.0.1:11304 - "GET /api/dify/datasets HTTP/1.1" 200 OK

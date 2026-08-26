@@ -1,4 +1,4 @@
-"""scanner §3.1 端到端测试（Excel 驱动）。"""
+"""scanner §3.1 端到端测试（input/ 目录驱动，清单为 PostgreSQL manifest 表）。"""
 
 from __future__ import annotations
 
@@ -14,14 +14,22 @@ logging.disable(logging.CRITICAL)
 
 @pytest.fixture(autouse=True)
 def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """每个用例：设置 RAG_DATA_ROOT → tmp_path/<uuid>，重新实例化 settings。"""
+    """每个用例：隔离数据目录到 tmp_path，避免污染真实 data/。
+
+    注意：.env 里的 RAG_DATA_ROOT 优先级高于环境变量（见
+    config.settings_customise_sources），所以单靠 monkeypatch.setenv 不生效，
+    必须用 init kwargs（优先级最高）构造 Settings 覆盖 data_root。
+    """
     test_data_root = tmp_path / "data"
     monkeypatch.setenv("RAG_DATA_ROOT", str(test_data_root))
 
     # 重新加载 config 模块以拿到新 env
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    settings = cfg_mod.settings
+    # ★ init kwargs 优先级最高（settings_customise_sources 首位），
+    #   可覆盖 .env 中的 RAG_DATA_ROOT，真正隔离数据目录
+    settings = cfg_mod.Settings(data_root=test_data_root)
+    cfg_mod.settings = settings
 
     # 把 services 引用的 settings 同步替换
     from app.services import scanner
@@ -29,6 +37,19 @@ def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     settings.ensure_dirs()
     yield settings
+
+
+@pytest.fixture(autouse=True)
+def pg_ready(fresh_settings):
+    """确保 manifest 表存在；测试结束后恢复原表内容，避免污染开发库。"""
+    from app.services import manifest_store
+    manifest_store.bootstrap()
+    saved = list(manifest_store.load().values())
+    manifest_store.clear()
+    yield
+    manifest_store.clear()
+    if saved:
+        manifest_store.bulk_upsert(saved)
 
 
 def _put(path: Path, content: bytes = b"hello") -> Path:
@@ -53,20 +74,54 @@ def _ensure_manifest_with_rows(path: Path, filenames: list[str]) -> None:
 # ============ Excel 驱动核心测试 ============
 
 
-def test_empty_manifest_no_input_no_action(fresh_settings):
-    """manifest 为空 → 什么也不做。"""
-    from app.services import scanner
+def test_input_files_are_auto_registered(fresh_settings):
+    """★ 2026-08-26（已删除 Excel 依赖）：input/ 目录驱动扫描。
+    manifest 为空时，input/ 目录下的新文件会自动登记进清单并进入待处理。"""
+    from app.services import manifest_store, scanner
 
     s = fresh_settings
-    _put(s.input_dir / "a.pdf", b"AAA")  # input 有文件
+    _put(s.input_dir / "a.pdf", b"AAA")  # input 有文件但清单为空
 
     report = scanner.scan_and_stage(dry_run=False)
-    # 没有任何 manifest 行，所以无文件被处理
-    assert report.staged == 0
+    # 目录驱动：新文件自动登记并移入 pending/
+    assert report.staged == 1
+    assert report.new == 1
     assert report.missing_on_disk == 0
-    # input/ 里的文件不应被移动
-    assert (s.input_dir / "a.pdf").exists()
-    assert not (s.pending_dir / "a.pdf").exists()
+    assert not (s.input_dir / "a.pdf").exists()
+    assert (s.pending_dir / "a.pdf").exists()
+
+    manifest = manifest_store.load(s.manifest_path)
+    assert "a.pdf" in manifest
+    assert manifest["a.pdf"].import_status == "已移入待处理"
+    assert manifest["a.pdf"].status == "pending"
+
+
+def test_unregistered_file_auto_register_mixed_with_imported(fresh_settings):
+    """已登记(未导入)文件 + 未登记新文件混合：两者都被处理；
+    已导入文件保持跳过（幂等）。"""
+    from app.services import manifest_store, scanner
+
+    s = fresh_settings
+    _ensure_manifest_with_rows(s.manifest_path, ["listed.pdf"])
+    manifest_store.upsert(
+        s.manifest_path,
+        _row(filename="done.pdf", import_status="已移入待处理"),
+    )
+    _put(s.input_dir / "listed.pdf", b"LIST")
+    _put(s.input_dir / "done.pdf", b"DONE")
+    _put(s.input_dir / "fresh.docx", b"FRESH")  # 未登记新文件
+
+    report = scanner.scan_and_stage(dry_run=False)
+    assert report.staged == 2      # listed.pdf + fresh.docx
+    assert report.skipped_done == 1  # done.pdf
+    assert (s.pending_dir / "listed.pdf").exists()
+    assert (s.pending_dir / "fresh.docx").exists()
+    assert not (s.pending_dir / "done.pdf").exists()
+    assert (s.input_dir / "done.pdf").exists()
+
+    manifest = manifest_store.load(s.manifest_path)
+    assert "fresh.docx" in manifest
+    assert manifest["fresh.docx"].import_status == "已移入待处理"
 
 
 def test_manifest_with_empty_import_status_moves_file(fresh_settings):

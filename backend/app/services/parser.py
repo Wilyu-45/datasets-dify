@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -127,8 +129,8 @@ def _is_mineru_output_trivial(parsed_dir: Path) -> tuple[bool, str]:
     return False, ""
 
 
-def _resolve_pending_path(name_in_excel: str) -> Optional[Path]:
-    """在 pending/ 找 Excel 中的「文件名称」。
+def _resolve_pending_path(name_in_manifest: str) -> Optional[Path]:
+    """在 pending/ 找清单中的「文件名称」。
 
     1) 精确匹配
     2) 按 allowed_extensions 顺序追加扩展名（与 §3.1 行为一致）
@@ -139,17 +141,17 @@ def _resolve_pending_path(name_in_excel: str) -> Optional[Path]:
     """
     if not settings.pending_dir.exists():
         return None
-    exact = settings.pending_dir / name_in_excel
+    exact = settings.pending_dir / name_in_manifest
     if exact.is_file():
         return exact
     for ext in settings.allowed_extensions:
-        candidate = settings.pending_dir / f"{name_in_excel}{ext}"
+        candidate = settings.pending_dir / f"{name_in_manifest}{ext}"
         if candidate.is_file():
             return candidate
 
     # ★ stem 模糊匹配：去掉 .doc 之类后缀，在 pending/ 中找同 stem 的任意文件
     # 防止类似 "name.doc" vs "name.docx" 在用户手动转换扩展名后找不到
-    name_stem = Path(name_in_excel).stem
+    name_stem = Path(name_in_manifest).stem
     candidates: List[Path] = []
     for f in settings.pending_dir.iterdir():
         if not f.is_file():
@@ -191,6 +193,138 @@ def _sync_manifest_filename(
             "new_filename": new_filename,
         },
     )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 本地解析（MinerU 不支持的文档类型：.html / .htm）
+# .xlsx 由 MinerU 处理（见 MinerUError 分支中的本地兜底逻辑）。
+# 产物只有 markdown（无 content_list_v2.json），chunker 走 md-only 兜底切分。
+# ────────────────────────────────────────────────────────────────────────────
+_LOCAL_PARSE_EXTS = {".html", ".htm"}
+
+
+def _extract_xlsx_text(src: Path) -> str:
+    """用 openpyxl 读 .xlsx 全部 sheet → markdown 表格文本。"""
+    try:
+        import openpyxl
+    except ImportError as e:
+        raise RuntimeError("解析 .xlsx 需要 openpyxl（pip install openpyxl）") from e
+    wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    parts: List[str] = []
+    try:
+        for ws in wb.worksheets:
+            parts.append(f"\n## {ws.title}\n")
+            rows = []
+            for r in ws.iter_rows(values_only=True):
+                cells = [
+                    "" if c is None else str(c).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+                    for c in r
+                ]
+                if any(c.strip() for c in cells):
+                    rows.append(cells)
+            if not rows:
+                continue
+            ncols = max(len(r) for r in rows)
+            rows = [r + [""] * (ncols - len(r)) for r in rows]
+            parts.append("| " + " | ".join(rows[0]) + " |")
+            parts.append("|" + "---|" * ncols)
+            for r in rows[1:]:
+                parts.append("| " + " | ".join(r) + " |")
+    finally:
+        wb.close()
+    text = "\n".join(parts).strip()
+    if not text:
+        raise RuntimeError(f"{src.name} 没有可提取的单元格内容")
+    return text
+
+
+class _HTMLToMarkdownParser(HTMLParser):
+    """标准库实现：HTML → 简单 markdown（标题/段落/列表/表格/链接/图片 alt）。"""
+
+    _SKIP_TAGS = {"script", "style", "noscript", "head", "title", "meta", "link"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._out: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:  # noqa: D102
+        t = tag.lower()
+        if t in self._SKIP_TAGS:
+            self._skip_depth += 1
+        if self._skip_depth:
+            return
+        if t in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._out.append("\n\n" + "#" * int(t[1]) + " ")
+        elif t == "p":
+            self._out.append("\n\n")
+        elif t == "br":
+            self._out.append("\n")
+        elif t == "li":
+            self._out.append("\n- ")
+        elif t == "tr":
+            self._out.append("\n")
+        elif t in ("td", "th"):
+            self._out.append(" | ")
+        elif t in ("strong", "b"):
+            self._out.append("**")
+        elif t in ("em", "i"):
+            self._out.append("*")
+        elif t == "a":
+            self._out.append("[")
+        elif t == "img":
+            alt = next((v for k, v in attrs if k == "alt"), "") or ""
+            if alt:
+                self._out.append(f"[图片: {alt}]")
+
+    def handle_endtag(self, tag: str) -> None:  # noqa: D102
+        t = tag.lower()
+        if t in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+        if self._skip_depth:
+            return
+        if t in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._out.append("\n")
+        elif t in ("strong", "b"):
+            self._out.append("**")
+        elif t in ("em", "i"):
+            self._out.append("*")
+        elif t == "a":
+            self._out.append("]")
+
+    def handle_data(self, data: str) -> None:  # noqa: D102
+        if not self._skip_depth:
+            self._out.append(data)
+
+
+def _extract_html_text(src: Path) -> str:
+    """标准库 html.parser 提取 HTML 可见文本 → 简单 markdown。"""
+    parser = _HTMLToMarkdownParser()
+    try:
+        parser.feed(src.read_text(encoding="utf-8", errors="replace"))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"HTML 解析失败: {e}") from e
+    parser.close()
+    text = re.sub(r"\n{3,}", "\n\n", "".join(parser._out)).strip()
+    if not text:
+        raise RuntimeError(f"{src.name} 没有可提取的文本内容")
+    return text
+
+
+def _parse_local_document(src: Path, parsed_dir: Path) -> Path:
+    """本地解析 MinerU 不支持的文档类型（.html / .htm）。
+
+    也支持 .xlsx（openpyxl 提取表格），用作 MinerU 调用失败时的本地兜底。
+    提取文本 → 生成 parsed/{stem}/{stem}.md，返回 md 路径。
+    """
+    parsed_dir.mkdir(parents=True, exist_ok=True)
+    if src.suffix.lower() == ".xlsx":
+        text = _extract_xlsx_text(src)
+    else:  # .html / .htm
+        text = _extract_html_text(src)
+    md_path = parsed_dir / f"{_safe_stem(src.name)}.md"
+    md_path.write_text(text, encoding="utf-8")
+    return md_path
 
 
 def _try_pymupdf_fallback(
@@ -425,36 +559,100 @@ def parse_pending(
             )
             continue
 
-        # 4) 实际调 API
+        # 4) 本地解析（.xlsx / .html / .htm：MinerU 不支持，本地提取文本）
+        if src.suffix.lower() in _LOCAL_PARSE_EXTS:
+            _set_progress(src.name, 0, "本地解析中...", "parsing")
+            try:
+                parsed_dir = settings.parsed_dir / _safe_stem(src.name)
+                md_path = _parse_local_document(src, parsed_dir)
+                _set_progress(src.name, 100, "解析完成(本地)", "done")
+                parsed_count += 1
+                _write_manifest_row(
+                    row,
+                    parse_text=f"{str(parsed_dir.resolve())} [本地解析]",
+                    sys_status="parsing_done",
+                    err=None,
+                )
+                log.info(
+                    "parse ok (本地解析)",
+                    extra={
+                        "step": "parse",
+                        "status": "parsed",
+                        "file_name": src.name,
+                        "parse_dir": str(parsed_dir),
+                        "fallback_used": False,
+                        "duration_ms": int((time.perf_counter() - t0) * 1000),
+                    },
+                )
+                actions.append(
+                    ParseActionRecord(
+                        filename=src.name,
+                        action=ParseAction.PARSED,
+                        parse_dir=str(parsed_dir.resolve()),
+                        md=str(md_path.resolve()),
+                        duration_ms=int((time.perf_counter() - t0) * 1000),
+                        attempts=1,
+                    )
+                )
+            except Exception as e:  # noqa: BLE001
+                failed_count += 1
+                err_text = f"本地解析失败: {e}"
+                log.error(
+                    "parse 失败（本地解析）",
+                    extra={
+                        "step": "parse",
+                        "status": "failed",
+                        "file_name": src.name,
+                        "error_msg": str(e),
+                        "duration_ms": int((time.perf_counter() - t0) * 1000),
+                    },
+                )
+                _move_to_error(src, err_text)
+                _write_manifest_row(row, parse_text=err_text, sys_status="error", err=err_text)
+                actions.append(
+                    ParseActionRecord(
+                        filename=src.name,
+                        action=ParseAction.PARSE_FAILED,
+                        error=err_text,
+                        duration_ms=int((time.perf_counter() - t0) * 1000),
+                    )
+                )
+            continue
+
+        # 5) 实际调 API（MinerU）
         _set_progress(src.name, 0, "正在调用 MinerU API...", "parsing")
         try:
             result = client.parse_file(src, settings.parsed_dir / _safe_stem(src.name))
             _set_progress(src.name, 100, "解析完成", "done")
             parsed_count += 1
 
-            # ★ 质量检查：MinerU 解析成功但产物过少 → 启动 fallback 链
+            # ★ 质量检查（仅 .pdf）：MinerU 解析成功但产物过少 → 启动 fallback 链
             #   Tier 1: PyMuPDF 渲染 PDF 为图片 → MinerU vlm-engine 读图
             #   Tier 2: PyMuPDF 纯文本提取
+            #   非 PDF（含 .xlsx）不做此检查：PyMuPDF fallback 仅适用于 PDF，
+            #   小表格等「内容少但正常」的文档不应被误判为 trivial。
             fallback_used = False
             fallback_backend = None
-            is_trivial, trivial_reason = _is_mineru_output_trivial(result.parse_dir)
-            if is_trivial:
-                log.warning(
-                    "MinerU 解析产物过少，启动 fallback 链: %s (原因: %s)",
-                    src.name, trivial_reason,
-                )
-                fallback_used, fallback_backend = _try_pymupdf_fallback(
-                    src, result.parse_dir, client
-                )
-                if fallback_used:
-                    log.info(
-                        "Fallback 成功 (backend=%s, 替代 MinerU 产物)",
-                        fallback_backend,
-                    )
-                else:
+            is_trivial = False
+            if src.suffix.lower() == ".pdf":
+                is_trivial, trivial_reason = _is_mineru_output_trivial(result.parse_dir)
+                if is_trivial:
                     log.warning(
-                        "Fallback 链全部失败：保留 MinerU 产物（标记为 error）"
+                        "MinerU 解析产物过少，启动 fallback 链: %s (原因: %s)",
+                        src.name, trivial_reason,
                     )
+                    fallback_used, fallback_backend = _try_pymupdf_fallback(
+                        src, result.parse_dir, client
+                    )
+                    if fallback_used:
+                        log.info(
+                            "Fallback 成功 (backend=%s, 替代 MinerU 产物)",
+                            fallback_backend,
+                        )
+                    else:
+                        log.warning(
+                            "Fallback 链全部失败：保留 MinerU 产物（标记为 error）"
+                        )
 
             # ★ 关键：先更新 manifest（解析已成功，所有文件已落盘），
             # 然后再构建响应记录。manifest 更新失败也不能影响前面的成功。
@@ -578,9 +776,54 @@ def parse_pending(
                 },
             )
 
+            expected_parse_dir = settings.parsed_dir / _safe_stem(src.name)
+
+            # ★ 2026-08：.xlsx 本地兜底（MinerU 调用失败时，openpyxl 提取表格为 markdown）
+            if src.suffix.lower() == ".xlsx":
+                try:
+                    md_path = _parse_local_document(src, expected_parse_dir)
+                    parsed_count += 1
+                    parse_text = f"{str(expected_parse_dir.resolve())} [本地解析]"
+                    _write_manifest_row(
+                        row,
+                        parse_text=parse_text,
+                        sys_status="parsing_done",
+                        err=f"mineru 调用失败，已用本地解析兜底: {err_text[:200]}",
+                    )
+                    log.warning(
+                        "MinerU 调用失败但 xlsx 本地解析兜底成功 (file=%s)",
+                        src.name,
+                        extra={
+                            "step": "parse",
+                            "status": "fallback_ok",
+                            "file_name": src.name,
+                            "error_msg": err_text[:200],
+                        },
+                    )
+                    try:
+                        actions.append(
+                            ParseActionRecord(
+                                filename=src.name,
+                                action=ParseAction.PARSED,
+                                parse_dir=str(expected_parse_dir.resolve()),
+                                md=str(md_path.resolve()),
+                                duration_ms=int((time.perf_counter() - t0) * 1000),
+                                attempts=e.attempts,
+                            )
+                        )
+                    except Exception as rec_err:  # noqa: BLE001
+                        log.warning(
+                            "parse 响应记录构建失败（已忽略）",
+                            extra={"step": "parse", "status": "record_failed",
+                                   "file_name": src.name, "error_msg": str(rec_err)},
+                        )
+                    continue
+                except Exception as fb_exc:  # noqa: BLE001
+                    # 本地兜底也失败 → 继续走 error/ 分支
+                    err_text = f"{err_text}（本地解析兜底也失败: {fb_exc}）"
+
             # ★ PyMuPDF fallback 自动救援：MinerU 4xx/5xx/网络错误时，
             # 对 .pdf 走 Tier 1/2/3 链，能恢复则不入 error/。
-            expected_parse_dir = settings.parsed_dir / _safe_stem(src.name)
             fallback_used, fallback_backend = _try_pymupdf_fallback(
                 src, expected_parse_dir, client
             )

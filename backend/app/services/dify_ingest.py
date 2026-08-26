@@ -731,9 +731,9 @@ def upload_one_doc(
         )
 
     # 10) ★★★ 文档元数据写入（2026-08 新增）：
-    #   从 Excel 读取的文档元数据（doc_type_primary / topic_primary 等）
+    #   从 doc_metadata 表读取的文档元数据（doc_type_primary / topic_primary 等）
     #   通过 Dify Metadata API 设置到文档上。
-    #   field_map 和 doc_meta_cache 由 upload_all_docs 传入（避免每文档重复读 Excel）。
+    #   field_map 和 doc_meta_cache 由 upload_all_docs 传入（避免每文档重复读元数据表）。
     if field_map and doc_meta_cache:
         op = doc_metadata.build_metadata_operation(
             doc.document_id, stem, field_map, doc_meta_cache,
@@ -791,7 +791,7 @@ def upload_all_docs(
     manifest = _load_manifest_index()
     rows_to_write: List[Any] = []
 
-    # ★ 加载文档元数据 Excel + 确保 Dify 元数据字段存在
+    # ★ 加载文档元数据 + 确保 Dify 元数据字段存在
     field_map: Optional[Dict[str, Dict[str, Any]]] = None
     doc_meta_cache: Optional[Dict[str, Dict[str, Any]]] = None
     if not dry_run and chunk_dirs:

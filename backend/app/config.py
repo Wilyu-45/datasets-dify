@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import platform
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -29,6 +31,30 @@ from pydantic_settings import (
 
 # 仓库根目录：<repo>/backend/app/config.py -> <repo>
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _win32_patch_platform_syscmd_ver() -> None:
+    """修复 Python 3.10 在中文 Windows 下重复打印的 stderr 解码异常。
+
+    Python 3.10 的 platform.win32_ver()（Lib/platform.py:368）会无条件执行
+    ``subprocess.check_output('ver', shell=True, text=True)``：其 daemon 读取线程
+    用 GBK 严格解码 ver 命令输出，遇到非法字节（如 0xA8）时抛 UnicodeDecodeError。
+    该异常在线程内打印到 stderr（每次 import oss2 时经 platform.system() 触发一次），
+    但不会影响返回值——win32_ver 随后有内置 getwindowsversion() 完整兜底。
+    这里让 _syscmd_ver 直接返回默认值，跳过 subprocess，功能完全不受影响。
+    """
+    if sys.platform != "win32":
+        return
+    if not hasattr(platform, "_syscmd_ver"):
+        return
+
+    def _noop_syscmd_ver(system="", release="", version="", supported_platforms=("win32", "win16", "dos")):
+        return system, release, version
+
+    platform._syscmd_ver = _noop_syscmd_ver
+
+
+_win32_patch_platform_syscmd_ver()
 
 
 class Settings(BaseSettings):
@@ -48,10 +74,12 @@ class Settings(BaseSettings):
     # ---- 行为 ----
     scan_chunk_size: int = 65536  # 64 KB
     # 扩展名按优先级排序：.pdf / .docx 最常用，放最前。
-    # 用户在 Excel 中填「文件名称」时常省略后缀，扫描时按此顺序在 input/ 中尝试补全。
+    # 用户登记「文件名称」时常省略后缀，扫描时按此顺序在 input/ 中尝试补全。
+    # .xlsx / .html 由本地解析器处理（MinerU 不支持），其余走 MinerU。
     allowed_extensions: tuple[str, ...] = (
         ".pdf", ".docx", ".doc",
         ".pptx", ".xlsx",
+        ".html",
         ".png", ".jpg", ".jpeg", ".tiff", ".tif",
     )
 

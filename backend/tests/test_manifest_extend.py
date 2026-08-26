@@ -13,12 +13,17 @@ logging.disable(logging.CRITICAL)
 
 @pytest.fixture(autouse=True)
 def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """隔离数据目录；manifest 数据存于 PostgreSQL（见 pg_ready 的保存/恢复）。"""
+    """隔离数据目录；manifest 数据存于 PostgreSQL（见 pg_ready 的保存/恢复）。
+
+    注意：.env 的 RAG_DATA_ROOT 优先级高于环境变量（config.settings_customise_sources），
+    必须用 init kwargs 构造 Settings 才能真正隔离 data_root。
+    """
     test_data_root = tmp_path / "data"
     monkeypatch.setenv("RAG_DATA_ROOT", str(test_data_root))
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    settings = cfg_mod.settings
+    settings = cfg_mod.Settings(data_root=test_data_root)
+    cfg_mod.settings = settings
     from app.services import scanner
     scanner.settings = settings
     settings.ensure_dirs()

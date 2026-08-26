@@ -1,8 +1,18 @@
-import { Card, Table, Tag, Tooltip, Button } from "antd";
+import {
+  Card,
+  Table,
+  Tag,
+  Tooltip,
+  Button,
+  Input,
+  InputNumber,
+  message,
+} from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getManifest,
+  updateManifestRow,
   type ManifestRow,
   type ParseReport,
   type ParseActionRecord,
@@ -185,6 +195,109 @@ export default function ManifestTable({
     }
   };
 
+  // ---- 行内编辑（web 端维护清单元数据，替代原 Excel 填列） ----
+  type EditableField =
+    | "seq"
+    | "category_l1"
+    | "category_l2"
+    | "keywords"
+    | "department"
+    | "effective_date"
+    | "verified";
+
+  const [editing, setEditing] = useState<{ filename: string; field: EditableField } | null>(
+    null
+  );
+  const [editingText, setEditingText] = useState("");
+  const savingRef = useRef(false);
+
+  const startEdit = (row: ManifestRow, field: EditableField) => {
+    const raw = (row as unknown as Record<string, unknown>)[field];
+    setEditingText(raw == null ? "" : String(raw));
+    setEditing({ filename: row.filename, field });
+  };
+
+  const saveCell = async (row: ManifestRow, field: EditableField) => {
+    if (savingRef.current) return;
+    const raw = (row as unknown as Record<string, unknown>)[field];
+    const prev = raw == null ? "" : String(raw);
+    const trimmed = editingText.trim();
+    setEditing(null);
+    if (trimmed === prev) return; // 无变化
+    if (field === "seq" && trimmed !== "" && !/^\d+$/.test(trimmed)) {
+      message.error("序号必须是整数");
+      return;
+    }
+    savingRef.current = true;
+    try {
+      const payload: Record<string, string | number | null> = {};
+      if (field === "seq") payload[field] = trimmed === "" ? null : Number(trimmed);
+      else payload[field] = trimmed === "" ? null : trimmed;
+      const updated = await updateManifestRow(row.filename, payload);
+      setRows((prevRows) =>
+        prevRows.map((r) => (r.filename === updated.filename ? { ...r, ...updated } : r))
+      );
+      message.success("已保存");
+    } catch (e) {
+      message.error(`保存失败：${(e as Error).message || "未知错误"}`);
+    } finally {
+      savingRef.current = false;
+    }
+  };
+
+  /** 生成可编辑单元格的 render 函数 */
+  const editableRender =
+    (field: EditableField, numeric = false) =>
+    (_v: unknown, row: ManifestRow) => {
+      const isEditing = editing?.filename === row.filename && editing.field === field;
+      if (isEditing) {
+        if (numeric) {
+          return (
+            <InputNumber
+              size="small"
+              autoFocus
+              style={{ width: "100%" }}
+              value={editingText === "" ? undefined : Number(editingText)}
+              onChange={(n) => setEditingText(n == null ? "" : String(n))}
+              onPressEnter={() => saveCell(row, field)}
+              onBlur={() => saveCell(row, field)}
+            />
+          );
+        }
+        return (
+          <Input
+            size="small"
+            autoFocus
+            value={editingText}
+            onChange={(e) => setEditingText(e.target.value)}
+            onPressEnter={() => saveCell(row, field)}
+            onBlur={() => saveCell(row, field)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setEditing(null);
+            }}
+          />
+        );
+      }
+      const v = (row as unknown as Record<string, unknown>)[field] as
+        | string
+        | number
+        | null
+        | undefined;
+      return (
+        <span
+          className="editable-cell"
+          title="点击编辑"
+          onClick={() => startEdit(row, field)}
+          style={{
+            cursor: "pointer",
+            ...(v == null || v === "" ? { color: "#bbb" } : {}),
+          }}
+        >
+          {v == null || v === "" ? "—" : String(v)}
+        </span>
+      );
+    };
+
   useEffect(() => {
     load(1);
     setPage(1);
@@ -216,7 +329,7 @@ export default function ManifestTable({
   return (
     <Card
       size="small"
-      title={`📋 manifest 表 （${total} 行）`}
+      title={`📋 manifest 表 （${total} 行） · 点击「序号/分类/关键词/科室/生效日期/校对」单元格可直接编辑`}
       extra={
         <Button size="small" icon={<ReloadOutlined />} onClick={() => load(page)}>
           刷新
@@ -240,16 +353,52 @@ export default function ManifestTable({
           },
         }}
         columns={[
-          { title: "序号", dataIndex: "seq", width: 60 },
+          {
+            title: "序号",
+            dataIndex: "seq",
+            width: 60,
+            render: editableRender("seq", true),
+          },
           { title: "文件名称", dataIndex: "filename", fixed: "left", width: 200, ellipsis: true },
-          { title: "一级分类", dataIndex: "category_l1", width: 100 },
-          { title: "二级分类", dataIndex: "category_l2", width: 100 },
-          { title: "关键词", dataIndex: "keywords", width: 140, ellipsis: true },
-          { title: "适用科室", dataIndex: "department", width: 100 },
-          { title: "生效日期", dataIndex: "effective_date", width: 100 },
+          {
+            title: "一级分类",
+            dataIndex: "category_l1",
+            width: 100,
+            render: editableRender("category_l1"),
+          },
+          {
+            title: "二级分类",
+            dataIndex: "category_l2",
+            width: 100,
+            render: editableRender("category_l2"),
+          },
+          {
+            title: "关键词",
+            dataIndex: "keywords",
+            width: 140,
+            ellipsis: true,
+            render: editableRender("keywords"),
+          },
+          {
+            title: "适用科室",
+            dataIndex: "department",
+            width: 100,
+            render: editableRender("department"),
+          },
+          {
+            title: "生效日期",
+            dataIndex: "effective_date",
+            width: 100,
+            render: editableRender("effective_date"),
+          },
           { title: "导入", dataIndex: "import_status", width: 80 },
           { title: "处理", dataIndex: "process_status", width: 80 },
-          { title: "校对", dataIndex: "verified", width: 70 },
+          {
+            title: "校对",
+            dataIndex: "verified",
+            width: 70,
+            render: editableRender("verified"),
+          },
           {
             title: "parse",
             dataIndex: "parse",

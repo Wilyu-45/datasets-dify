@@ -50,7 +50,10 @@ def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    settings = cfg_mod.settings
+    # ★ .env 优先级高于环境变量（settings_customise_sources），
+    #   必须用 init kwargs 覆盖 data_root 才能真正隔离测试目录
+    settings = cfg_mod.Settings(data_root=test_data_root)
+    cfg_mod.settings = settings
 
     from app.services import (
         chunker,
@@ -437,7 +440,7 @@ def test_pipeline_passes_target_stems_to_all_stages(
             skipped_done=0, failed=0, actions=[],
         )
 
-    def fake_chunk_parsed(*, dry_run, force, target_stems):
+    def fake_chunk_parsed(*, dry_run, force, target_stems, strategy=""):
         received["chunk"] = target_stems
         from app.models.schemas import ChunkReport
         return ChunkReport(
@@ -495,7 +498,7 @@ def test_pipeline_without_target_stems_passes_none(
             skipped_done=0, failed=0, actions=[],
         )
 
-    def fake_chunk_parsed(*, dry_run, force, target_stems):
+    def fake_chunk_parsed(*, dry_run, force, target_stems, strategy=""):
         received["chunk"] = target_stems
         from app.models.schemas import ChunkReport
         return ChunkReport(
@@ -559,7 +562,7 @@ def test_single_upload_only_processes_target_file(
     # 用 fake pipeline 拦截，记录接收到的 stem
     received_stems: List[str] = []
 
-    def fake_pipeline(target_stem: str):
+    def fake_pipeline(target_stem: str, profile=None):
         received_stems.append(target_stem)
         return {
             "status": "ok",
@@ -610,7 +613,7 @@ def test_single_ingest_endpoint_passes_stem(
 
     received: List[str] = []
 
-    def fake_pipeline(target_stem: str):
+    def fake_pipeline(target_stem: str, profile=None):
         received.append(target_stem)
         return {"status": "ok", "target_stems": [target_stem]}
 
