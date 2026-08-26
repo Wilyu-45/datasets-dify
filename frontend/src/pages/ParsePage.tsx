@@ -1,6 +1,5 @@
 import { Space, Typography } from "antd";
 import ParsedTable from "../components/ParsedTable";
-import ActiveConfigCard from "../components/ActiveConfigCard";
 
 const { Title, Paragraph } = Typography;
 
@@ -16,8 +15,6 @@ export default function ParsePage() {
           产物写入 <code>data/parsed/</code>。此处可查看所有已解析产物。
         </Paragraph>
       </div>
-
-      <ActiveConfigCard />
 
       <ParsedTable refreshKey={0} />
     </Space>

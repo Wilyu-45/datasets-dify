@@ -209,7 +209,9 @@ export default function ManifestTable({
     null
   );
   const [editingText, setEditingText] = useState("");
-  const savingRef = useRef(false);
+  // 记录"上一次已处理的单元格"，仅用于消除 Enter + blur 双触发导致的重复保存；
+  // 不同单元格之间的保存互不阻塞（避免一个保存未完成时其他单元格无法编辑/保存）。
+  const lastSavedRef = useRef<string | null>(null);
 
   const startEdit = (row: ManifestRow, field: EditableField) => {
     const raw = (row as unknown as Record<string, unknown>)[field];
@@ -218,17 +220,23 @@ export default function ManifestTable({
   };
 
   const saveCell = async (row: ManifestRow, field: EditableField) => {
-    if (savingRef.current) return;
+    const key = `${row.filename}#${field}`;
+    // Enter 保存后输入框卸载会再触发一次 blur，第二次直接返回
+    if (lastSavedRef.current === key) return;
     const raw = (row as unknown as Record<string, unknown>)[field];
     const prev = raw == null ? "" : String(raw);
     const trimmed = editingText.trim();
+    lastSavedRef.current = key;
     setEditing(null);
-    if (trimmed === prev) return; // 无变化
+    if (trimmed === prev) {
+      lastSavedRef.current = null;
+      return; // 无变化
+    }
     if (field === "seq" && trimmed !== "" && !/^\d+$/.test(trimmed)) {
       message.error("序号必须是整数");
+      lastSavedRef.current = null;
       return;
     }
-    savingRef.current = true;
     try {
       const payload: Record<string, string | number | null> = {};
       if (field === "seq") payload[field] = trimmed === "" ? null : Number(trimmed);
@@ -241,7 +249,7 @@ export default function ManifestTable({
     } catch (e) {
       message.error(`保存失败：${(e as Error).message || "未知错误"}`);
     } finally {
-      savingRef.current = false;
+      lastSavedRef.current = null;
     }
   };
 

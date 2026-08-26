@@ -40,6 +40,11 @@
 ### 3.5 人工校验（Verify）
 汇总展示切分 / 入库结果，支持按文档查看 chunk 明细（正文、页号、字数、策略、图片引用），供人工抽查校验。
 
+### 3.6 配置中心（Config）
+- **多配置方案**：可创建多套「知识库 ID + 切分策略 + 全部切分参数」方案，选择其一**激活**后，上传 / 流水线 / 切分自动使用激活方案（也可在请求中显式指定方案）。
+- **按策略动态配置**：选择不同切分策略时，表单只显示该策略相关的配置项（例如 `fixed` 只显示固定长度与重叠，`parent_child` 只显示父子块大小，`llm` 只显示 LLM 开关与提示词），切换策略已填参数保留。
+- 处理入口（工作台上传 / 各产物页）会展示当前使用的配置方案；未配置方案时上传会提示先到配置中心配置并激活。
+
 ### 单文件上传 + 一键入库
 `/api/upload` 直接上传单个 PDF / DOCX / 图片，随即触发流水线（`target_stems` 白名单），只处理该文件，不影响 manifest / chunks 中走批量流程的其他文档。
 
@@ -61,21 +66,22 @@ ragsystem/
 │   │   ├── models/schemas.py   # Pydantic 请求/响应模型
 │   │   ├── api/                # 路由：health / manifest / scan / parse /
 │   │   │                       #       parse_progress / chunk / dify /
-│   │   │                       #       pipeline / upload / files
+│   │   │                       #       pipeline / upload / files / config
 │   │   └── services/           # 业务逻辑
 │   │       ├── scanner.py          # 3.1 扫描
 │   │       ├── parser.py           # 3.2 MinerU 解析
 │   │       ├── chunker.py          # 3.3 结构切分（默认策略）
 │   │       ├── chunk_strategies.py # 3.3 多策略切分引擎（8 策略）
+│   │       ├── config_store.py     # 3.6 配置中心（多方案持久化）
 │   │       ├── dify_ingest.py      # 3.4 Dify 入库
 │   │       └── pipeline.py         # 3.0 一键流水线
 │   ├── requirements.txt
 │   └── .env.example            # 环境变量模板
 ├── frontend/                   # React 前端
 │   └── src/
-│       ├── App.tsx             # 布局与路由（6 个页面）
-│       ├── pages/              # Pipeline / Scan / Parse / Chunk / Dify / Verify
-│       └── components/         # PipelineControl / ChunkControl / DifyControl 等
+│       ├── App.tsx             # 布局与路由（7 个页面）
+│       ├── pages/              # Pipeline / Scan / Parse / Chunk / Dify / Verify / Config
+│       └── components/         # PipelineControl / ChunkControl / DifyControl / ConfigPage 等
 ├── data/                       # 运行时数据（git 忽略）
 │   ├── input/                  # 待处理文档
 │   ├── parsed/                 # MinerU 解析产物
@@ -125,24 +131,28 @@ npm run dev        # 默认 http://localhost:5173
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `RAG_MINERU_API_URL` | - | MinerU 服务地址，如 `http://192.168.31.165:7860` |
+| `RAG_MINERU_API_TOKEN` | `""` | MinerU 鉴权 token（可选，开启鉴权时填写） |
 | `RAG_MINERU_BACKEND` | `hybrid-engine` | 解析后端：`hybrid-engine` / `vlm-engine` / `pipeline` |
 | `RAG_MINERU_BACKEND_EFFORT` | `high` | 解析强度（仅 hybrid-engine 生效） |
 | `RAG_MINERU_RESPONSE_FORMAT_ZIP` | `true` | ZIP 返回全部产物（.md / json / 图片 / layout） |
 | `RAG_MINERU_LONG_DOC_PAGES_THRESHOLD` | `15` | 超长 PDF 自动切换到 `vlm-engine` 的页数阈值（0=禁用） |
-| `RAG_CHUNK_STRATEGY` | `structure` | 默认切分策略 |
+| `RAG_CHUNK_STRATEGY` | `structure` | 默认切分策略（structure/recursive/fixed/sentence/semantic/parent_child/late_chunking/llm） |
 | `RAG_CHUNK_TARGET_CHARS` | `1500` | 单 chunk 目标字符数（贪心合并阈值） |
 | `RAG_CHUNK_SPLIT_TARGET` | `1200` | 超长时按句号二次切分的阈值 |
 | `RAG_CHUNK_OVERLAP` | `100` | 句号切分时的 overlap 字符数 |
+| `RAG_CHUNK_REF_PATTERN` | `^\s*[\[【\(（]\s*\d+...` | 参考文献条目行识别正则 |
 | `RAG_CHUNK_FIXED_SIZE_CHARS` | `800` | 固定长度切分的块大小 |
 | `RAG_CHUNK_FIXED_OVERLAP_CHARS` | `100` | 固定长度切分的 overlap |
 | `RAG_CHUNK_PARENT_SIZE_CHARS` | `1500` | 父-子切分的父块大小 |
 | `RAG_CHUNK_CHILD_SIZE_CHARS` | `400` | 父-子切分的子块大小 |
 | `RAG_CHUNK_SEMANTIC_THRESHOLD` | `0.78` | 语义切分 / 晚切分的相似度阈值 |
 | `RAG_CHUNK_LLM_ENABLED` | `false` | 是否启用 LLM 切分（需 Dify App Key） |
+| `RAG_CHUNK_LLM_CHUNK_PROMPT` | （内置提示词） | LLM 切分提示词（要求模型输出切分后段落 JSON 数组） |
 | `RAG_DIFY_API_URL` / `RAG_DIFY_API_KEY` | - | Dify 平台 / Knowledge API |
 | `RAG_OSS_*` | - | 阿里云 OSS 图片托管配置 |
+| `RAG_PG_*` | - | PostgreSQL 连接与连接池（`RAG_PG_POOL_TIMEOUT` 默认 30s） |
 
-完整配置项见 `backend/.env.example`。
+> 切分参数既可在 `backend/.env` 配默认值，也可在前端「配置中心」创建/激活多套方案（推荐，方案优先于 `.env`）。完整配置项见 `backend/.env.example`。
 
 ## API 概览
 

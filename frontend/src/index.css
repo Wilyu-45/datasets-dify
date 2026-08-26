@@ -8,3 +8,15 @@ body,
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   background: #f5f7fa;
 }
+
+/* 文件清单中可点击编辑的单元格：hover 时高亮提示 */
+.editable-cell {
+  position: relative;
+  padding: 0 4px;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+.editable-cell:hover {
+  background: #e6f4ff;
+  outline: 1px dashed #91caff;
+}
