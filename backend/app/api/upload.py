@@ -175,7 +175,8 @@ def _run_single_file_pipeline(
         profile: 配置方案（含 config 字段）。传了则在 pipeline 执行期间临时应用其配置。
         source: 处理配置记录的来源标识（写入 process_config_log 表）。
 
-    运行结束后把当时生效的配置快照 + 结果状态写入 process_config_log 表。
+    运行结束后把当时实际生效的配置快照 + 结果状态写入 process_config_log 表。
+    快照在 apply_config 生效范围内抓取，保证记录的就是本次处理真正用到的值。
     """
     from app.services.pipeline import run_pipeline
 
@@ -188,6 +189,7 @@ def _run_single_file_pipeline(
             config_run_log.record_run(
                 source=source,
                 profile=profile,
+                config=config_run_log.snapshot_settings_config(),
                 target_stems=[target_stem],
                 status=d.get("status"),
                 error=d.get("error"),
@@ -230,7 +232,8 @@ def _run_batch_pipeline(
     ★ 2026-08 批量上传优化：与单文件版共用 run_pipeline，
     但用 target_stems=[s1, s2, ...] 一次性传所有 stem，避免对每个文件跑一次完整 pipeline。
     若传了 profile 配置方案，则在 pipeline 执行期间临时应用其配置。
-    运行结束后把当时生效的配置快照 + 结果状态写入 process_config_log 表。
+    运行结束后把当时实际生效的配置快照 + 结果状态写入 process_config_log 表
+    （快照在 apply_config 生效范围内抓取，保证记录的就是本次处理真正用到的值）。
     """
     from app.services.pipeline import run_pipeline
 
@@ -243,6 +246,7 @@ def _run_batch_pipeline(
             config_run_log.record_run(
                 source=source,
                 profile=profile,
+                config=config_run_log.snapshot_settings_config(),
                 target_stems=list(target_stems),
                 status=d.get("status"),
                 error=d.get("error"),

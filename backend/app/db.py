@@ -77,8 +77,9 @@ CREATE TABLE IF NOT EXISTS doc_metadata (
 """
 
 # process_config_log 表：每次实际触发处理（上传入库 / 流水线）时，
-# 记录当时生效的配置快照（配置方案 ID/名称 + 全部配置项 JSON），用于事后追溯
-# 「这份文档当时是用什么配置切分/入库的」。
+# 记录当时实际生效的配置快照（配置方案 ID/名称 + 全部配置项 JSONB + 知识库 ID + 切分策略），
+# 用于事后追溯「这批文档当时是用什么配置切分/入库的」。
+# 注：dataset_id / chunk_strategy 为独立列（快照中的关键字段，便于直接查询比对）。
 PROCESS_CONFIG_LOG_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS process_config_log (
     id            BIGSERIAL PRIMARY KEY,
@@ -86,6 +87,8 @@ CREATE TABLE IF NOT EXISTS process_config_log (
     source        TEXT,
     profile_id    TEXT,
     profile_name  TEXT,
+    dataset_id    TEXT,
+    chunk_strategy TEXT,
     config        JSONB,
     target_stems  JSONB,
     status        TEXT,
@@ -93,6 +96,9 @@ CREATE TABLE IF NOT EXISTS process_config_log (
     duration_ms   INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_process_config_log_time ON process_config_log (run_time);
+-- 旧版本已建表时补列（幂等）
+ALTER TABLE process_config_log ADD COLUMN IF NOT EXISTS dataset_id TEXT;
+ALTER TABLE process_config_log ADD COLUMN IF NOT EXISTS chunk_strategy TEXT;
 """
 
 INIT_SQL = (

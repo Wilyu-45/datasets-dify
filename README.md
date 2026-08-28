@@ -55,7 +55,8 @@
 - **多配置方案**：可创建多套「知识库 ID + 切分策略 + 全部切分参数」方案，选择其一**激活**后，上传 / 流水线 / 切分自动使用激活方案（也可在请求中显式指定方案）。
 - **按策略动态配置**：选择不同切分策略时，表单只显示该策略相关的配置项（例如 `fixed` 只显示固定长度与重叠，`parent_child` 只显示父子块大小，`llm` 只显示 LLM API 地址 / API Key / 模型名 / 切分提示词），切换策略已填参数保留。
 - 处理入口（工作台上传 / 各产物页）会展示当前使用的配置方案；未配置方案时上传会提示先到配置中心配置并激活。
-- **处理配置记录**：每次实际触发处理（单文件 / 批量上传入库、重跑入库、`/api/pipeline/run`）时，把当时生效的配置快照（配置方案 ID / 名称 + 全部配置项 JSONB + 目标文件 + 结果状态 + 耗时）写入 PostgreSQL `process_config_log` 表，配置方案事后修改不影响已落库的快照；API Key 类字段（`llm_api_key` / `chunk_embedding_api_key`）落库前脱敏。前端配置中心新增「处理配置记录」卡片，后端提供 `GET /api/config/run-logs?limit=50` 查询，用于追溯「这批文档当时是用什么配置处理的」。
+- **流水线同享配置方案**：`POST /api/pipeline/run` 与上传入库一致，处理前自动应用激活方案（或请求体显式 `profile_id`），保证实际使用的知识库 ID / 切分策略与配置中心展示一致。
+- **处理配置记录**：每次实际触发处理（单文件 / 批量上传入库、重跑入库、`/api/pipeline/run`）时，把**运行时实际生效**的配置快照（在应用配置方案的处理期间抓取，即 chunker / Dify 入库真正读到的值）写入 PostgreSQL `process_config_log` 表——包括本批目标文件清单（`target_stems`）、实际写入的知识库 ID（`dataset_id` 独立列）、实际使用的切分策略（`chunk_strategy` 独立列）、全部配置项（JSONB）、结果状态与耗时。配置方案事后修改不影响已落库的快照；API Key 类字段（`llm_api_key` / `chunk_embedding_api_key`）落库前脱敏。前端配置中心「处理配置记录」卡片可按时间倒序查看每批文件及其配置（文件数悬停可见完整清单），后端提供 `GET /api/config/run-logs?limit=50` 查询。
 
 ### 单文件上传 + 一键入库
 `/api/upload/single` / `/api/upload/batch` 直接上传 PDF / DOCX / DOC / PPTX / XLSX / HTML 等，随即触发全流程入库（`target_stems` 白名单），只处理本批文件，不影响 manifest / chunks 中其他文档。

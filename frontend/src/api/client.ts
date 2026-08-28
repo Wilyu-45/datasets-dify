@@ -146,6 +146,10 @@ export interface RunConfigLogItem {
   source?: string | null;
   profile_id?: string | null;
   profile_name?: string | null;
+  /** 本次实际写入的 Dify 知识库 ID（独立列，来自运行时快照）。 */
+  dataset_id?: string | null;
+  /** 本次实际使用的切分策略（独立列，来自运行时快照）。 */
+  chunk_strategy?: string | null;
   /** 当时生效的全部配置项（API Key 已脱敏为 ******）。 */
   config: Record<string, number | boolean | string>;
   /** 本批处理的目标文件 stem 列表。 */

@@ -128,6 +128,8 @@ class RunConfigLogItem(BaseModel):
     source: Optional[str] = None
     profile_id: Optional[str] = None
     profile_name: Optional[str] = None
+    dataset_id: Optional[str] = None
+    chunk_strategy: Optional[str] = None
     config: Dict[str, Any]
     target_stems: List[str] = []
     status: Optional[str] = None
@@ -159,6 +161,8 @@ def get_run_config_logs(limit: int = 50) -> RunConfigLogsResponse:
                 source=r.get("source"),
                 profile_id=r.get("profile_id"),
                 profile_name=r.get("profile_name"),
+                dataset_id=r.get("dataset_id"),
+                chunk_strategy=r.get("chunk_strategy"),
                 config=cfg if isinstance(cfg, dict) else {},
                 target_stems=stems if isinstance(stems, list) else [],
                 status=r.get("status"),

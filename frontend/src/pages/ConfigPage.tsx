@@ -393,26 +393,40 @@ export default function ConfigPage() {
           />
           <Table.Column<RunConfigLogItem>
             title="切分策略"
+            dataIndex="chunk_strategy"
             width={110}
-            render={(_, record) => String(record.config?.chunk_strategy ?? "-")}
+            render={(v: string | null | undefined, record) =>
+              v ?? String(record.config?.chunk_strategy ?? "-")
+            }
           />
           <Table.Column<RunConfigLogItem>
             title="知识库 ID"
+            dataIndex="dataset_id"
             width={140}
             ellipsis
-            render={(_, record) => {
-              const v = String(record.config?.dify_dataset_id ?? "");
-              return v ? (
-                <Tooltip title={v}>{v.length > 10 ? `${v.slice(0, 10)}…` : v}</Tooltip>
+            render={(v: string | null | undefined, record) => {
+              const id = v ?? String(record.config?.dify_dataset_id ?? "");
+              return id ? (
+                <Tooltip title={id}>{id.length > 10 ? `${id.slice(0, 10)}…` : id}</Tooltip>
               ) : (
                 "-"
               );
             }}
           />
           <Table.Column<RunConfigLogItem>
-            title="文件数"
+            title="本批文件"
             width={80}
-            render={(_, record) => record.target_stems?.length ?? 0}
+            render={(_, record) => (
+              <Tooltip
+                title={
+                  record.target_stems?.length
+                    ? record.target_stems.join("\n")
+                    : "（未指定，处理全部待处理文档）"
+                }
+              >
+                {record.target_stems?.length ?? 0}
+              </Tooltip>
+            )}
           />
           <Table.Column<RunConfigLogItem>
             title="状态"

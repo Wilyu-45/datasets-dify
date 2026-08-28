@@ -67,8 +67,10 @@ def record_run(
 
     Args:
         source: 触发来源（SOURCE_* 常量之一）。
-        profile: 使用的配置方案（含 id/name/config）；没有方案时传 None。
-        config: 实际生效的配置；不传则取 profile.config，仍没有则取当前 settings 快照。
+        profile: 使用的配置方案（含 id/name）；没有方案时传 None（仅用于归属标识）。
+        config: ★ 实际生效的配置快照。调用方应在处理期间（apply_config 生效范围内）
+            用 snapshot_settings_config() 抓取，保证记录的就是 chunker/dify 真正读到的值；
+            不传则退化为 profile.config / 当前 settings 快照。
         target_stems: 本批处理的目标文件 stem 列表（可选）。
         status: 流水线总状态（ok/partial/failed）。
         error: 失败信息（可选）。
@@ -82,12 +84,15 @@ def record_run(
             eff_config = profile.get("config")
         if eff_config is None:
             eff_config = snapshot_settings_config()
+        eff_config = eff_config or {}
         row = {
             "run_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "source": source,
             "profile_id": (profile or {}).get("id"),
             "profile_name": (profile or {}).get("name"),
-            "config": Jsonb(_mask_secrets(eff_config or {})),
+            "dataset_id": eff_config.get("dify_dataset_id") or None,
+            "chunk_strategy": eff_config.get("chunk_strategy") or None,
+            "config": Jsonb(_mask_secrets(eff_config)),
             "target_stems": Jsonb(target_stems or []),
             "status": status,
             "error": error,
@@ -97,18 +102,20 @@ def record_run(
             conn.execute(
                 """
                 INSERT INTO process_config_log
-                    (run_time, source, profile_id, profile_name, config,
-                     target_stems, status, error, duration_ms)
+                    (run_time, source, profile_id, profile_name, dataset_id,
+                     chunk_strategy, config, target_stems, status, error, duration_ms)
                 VALUES
-                    (%(run_time)s, %(source)s, %(profile_id)s, %(profile_name)s, %(config)s,
-                     %(target_stems)s, %(status)s, %(error)s, %(duration_ms)s)
+                    (%(run_time)s, %(source)s, %(profile_id)s, %(profile_name)s, %(dataset_id)s,
+                     %(chunk_strategy)s, %(config)s, %(target_stems)s, %(status)s, %(error)s,
+                     %(duration_ms)s)
                 """,
                 row,
             )
             conn.commit()
         log.info(
-            "process_config_log 已记录: source=%s profile=%s stems=%s status=%s",
-            source, (profile or {}).get("name"), target_stems, status,
+            "process_config_log 已记录: source=%s profile=%s dataset=%s strategy=%s stems=%s status=%s",
+            source, (profile or {}).get("name"),
+            row["dataset_id"], row["chunk_strategy"], target_stems, status,
         )
     except Exception:  # noqa: BLE001
         log.exception("process_config_log 记录失败（不影响处理主流程）")
@@ -120,8 +127,8 @@ def list_runs(limit: int = 50) -> List[Dict[str, Any]]:
     with db.get_conn() as conn:
         cur = conn.execute(
             """
-            SELECT id, run_time, source, profile_id, profile_name,
-                   config, target_stems, status, error, duration_ms
+            SELECT id, run_time, source, profile_id, profile_name, dataset_id,
+                   chunk_strategy, config, target_stems, status, error, duration_ms
             FROM process_config_log
             ORDER BY id DESC
             LIMIT %s
