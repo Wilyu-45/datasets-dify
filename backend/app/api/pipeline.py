@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.services import config_run_log
 from app.services.pipeline import PipelineReport, PipelineRequest, PipelineStep, run_pipeline
 
 router = APIRouter(tags=["pipeline"])
@@ -72,6 +73,15 @@ def post_pipeline_run(body: Optional[PipelineRunRequest] = None) -> Dict[str, An
             stop_on_error=body.stop_on_error,
         )
         report: PipelineReport = run_pipeline(req)
+        # ★ 2026-08 配置追溯：把本次处理实际生效的配置快照记录到 process_config_log
+        config_run_log.record_run(
+            source=config_run_log.SOURCE_PIPELINE_API,
+            config=config_run_log.snapshot_settings_config(),
+            target_stems=req.target_stems,
+            status=report.status,
+            error=report.error,
+            duration_ms=report.duration_ms,
+        )
         return report.to_dict()
     except Exception as e:  # noqa: BLE001
         log.exception("pipeline 接口异常", extra={"step": "api", "error_msg": str(e)})

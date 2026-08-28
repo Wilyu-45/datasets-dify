@@ -76,7 +76,32 @@ CREATE TABLE IF NOT EXISTS doc_metadata (
 );
 """
 
-INIT_SQL = MANIFEST_TABLE_SQL + "\n" + DOC_METADATA_TABLE_SQL
+# process_config_log 表：每次实际触发处理（上传入库 / 流水线）时，
+# 记录当时生效的配置快照（配置方案 ID/名称 + 全部配置项 JSON），用于事后追溯
+# 「这份文档当时是用什么配置切分/入库的」。
+PROCESS_CONFIG_LOG_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS process_config_log (
+    id            BIGSERIAL PRIMARY KEY,
+    run_time      TEXT,
+    source        TEXT,
+    profile_id    TEXT,
+    profile_name  TEXT,
+    config        JSONB,
+    target_stems  JSONB,
+    status        TEXT,
+    error         TEXT,
+    duration_ms   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_process_config_log_time ON process_config_log (run_time);
+"""
+
+INIT_SQL = (
+    MANIFEST_TABLE_SQL
+    + "\n"
+    + DOC_METADATA_TABLE_SQL
+    + "\n"
+    + PROCESS_CONFIG_LOG_TABLE_SQL
+)
 
 
 def get_pool() -> ConnectionPool:
@@ -115,7 +140,7 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.execute(INIT_SQL)
         conn.commit()
-    log.info("数据库表结构已就绪（manifest / doc_metadata）")
+    log.info("数据库表结构已就绪（manifest / doc_metadata / process_config_log）")
 
 
 def close_pool() -> None:

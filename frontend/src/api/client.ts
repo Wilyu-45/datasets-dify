@@ -139,6 +139,31 @@ export const getActiveConfig = () => http<ActiveConfigResponse>("/config/active"
 /** 可配置字段定义（配置中心表单用）。 */
 export const getConfigSchema = () => http<ConfigSchemaResponse>("/config/schema");
 
+/** 一条处理配置记录：每次实际触发处理时落库的配置快照（process_config_log 表）。 */
+export interface RunConfigLogItem {
+  id: number;
+  run_time?: string | null;
+  source?: string | null;
+  profile_id?: string | null;
+  profile_name?: string | null;
+  /** 当时生效的全部配置项（API Key 已脱敏为 ******）。 */
+  config: Record<string, number | boolean | string>;
+  /** 本批处理的目标文件 stem 列表。 */
+  target_stems: string[];
+  status?: string | null;
+  error?: string | null;
+  duration_ms?: number | null;
+}
+
+export interface RunConfigLogsResponse {
+  total: number;
+  rows: RunConfigLogItem[];
+}
+
+/** 最近的处理配置记录（按时间倒序，默认 50 条）。 */
+export const listRunConfigLogs = (limit = 50) =>
+  http<RunConfigLogsResponse>(`/config/run-logs?limit=${limit}`);
+
 // ============ §3.2 解析相关 ============
 
 export type ParseAction =

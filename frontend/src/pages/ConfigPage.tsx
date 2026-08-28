@@ -12,7 +12,9 @@ import {
   Select,
   Space,
   Switch,
+  Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -25,13 +27,31 @@ import {
   listChunkStrategies,
   listConfigProfiles,
   listDifyDatasets,
+  listRunConfigLogs,
   updateConfigProfile,
   type ConfigFieldDef,
   type ConfigProfile,
   type DifyDatasetItem,
+  type RunConfigLogItem,
 } from "../api/client";
 
-const { Title, Paragraph } = Typography;
+const { Title, Paragraph, Text } = Typography;
+
+/** 处理来源标识 → 中文展示。 */
+const SOURCE_LABELS: Record<string, string> = {
+  upload_single: "单文件上传",
+  upload_batch: "批量上传",
+  upload_reingest: "重跑入库",
+  pipeline_api: "流水线",
+};
+
+/** 流水线状态 → Tag 颜色。 */
+const STATUS_COLORS: Record<string, string> = {
+  ok: "green",
+  partial: "orange",
+  failed: "red",
+  error: "red",
+};
 
 /** 按字段类型渲染表单控件（受控）。 */
 function FieldControl({
@@ -77,12 +97,25 @@ export default function ConfigPage() {
   const [editing, setEditing] = useState<ConfigProfile | null>(null);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  // 处理配置记录（每次实际处理时落库的配置快照）
+  const [runLogs, setRunLogs] = useState<RunConfigLogItem[]>([]);
+  const [runLogsLoading, setRunLogsLoading] = useState(false);
   // 配置项单独受控（不依赖 Form.Item 的 valuePropName 注入，Switch/Input 兼容性更好）
   const [configValues, setConfigValues] = useState<
     Record<string, number | boolean | string>
   >({});
 
   const [msgApi, contextHolder] = message.useMessage();
+
+  const loadRunLogs = async () => {
+    setRunLogsLoading(true);
+    try {
+      const r = await listRunConfigLogs(50);
+      setRunLogs(r.rows);
+    } finally {
+      setRunLogsLoading(false);
+    }
+  };
 
   const load = async () => {
     const [pr, sch, ds, st] = await Promise.all([
@@ -100,6 +133,7 @@ export default function ConfigPage() {
 
   useEffect(() => {
     load().catch((e) => msgApi.error(`加载配置失败：${e?.message ?? e}`));
+    loadRunLogs().catch((e) => msgApi.error(`加载处理配置记录失败：${e?.message ?? e}`));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -297,6 +331,107 @@ export default function ConfigPage() {
           );
         })}
       </Row>
+
+      {/* 处理配置记录：每次实际触发处理时落库的配置快照（process_config_log 表） */}
+      <Card
+        size="small"
+        title="处理配置记录"
+        extra={
+          <Button size="small" onClick={() => loadRunLogs().catch((e) => msgApi.error(`加载失败：${String(e)}`))}>
+            刷新
+          </Button>
+        }
+      >
+        <Paragraph type="secondary" style={{ marginTop: 0 }}>
+          每次实际上传入库 / 触发流水线时，系统会把当时生效的配置快照（配置方案、切分参数、目标文件、结果状态）
+          记录到数据库，用于追溯「这批文档当时是用什么配置处理的」。API Key 已脱敏。
+        </Paragraph>
+        <Table<RunConfigLogItem>
+          size="small"
+          rowKey="id"
+          loading={runLogsLoading}
+          dataSource={runLogs}
+          pagination={{ pageSize: 10, showSizeChanger: false }}
+          expandable={{
+            expandedRowRender: (record) => (
+              <div style={{ margin: 0 }}>
+                {record.error && (
+                  <Paragraph type="danger" style={{ marginTop: 0 }}>
+                    错误信息：{record.error}
+                  </Paragraph>
+                )}
+                <pre style={{ margin: 0, fontSize: 12, maxHeight: 320, overflow: "auto" }}>
+                  {JSON.stringify(record.config, null, 2)}
+                </pre>
+              </div>
+            ),
+          }}
+        >
+          <Table.Column<RunConfigLogItem>
+            title="处理时间"
+            dataIndex="run_time"
+            width={160}
+            render={(v: string | null | undefined) => v ?? "-"}
+          />
+          <Table.Column<RunConfigLogItem>
+            title="来源"
+            dataIndex="source"
+            width={110}
+            render={(v: string | null | undefined) => SOURCE_LABELS[v ?? ""] ?? v ?? "-"}
+          />
+          <Table.Column<RunConfigLogItem>
+            title="配置方案"
+            dataIndex="profile_name"
+            width={150}
+            render={(v: string | null | undefined, record) =>
+              v ? (
+                <Tooltip title={record.profile_id ?? ""}>{v}</Tooltip>
+              ) : (
+                <Text type="secondary">环境默认</Text>
+              )
+            }
+          />
+          <Table.Column<RunConfigLogItem>
+            title="切分策略"
+            width={110}
+            render={(_, record) => String(record.config?.chunk_strategy ?? "-")}
+          />
+          <Table.Column<RunConfigLogItem>
+            title="知识库 ID"
+            width={140}
+            ellipsis
+            render={(_, record) => {
+              const v = String(record.config?.dify_dataset_id ?? "");
+              return v ? (
+                <Tooltip title={v}>{v.length > 10 ? `${v.slice(0, 10)}…` : v}</Tooltip>
+              ) : (
+                "-"
+              );
+            }}
+          />
+          <Table.Column<RunConfigLogItem>
+            title="文件数"
+            width={80}
+            render={(_, record) => record.target_stems?.length ?? 0}
+          />
+          <Table.Column<RunConfigLogItem>
+            title="状态"
+            dataIndex="status"
+            width={90}
+            render={(v: string | null | undefined) =>
+              v ? <Tag color={STATUS_COLORS[v] ?? "default"}>{v}</Tag> : "-"
+            }
+          />
+          <Table.Column<RunConfigLogItem>
+            title="耗时"
+            dataIndex="duration_ms"
+            width={90}
+            render={(v: number | null | undefined) =>
+              typeof v === "number" ? `${(v / 1000).toFixed(1)}s` : "-"
+            }
+          />
+        </Table>
+      </Card>
 
       <Modal
         title={editing ? `编辑配置方案「${editing.name}」` : "新建配置方案"}

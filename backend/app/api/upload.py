@@ -48,6 +48,7 @@ from app.config import settings
 from app.models.schemas import ManifestRow
 from app.services import (
     chunker,
+    config_run_log,
     config_store,
     dify_ingest,
     manifest_store,
@@ -162,19 +163,47 @@ def _resolve_run_config(profile_id: Optional[str]) -> Dict[str, Any]:
     return profile
 
 
-def _run_single_file_pipeline(target_stem: str, profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _run_single_file_pipeline(
+    target_stem: str,
+    profile: Optional[Dict[str, Any]] = None,
+    source: str = config_run_log.SOURCE_UPLOAD_SINGLE,
+) -> Dict[str, Any]:
     """对单文件运行 parse → chunk → dify 流水线（只处理这一个文件）。
 
     Args:
         target_stem: 文件 stem（不含扩展名），例如 "report_2024"
         profile: 配置方案（含 config 字段）。传了则在 pipeline 执行期间临时应用其配置。
+        source: 处理配置记录的来源标识（写入 process_config_log 表）。
+
+    运行结束后把当时生效的配置快照 + 结果状态写入 process_config_log 表。
     """
     from app.services.pipeline import run_pipeline
 
     req = _build_pipeline_request(target_stem)
+    t0 = time.perf_counter()
     with config_store.apply_config(profile["config"] if profile else None):
-        report = run_pipeline(req)
-    return report.to_dict()
+        try:
+            report = run_pipeline(req)
+            d = report.to_dict()
+            config_run_log.record_run(
+                source=source,
+                profile=profile,
+                target_stems=[target_stem],
+                status=d.get("status"),
+                error=d.get("error"),
+                duration_ms=d.get("duration_ms"),
+            )
+            return d
+        except Exception as e:  # noqa: BLE001
+            config_run_log.record_run(
+                source=source,
+                profile=profile,
+                target_stems=[target_stem],
+                status="error",
+                error=str(e),
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            raise
 
 
 def _build_batch_pipeline_request(target_stems: List[str]) -> Any:
@@ -191,19 +220,45 @@ def _build_batch_pipeline_request(target_stems: List[str]) -> Any:
     )
 
 
-def _run_batch_pipeline(target_stems: List[str], profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _run_batch_pipeline(
+    target_stems: List[str],
+    profile: Optional[Dict[str, Any]] = None,
+    source: str = config_run_log.SOURCE_UPLOAD_BATCH,
+) -> Dict[str, Any]:
     """对一批文件运行 parse → chunk → dify 流水线（只处理这批文件）。
 
     ★ 2026-08 批量上传优化：与单文件版共用 run_pipeline，
     但用 target_stems=[s1, s2, ...] 一次性传所有 stem，避免对每个文件跑一次完整 pipeline。
     若传了 profile 配置方案，则在 pipeline 执行期间临时应用其配置。
+    运行结束后把当时生效的配置快照 + 结果状态写入 process_config_log 表。
     """
     from app.services.pipeline import run_pipeline
 
     req = _build_batch_pipeline_request(target_stems)
+    t0 = time.perf_counter()
     with config_store.apply_config(profile["config"] if profile else None):
-        report = run_pipeline(req)
-    return report.to_dict()
+        try:
+            report = run_pipeline(req)
+            d = report.to_dict()
+            config_run_log.record_run(
+                source=source,
+                profile=profile,
+                target_stems=list(target_stems),
+                status=d.get("status"),
+                error=d.get("error"),
+                duration_ms=d.get("duration_ms"),
+            )
+            return d
+        except Exception as e:  # noqa: BLE001
+            config_run_log.record_run(
+                source=source,
+                profile=profile,
+                target_stems=list(target_stems),
+                status="error",
+                error=str(e),
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            raise
 
 
 def _split_pipeline_report_by_stem(
@@ -691,7 +746,9 @@ def post_upload_single_ingest(
             detail="尚未配置任何配置方案：请先到「配置中心」配置知识库 ID 与切分策略，并选择一个方案激活",
         )
     try:
-        return _run_single_file_pipeline(target_stem, profile)
+        return _run_single_file_pipeline(
+            target_stem, profile, source=config_run_log.SOURCE_UPLOAD_REINGEST
+        )
     except Exception as e:  # noqa: BLE001
         log.exception(
             "single ingest 接口异常",

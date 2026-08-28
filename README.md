@@ -55,6 +55,7 @@
 - **多配置方案**：可创建多套「知识库 ID + 切分策略 + 全部切分参数」方案，选择其一**激活**后，上传 / 流水线 / 切分自动使用激活方案（也可在请求中显式指定方案）。
 - **按策略动态配置**：选择不同切分策略时，表单只显示该策略相关的配置项（例如 `fixed` 只显示固定长度与重叠，`parent_child` 只显示父子块大小，`llm` 只显示 LLM API 地址 / API Key / 模型名 / 切分提示词），切换策略已填参数保留。
 - 处理入口（工作台上传 / 各产物页）会展示当前使用的配置方案；未配置方案时上传会提示先到配置中心配置并激活。
+- **处理配置记录**：每次实际触发处理（单文件 / 批量上传入库、重跑入库、`/api/pipeline/run`）时，把当时生效的配置快照（配置方案 ID / 名称 + 全部配置项 JSONB + 目标文件 + 结果状态 + 耗时）写入 PostgreSQL `process_config_log` 表，配置方案事后修改不影响已落库的快照；API Key 类字段（`llm_api_key` / `chunk_embedding_api_key`）落库前脱敏。前端配置中心新增「处理配置记录」卡片，后端提供 `GET /api/config/run-logs?limit=50` 查询，用于追溯「这批文档当时是用什么配置处理的」。
 
 ### 单文件上传 + 一键入库
 `/api/upload/single` / `/api/upload/batch` 直接上传 PDF / DOCX / DOC / PPTX / XLSX / HTML 等，随即触发全流程入库（`target_stems` 白名单），只处理本批文件，不影响 manifest / chunks 中其他文档。
@@ -92,6 +93,7 @@ ragsystem/
 │   │       ├── chunker.py          # 3.3 结构切分（默认策略）
 │   │       ├── chunk_strategies.py # 3.3 多策略切分引擎（8 策略）
 │   │       ├── config_store.py     # 3.6 配置中心（多方案持久化）
+│   │       ├── config_run_log.py   # 3.6 处理配置记录（process_config_log 表）
 │   │       ├── dify_ingest.py      # 3.4 Dify 入库编排
 │   │       ├── dify_uploader.py    # 3.4 Dify 上传（分段 / 索引轮询）
 │   │       ├── image_host.py       # 3.4 图片托管抽象

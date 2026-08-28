@@ -13,6 +13,7 @@
     POST   /api/config/profiles/{id}/activate  激活方案
     GET    /api/config/active          当前激活方案（含字段定义）
     GET    /api/config/schema          可配置字段定义（前端动态渲染表单）
+    GET    /api/config/run-logs        处理配置记录（每次实际处理时落库的配置快照）
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services import config_store
+from app.services import config_run_log, config_store
 
 router = APIRouter(prefix="/config", tags=["config"])
 log = logging.getLogger("ragsystem.api.config")
@@ -114,3 +115,55 @@ class SchemaResponse(BaseModel):
 def get_schema() -> SchemaResponse:
     """所有可配置字段定义（含当前 settings 实际值）。前端据此动态渲染表单。"""
     return SchemaResponse(fields=config_store.get_field_schema())
+
+
+# ============ 处理配置记录（2026-08 新增） ============
+
+
+class RunConfigLogItem(BaseModel):
+    """一条处理配置记录（process_config_log 表的一行）。"""
+
+    id: int
+    run_time: Optional[str] = None
+    source: Optional[str] = None
+    profile_id: Optional[str] = None
+    profile_name: Optional[str] = None
+    config: Dict[str, Any]
+    target_stems: List[str] = []
+    status: Optional[str] = None
+    error: Optional[str] = None
+    duration_ms: Optional[int] = None
+
+
+class RunConfigLogsResponse(BaseModel):
+    total: int
+    rows: List[RunConfigLogItem]
+
+
+@router.get("/run-logs", response_model=RunConfigLogsResponse)
+def get_run_config_logs(limit: int = 50) -> RunConfigLogsResponse:
+    """最近的处理配置记录（每次实际触发处理时落库的配置快照，按时间倒序）。
+
+    用途：追溯「这批文档当时是用哪个配置方案 / 哪些切分参数处理入库的」。
+    API Key 类字段（llm_api_key / chunk_embedding_api_key）已脱敏。
+    """
+    rows = config_run_log.list_runs(limit=limit)
+    items = []
+    for r in rows:
+        cfg = r.get("config") or {}
+        stems = r.get("target_stems") or []
+        items.append(
+            RunConfigLogItem(
+                id=int(r.get("id") or 0),
+                run_time=r.get("run_time"),
+                source=r.get("source"),
+                profile_id=r.get("profile_id"),
+                profile_name=r.get("profile_name"),
+                config=cfg if isinstance(cfg, dict) else {},
+                target_stems=stems if isinstance(stems, list) else [],
+                status=r.get("status"),
+                error=r.get("error"),
+                duration_ms=r.get("duration_ms"),
+            )
+        )
+    return RunConfigLogsResponse(total=len(items), rows=items)
