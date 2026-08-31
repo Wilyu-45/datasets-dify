@@ -139,7 +139,8 @@ function FieldControl({
 
 export default function ConfigPage() {
   const [profiles, setProfiles] = useState<ConfigProfile[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // ★ 2026-08-31 两套配置独立激活：按类型的激活 ID（upload/webscrape 互不顶替）
+  const [activeIds, setActiveIds] = useState<Record<string, string | undefined>>({});
   const [fields, setFields] = useState<ConfigFieldDef[]>([]);
   const [datasets, setDatasets] = useState<DifyDatasetItem[]>([]);
   const [strategies, setStrategies] = useState<{ key: string; name: string }[]>([]);
@@ -179,7 +180,7 @@ export default function ConfigPage() {
       getConfigProfileTypes(),
     ]);
     setProfiles(pr.profiles);
-    setActiveId(pr.active_profile_id);
+    setActiveIds(pr.active_profile_ids ?? {});
     setFields(sch.fields);
     setDatasets(ds);
     setStrategies(st.strategies);
@@ -202,6 +203,9 @@ export default function ConfigPage() {
   const buildInit = (base?: ConfigProfile) => {
     const init: Record<string, number | boolean | string | string[]> = {};
     for (const f of fields) {
+      // 非当前类型专属的字段不初始化（如网站抓取配置不含知识库 ID）
+      const ts = f.types ?? [];
+      if (ts.length && !ts.includes(activeType)) continue;
       init[f.key] = base?.config[f.key] ?? f.default;
     }
     return init;
@@ -209,7 +213,7 @@ export default function ConfigPage() {
 
   const openCreate = () => {
     setEditing(null);
-    const base = profiles.find((p) => p.id === activeId && (p.type ?? "upload") === activeType);
+    const base = profiles.find((p) => p.id === activeIds[activeType]);
     form.setFieldsValue({ name: "" });
     setConfigValues(buildInit(base));
     setModalOpen(true);
@@ -256,7 +260,7 @@ export default function ConfigPage() {
     try {
       const r = await deleteConfigProfile(p.id);
       msgApi.success(`已删除「${p.name}」`);
-      setActiveId(r.active_profile_id);
+      setActiveIds(r.active_profile_ids ?? {});
       await load();
     } catch (e) {
       msgApi.error(`删除失败：${String(e)}`);
@@ -289,9 +293,8 @@ export default function ConfigPage() {
     () => profiles.filter((p) => (p.type ?? "upload") === activeType),
     [profiles, activeType]
   );
+  const activeProfile = profiles.find((p) => p.id === activeIds[activeType]) ?? null;
   const typeLabel = (t?: string) => PROFILE_TYPE_LABELS[t ?? "upload"] ?? t ?? "文档处理配置";
-
-  const activeProfile = profiles.find((p) => p.id === activeId) ?? null;
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -326,9 +329,12 @@ export default function ConfigPage() {
                 </Tag>
               </Space>
             </Descriptions.Item>
-            <Descriptions.Item label="知识库 ID">
-              {String(activeProfile.config.dify_dataset_id || "（未设置）")}
-            </Descriptions.Item>
+            {/* 知识库 ID：网站抓取配置不含此项（确认入库时另行选择） */}
+            {(activeProfile.type ?? "upload") === "upload" && (
+              <Descriptions.Item label="知识库 ID">
+                {String(activeProfile.config.dify_dataset_id || "（未设置）")}
+              </Descriptions.Item>
+            )}
             <Descriptions.Item label="切分策略">
               {String(activeProfile.config.chunk_strategy || "structure")}
             </Descriptions.Item>
@@ -375,7 +381,7 @@ export default function ConfigPage() {
 
       <Row gutter={[16, 16]}>
         {visibleProfiles.map((p) => {
-          const isActive = p.id === activeId;
+          const isActive = p.id === activeIds[activeType];
           const urls = Array.isArray(p.config.webscrape_urls)
             ? (p.config.webscrape_urls as string[])
             : [];
@@ -418,9 +424,12 @@ export default function ConfigPage() {
                 }
               >
                 <Descriptions size="small" column={1} colon={false}>
-                  <Descriptions.Item label="知识库 ID">
-                    {String(p.config.dify_dataset_id || "（未设置）")}
-                  </Descriptions.Item>
+                  {/* 知识库 ID：仅文档处理配置显示（网站抓取配置入库时另行选择） */}
+                  {(p.type ?? "upload") === "upload" && (
+                    <Descriptions.Item label="知识库 ID">
+                      {String(p.config.dify_dataset_id || "（未设置）")}
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="切分策略">
                     {String(p.config.chunk_strategy || "structure")}
                   </Descriptions.Item>
@@ -631,26 +640,28 @@ export default function ConfigPage() {
               </div>
             )}
 
-            {/* 知识库 ID */}
-            <div>
-              <Typography.Text strong>
-                {fieldMap.get("dify_dataset_id")?.label ?? "知识库 ID"}
-              </Typography.Text>
-              <div style={{ marginTop: 4 }}>
-                <Select
-                  showSearch
-                  style={{ width: "100%" }}
-                  placeholder="选择 Dify 知识库（可直接输入 ID）"
-                  value={configValues.dify_dataset_id as string}
-                  onChange={(v) => setCfg("dify_dataset_id", v)}
-                  options={datasets.map((d) => ({
-                    value: d.id,
-                    label: `${d.name}（${d.id.slice(0, 8)}…）`,
-                  }))}
-                  optionFilterProp="label"
-                />
+            {/* 知识库 ID：仅文档处理配置（网站抓取配置入库时在网站抓取页确认弹窗选择） */}
+            {activeType === "upload" && (
+              <div>
+                <Typography.Text strong>
+                  {fieldMap.get("dify_dataset_id")?.label ?? "知识库 ID"}
+                </Typography.Text>
+                <div style={{ marginTop: 4 }}>
+                  <Select
+                    showSearch
+                    style={{ width: "100%" }}
+                    placeholder="选择 Dify 知识库（可直接输入 ID）"
+                    value={configValues.dify_dataset_id as string}
+                    onChange={(v) => setCfg("dify_dataset_id", v)}
+                    options={datasets.map((d) => ({
+                      value: d.id,
+                      label: `${d.name}（${d.id.slice(0, 8)}…）`,
+                    }))}
+                    optionFilterProp="label"
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 切分策略 */}
             <div>

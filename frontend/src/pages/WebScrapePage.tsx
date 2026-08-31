@@ -112,13 +112,12 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
       .then((pr) => {
         const webProfiles = pr.profiles.filter((p) => (p.type ?? "upload") === "webscrape");
         setProfiles(webProfiles);
-        // 默认选中：激活方案若是网站抓取类型则用之，否则第一个网站抓取配置
-        const active = pr.profiles.find((p) => p.id === pr.active_profile_id);
-        if (active && (active.type ?? "upload") === "webscrape") {
-          setSelectedProfileId(active.id);
-        } else if (webProfiles.length) {
-          setSelectedProfileId(webProfiles[0].id);
-        }
+        // 默认选中：网站抓取类型独立激活的方案（若存在），否则第一个网站抓取配置
+        const activeWebId = pr.active_profile_ids?.webscrape;
+        const active = activeWebId
+          ? pr.profiles.find((p) => p.id === activeWebId && (p.type ?? "upload") === "webscrape")
+          : undefined;
+        setSelectedProfileId(active?.id ?? webProfiles[0]?.id);
       })
       .catch(() => setProfiles([]));
     refreshHistory();

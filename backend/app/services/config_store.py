@@ -328,7 +328,7 @@ def _ensure_profiles_file() -> None:
         "updated_at": _now_iso(),
         "config": _default_config(),
     }
-    data = {"profiles": [default_profile], "active_profile_id": default_profile["id"]}
+    data = {"profiles": [default_profile], "active_by_type": {PROFILE_TYPE_UPLOAD: default_profile["id"]}}
     _write(data)
     log.info("config_store: 已生成默认配置方案 id=%s", default_profile["id"])
 
@@ -342,6 +342,25 @@ def _write(data: Dict[str, Any]) -> None:
         json.dump(data, fp, ensure_ascii=False, indent=2)
 
 
+def _normalize_active_ids(data: Dict[str, Any]) -> Dict[str, Any]:
+    """激活状态按类型独立（upload/webscrape 各自激活，互不影响）。
+
+    ★ 2026-08-31：旧版只有单一 active_profile_id（激活任一类型会顶掉另一个），
+    现改为 active_by_type: {type: profile_id}；旧数据首次读取时惰性迁移
+    （旧 id 归入其 type），并在下次写入时移除旧字段。
+    """
+    by_type = data.get("active_by_type")
+    if not isinstance(by_type, dict):
+        by_type = {}
+    old_id = data.get("active_profile_id")
+    if old_id:
+        prof = next((p for p in data.get("profiles", []) if p.get("id") == old_id), None)
+        by_type.setdefault(profile_type_of(prof), old_id)
+        data.pop("active_profile_id", None)
+    data["active_by_type"] = by_type
+    return data
+
+
 def _load() -> Dict[str, Any]:
     import json
 
@@ -349,7 +368,7 @@ def _load() -> Dict[str, Any]:
     path = _profiles_file()
     try:
         with path.open("r", encoding="utf-8") as fp:
-            return json.load(fp)
+            return _normalize_active_ids(json.load(fp))
     except Exception as e:  # noqa: BLE001
         log.exception("config_store: 读取 profiles.json 失败，重置为默认: %s", e)
         default_profile = {
@@ -359,7 +378,7 @@ def _load() -> Dict[str, Any]:
             "updated_at": _now_iso(),
             "config": _default_config(),
         }
-        data = {"profiles": [default_profile], "active_profile_id": default_profile["id"]}
+        data = {"profiles": [default_profile], "active_by_type": {PROFILE_TYPE_UPLOAD: default_profile["id"]}}
         _write(data)
         return data
 
@@ -385,8 +404,17 @@ def list_profiles() -> List[Dict[str, Any]]:
     return profiles
 
 
-def get_active_profile_id() -> Optional[str]:
-    return _load().get("active_profile_id")
+def get_active_profile_id(profile_type: Optional[str] = None) -> Optional[str]:
+    """按类型取激活方案 ID；不传类型时按 upload（文档处理）语义取（兼容旧调用）。"""
+    by_type = _load().get("active_by_type") or {}
+    if profile_type:
+        return by_type.get(profile_type)
+    return by_type.get(PROFILE_TYPE_UPLOAD)
+
+
+def get_active_profile_ids() -> Dict[str, str]:
+    """全部类型的激活方案 ID 映射（upload/webscrape 各自独立，互不顶替）。"""
+    return dict(_load().get("active_by_type") or {})
 
 
 def get_profile(profile_id: str) -> Optional[Dict[str, Any]]:
@@ -396,8 +424,9 @@ def get_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def get_active_profile() -> Optional[Dict[str, Any]]:
-    active_id = get_active_profile_id()
+def get_active_profile(profile_type: str = PROFILE_TYPE_UPLOAD) -> Optional[Dict[str, Any]]:
+    """按类型取当前激活方案（默认文档处理配置）。"""
+    active_id = get_active_profile_id(profile_type)
     if not active_id:
         return None
     return get_profile(active_id)
@@ -432,9 +461,10 @@ def create_profile(
         "config": _sanitize_config_for_type(_merge_config(config or {}), profile_type),
     }
     data["profiles"].append(profile)
-    # 若还没有激活方案，自动激活刚创建的
-    if not data.get("active_profile_id"):
-        data["active_profile_id"] = profile["id"]
+    # 若该类型还没有激活方案，自动激活刚创建的（两套配置激活互不影响）
+    if not (data.get("active_by_type") or {}).get(profile_type):
+        data["active_by_type"] = data.get("active_by_type") or {}
+        data["active_by_type"][profile_type] = profile["id"]
     _write(data)
     return profile
 
@@ -460,12 +490,21 @@ def update_profile(profile_id: str, name: Optional[str], config: Optional[Dict[s
 def delete_profile(profile_id: str) -> bool:
     data = _load()
     before = len(data["profiles"])
+    target = next((p for p in data["profiles"] if p.get("id") == profile_id), None)
     data["profiles"] = [p for p in data["profiles"] if p.get("id") != profile_id]
     if len(data["profiles"]) == before:
         return False
-    if data.get("active_profile_id") == profile_id:
-        # 删掉激活方案 → 激活剩余第一个（若还有）
-        data["active_profile_id"] = data["profiles"][0]["id"] if data["profiles"] else None
+    # 删掉某类型的激活方案 → 该类型激活同类型剩余第一个（若还有），不碰其他类型
+    if target:
+        ptype = profile_type_of(target)
+        by_type = data.get("active_by_type") or {}
+        if by_type.get(ptype) == profile_id:
+            remaining = [p for p in data["profiles"] if profile_type_of(p) == ptype]
+            if remaining:
+                by_type[ptype] = remaining[0]["id"]
+            else:
+                by_type.pop(ptype, None)
+            data["active_by_type"] = by_type
     _write(data)
     return True
 
@@ -475,7 +514,10 @@ def activate_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     if not profile:
         return None
     data = _load()
-    data["active_profile_id"] = profile_id
+    # 激活只影响本类型（upload/webscrape 各自独立），不顶掉另一类型的激活
+    by_type = data.get("active_by_type") or {}
+    by_type[profile_type_of(profile)] = profile_id
+    data["active_by_type"] = by_type
     _write(data)
     return profile
 

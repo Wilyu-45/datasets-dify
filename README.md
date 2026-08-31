@@ -52,11 +52,22 @@
   - 元数据：Segment / Document ID、Position、字数、Tokens、状态、附件数、复制原文。
 
 ### 3.6 配置中心（Config）
-- **多配置方案**：可创建多套「知识库 ID + 切分策略 + 全部切分参数」方案，选择其一**激活**后，上传 / 流水线 / 切分自动使用激活方案（也可在请求中显式指定方案）。
+- **两套配置**：**文档处理配置**（upload，上传 / 流水线 / 切分入库时使用）与**网站抓取配置**（webscrape，网站抓取页使用，在文档处理配置基础上多「抓取网站 URL 列表」）。每套配置可创建多个方案，**各自独立激活、互不顶替**——激活文档处理配置不会影响网站抓取配置的激活状态，反之亦然（`GET /api/config/active?type=upload|webscrape` 按类型取激活方案）。
+- **知识库 ID 仅文档处理配置持有**：网站抓取配置不显示 / 不含知识库 ID（网站抓取入库知识库可在确认入库时按次选择，见 3.7）。
 - **按策略动态配置**：选择不同切分策略时，表单只显示该策略相关的配置项（例如 `fixed` 只显示固定长度与重叠，`parent_child` 只显示父子块大小，`llm` 只显示 LLM API 地址 / API Key / 模型名 / 切分提示词），切换策略已填参数保留。
 - 处理入口（工作台上传 / 各产物页）会展示当前使用的配置方案；未配置方案时上传会提示先到配置中心配置并激活。
 - **流水线同享配置方案**：`POST /api/pipeline/run` 与上传入库一致，处理前自动应用激活方案（或请求体显式 `profile_id`），保证实际使用的知识库 ID / 切分策略与配置中心展示一致。
 - **处理配置记录**：每次实际触发处理（单文件 / 批量上传入库、重跑入库、`/api/pipeline/run`）时，把**运行时实际生效**的配置快照（在应用配置方案的处理期间抓取，即 chunker / Dify 入库真正读到的值）写入 PostgreSQL `process_config_log` 表——包括本批目标文件清单（`target_stems`）、实际写入的知识库 ID（`dataset_id` 独立列）、实际使用的切分策略（`chunk_strategy` 独立列）、全部配置项（JSONB）、结果状态与耗时。配置方案事后修改不影响已落库的快照；API Key 类字段（`llm_api_key` / `chunk_embedding_api_key`）落库前脱敏。前端配置中心「处理配置记录」卡片可按时间倒序查看每批文件及其配置（文件数悬停可见完整清单），后端提供 `GET /api/config/run-logs?limit=50` 查询。
+
+### 3.7 网站抓取（WebScrape，2026-08 新增）
+知识库外延：从网站抓取内容入库。**两步式流程**——先抓取待确认，确认后才入库：
+
+1. **抓取**（`POST /api/webscrape/run`）：在「网站抓取」页选择**网站抓取配置** → 按配置的「抓取网站 URL 列表」抓取：网页正文转 Markdown（HTML 解析、编码自动识别、`<title>` 取标题），附件链接（Word / Excel / PPT / PDF / 压缩包等）自动下载，统一落 `data/webscrape/{task_id}/` 临时区；不登记 manifest、不触发流水线。**单 URL 失败只影响该项**，其余照常抓取。
+2. **确认**（`POST /api/webscrape/task/{id}/confirm`）：逐项预览（网页正文全文 / 附件文件信息），勾选需要的项 + 选择入库配置 + **选择目标知识库**（网站抓取内容可入不同知识库，故每次确认单独指定 dataset_id）→ 选中项落地（正文 → `parsed/`，附件 → `pending/`）并登记 manifest → 自动走 parse(MinerU) → chunk → Dify 入库流水线；未勾选项留在任务里。
+
+任务历史 / 详情 / 预览：`GET /api/webscrape/tasks` · `GET /api/webscrape/task/{id}` · `GET /api/webscrape/task/{id}/preview/{idx}`。
+
+**反爬兼容（2026-08-31 浏览器引擎）**：抓取优先走 httpx（带完整浏览器指纹：`Sec-Fetch-*`、`Upgrade-Insecure-Requests`、同源 `Referer` 等，412 间隔 1s 重试 1 次）；被 WAF 拦截（**412** JS 动态令牌挑战 / **403**）或源站回源故障（**502**）时，**自动降级 Playwright Chromium 浏览器内核**重新抓取——真实浏览器自动执行 JS 挑战并渲染，静态抓取不到的政府网站（如卫健委 www.nhc.gov.cn 的瑞数类 WAF）也可正常抓取；附件下载同样支持浏览器降级。实现要点：`browser_fetch.py` 自动探测并使用**完整 Chromium 内核**（瑞数类 WAF 会识别精简 headless shell 并卡死在 412，完整内核 + 隐藏 navigator.webdriver 才能通过挑战）；若浏览器也拿不到真实页面（如源站 502 故障）给出明确错误提示「网站源站当前不可用（502）」。部署依赖：`pip install playwright` 后执行一次 `python -m playwright install chromium`（约 150MB）。
 
 ### 单文件上传 + 一键入库
 `/api/upload/single` / `/api/upload/batch` 直接上传 PDF / DOCX / DOC / PPTX / XLSX / HTML 等，随即触发全流程入库（`target_stems` 白名单），只处理本批文件，不影响 manifest / chunks 中其他文档。
@@ -66,7 +77,7 @@
 
 ## 技术栈
 
-- **后端**：Python 3 + FastAPI + Pydantic v2 + psycopg3（PostgreSQL）+ oss2（阿里云 OSS）+ PyMuPDF + httpx
+- **后端**：Python 3 + FastAPI + Pydantic v2 + psycopg3（PostgreSQL）+ oss2（阿里云 OSS）+ PyMuPDF + httpx + Playwright（网站抓取反爬浏览器引擎）
 - **前端**：React 18 + TypeScript + Vite + Ant Design 5
 - **解析引擎**：MinerU（本地 FastAPI 服务，hybrid-engine / vlm-engine）
 - **知识库**：Dify（Cloud API / Knowledge API）
@@ -84,7 +95,7 @@ ragsystem/
 │   │   ├── models/schemas.py   # Pydantic 请求/响应模型
 │   │   ├── api/                # 路由：health / files / manifest / scan / parse /
 │   │   │                       #       parse_progress / chunk / config / dify /
-│   │   │                       #       pipeline / upload
+│   │   │                       #       pipeline / upload / webscrape
 │   │   └── services/           # 业务逻辑
 │   │       ├── scanner.py          # 3.1 扫描
 │   │       ├── mineru_client.py    # 3.2 MinerU API 客户端
@@ -93,8 +104,10 @@ ragsystem/
 │   │       ├── parse_progress.py   # 3.2 解析进度
 │   │       ├── chunker.py          # 3.3 结构切分（默认策略）
 │   │       ├── chunk_strategies.py # 3.3 多策略切分引擎（8 策略）
-│   │       ├── config_store.py     # 3.6 配置中心（多方案持久化）
+│   │       ├── config_store.py     # 3.6 配置中心（多方案持久化，两套类型独立激活）
 │   │       ├── config_run_log.py   # 3.6 处理配置记录（process_config_log 表）
+│   │       ├── webscraper.py       # 3.7 网站抓取（网页转 Markdown / 附件下载 / 任务存储）
+│   │       ├── browser_fetch.py    # 3.7 网站抓取浏览器引擎（Playwright，WAF 412/502 降级）
 │   │       ├── dify_ingest.py      # 3.4 Dify 入库编排
 │   │       ├── dify_uploader.py    # 3.4 Dify 上传（分段 / 索引轮询）
 │   │       ├── image_host.py       # 3.4 图片托管抽象
@@ -109,12 +122,14 @@ ragsystem/
 │   └── src/
 │       ├── App.tsx             # 布局与路由（5 个页面）
 │       ├── pages/              # Pipeline(入库工作台) / Parse(解析产物) /
-│       │                       # Chunk(切分产物) / Verify(人工校验) / Config(配置中心)
+│       │                       # Chunk(切分产物) / Verify(人工校验) / Config(配置中心) /
+│       │                       # WebScrape(网站抓取)
 │       └── components/         # ActiveConfigCard / BatchFileUpload / ChunkDetail /
 │                               # ChunksTable / DifyReportTable / ManifestTable /
 │                               # MarkdownPreview / ParsedTable
 ├── data/                       # 运行时数据（git 忽略）
 │   ├── input/                  # 待处理文档（辅助扫描）
+│   ├── webscrape/              # 网站抓取任务临时区（每任务一文件夹，见 3.7）
 │   ├── single_uploads/         # 上传中转区
 │   ├── pending/                # 已登记待解析
 │   ├── parsed/                 # MinerU 解析产物
@@ -136,6 +151,7 @@ ragsystem/
 - PostgreSQL 12+（manifest 台账 / 文档元数据存储，配置见 `RAG_PG_*`）
 - 本地 MinerU API 服务（`hybrid-engine` 或 `vlm-engine`）
 - Dify 知识库（Cloud API Key）+ 可选阿里云 OSS（图片托管默认 OSS）
+- （网站抓取用）Playwright Chromium：`pip install playwright` 后执行 `python -m playwright install chromium`（首次一次性下载）
 
 ### 2. 后端
 
@@ -160,7 +176,7 @@ npm install
 npm run dev        # 默认 http://localhost:5173
 ```
 
-浏览器打开前端页面，默认进入 **「入库工作台」**。先在 **「配置中心」** 配置知识库 ID 与切分策略并激活方案，然后拖入文件即可自动完成 解析 → 切分 → 入库；「解析产物 / 切分产物 / 人工校验」页可查看各阶段产物并人工修正。
+浏览器打开前端页面，默认进入 **「入库工作台」**。先在 **「配置中心」** 配置「文档处理配置」（知识库 ID 与切分策略）并激活方案，然后拖入文件即可自动完成 解析 → 切分 → 入库；「解析产物 / 切分产物 / 人工校验」页可查看各阶段产物并人工修正，需要**网站抓取**时在「网站抓取」页操作（流程见 3.7）。
 
 ## 配置说明（backend/.env）
 
@@ -239,7 +255,8 @@ npm run dev        # 默认 http://localhost:5173
 | 上传 | `POST /api/upload/single/ingest` | 对已上传文件单独重跑入库（不重新上传） |
 | 台账 | `GET /api/manifest` · `PATCH /api/manifest/{filename}` | manifest 分页清单 / 更新行（PostgreSQL） |
 | 文件 | `GET /api/files?dir=input\|pending` | 待处理 / 待扫描文件访问 |
-| 配置中心 | `GET/POST /api/config/profiles` · `PUT/DELETE /api/config/profiles/{id}` · `POST /api/config/profiles/{id}/activate` · `GET /api/config/active` · `GET /api/config/schema` | 配置方案管理（CRUD / 激活 / schema 字段） |
+| 配置中心 | `GET/POST /api/config/profiles` · `PUT/DELETE /api/config/profiles/{id}` · `POST /api/config/profiles/{id}/activate` · `GET /api/config/active?type=` · `GET /api/config/schema` | 配置方案管理（两套类型各自 CRUD / 独立激活 / schema 字段） |
+| 网站抓取 | `POST /api/webscrape/run` · `GET /api/webscrape/tasks` · `GET /api/webscrape/task/{id}` · `GET /api/webscrape/task/{id}/preview/{idx}` · `POST /api/webscrape/task/{id}/confirm` | 网站抓取两步式：抓取（正文 Markdown / 附件）→ 预览勾选 → 确认入库（parse → chunk → dify） |
 | 健康 | `GET /api/health` | 健康检查 |
 
 交互式文档：后端启动后访问 `http://localhost:8000/docs`。
@@ -251,6 +268,7 @@ npm run dev        # 默认 http://localhost:5173
 ```
 data/
 ├── input/           # 待处理文档（辅助扫描用；主流程为上传驱动）
+├── webscrape/       # 网站抓取任务临时区（每任务一文件夹，见 3.7）
 ├── single_uploads/  # 上传中转区（上传文件先落这里再移入 pending/）
 ├── pending/         # 已登记待解析
 ├── parsed/          # MinerU 解析产物（每文档一文件夹）

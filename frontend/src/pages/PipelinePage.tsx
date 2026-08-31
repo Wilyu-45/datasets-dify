@@ -22,19 +22,20 @@ interface Props {
 export default function PipelinePage({ onOpenConfig }: Props) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [lastReport, setLastReport] = useState<PipelineReport | null>(null);
-  // ★ 2026-08：当前激活配置方案（仅文档处理配置可用于上传入库）
+  // ★ 2026-08-31：当前激活配置方案（仅文档处理配置可用于上传入库；
+  // 两套配置各自独立激活，上传页取 upload 类型的激活方案）
   const [activeProfileId, setActiveProfileId] = useState<string | undefined>();
   const [activeProfileName, setActiveProfileName] = useState<string | undefined>();
-  // 激活方案是「网站抓取配置」时给出提示（两套配置分开）
+  // 未激活文档处理配置时给出提示
   const [activeIsWebscrape, setActiveIsWebscrape] = useState(false);
 
-  // 加载当前激活配置方案（上传处理将使用它；网站抓取配置不能用于上传页）
+  // 加载当前激活配置方案（上传处理将使用它；上传页只用文档处理配置）
   useEffect(() => {
     getActiveConfig()
       .then((r) => {
         const isWeb = (r.profile?.type ?? "upload") === "webscrape";
-        setActiveIsWebscrape(isWeb);
-        if (isWeb) {
+        setActiveIsWebscrape(isWeb || !r.profile);
+        if (isWeb || !r.profile) {
           setActiveProfileId(undefined);
           setActiveProfileName(undefined);
         } else {
@@ -85,7 +86,8 @@ export default function PipelinePage({ onOpenConfig }: Props) {
         <Alert
           type="warning"
           showIcon
-          message="当前激活的是「网站抓取配置」，不能用于文档上传入库"
+          message="尚未激活「文档处理配置」，上传入库不可用"
+          description="请先到配置中心创建并激活文档处理配置（与网站抓取配置各自独立激活，互不影响）。当前激活的网站抓取配置仅用于网站抓取页。"
           action={
             <Button type="link" size="small" onClick={onOpenConfig}>
               去配置中心激活文档处理配置

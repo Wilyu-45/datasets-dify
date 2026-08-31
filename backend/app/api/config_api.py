@@ -22,8 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.services import config_run_log, config_store
 
@@ -53,15 +53,20 @@ class ProfileOut(BaseModel):
 
 class ProfilesResponse(BaseModel):
     profiles: List[ProfileOut]
+    # ★ 2026-08-31 两套配置独立激活：按类型的激活 ID 映射（upload/webscrape 互不顶替）
+    active_profile_ids: Dict[str, str] = Field(default_factory=dict)
+    # 兼容旧字段：文档处理（upload）类型的激活 ID
     active_profile_id: Optional[str] = None
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
 def get_profiles() -> ProfilesResponse:
     profiles = [ProfileOut(**p) for p in config_store.list_profiles()]
+    ids = config_store.get_active_profile_ids()
     return ProfilesResponse(
         profiles=profiles,
-        active_profile_id=config_store.get_active_profile_id(),
+        active_profile_ids=ids,
+        active_profile_id=ids.get(config_store.PROFILE_TYPE_UPLOAD),
     )
 
 
@@ -86,7 +91,12 @@ def delete_profile(profile_id: str) -> Dict[str, Any]:
     ok = config_store.delete_profile(profile_id)
     if not ok:
         raise HTTPException(status_code=404, detail="配置方案不存在")
-    return {"ok": True, "active_profile_id": config_store.get_active_profile_id()}
+    ids = config_store.get_active_profile_ids()
+    return {
+        "ok": True,
+        "active_profile_ids": ids,
+        "active_profile_id": ids.get(config_store.PROFILE_TYPE_UPLOAD),
+    }
 
 
 @router.post("/profiles/{profile_id}/activate", response_model=ProfileOut)
@@ -103,9 +113,15 @@ class ActiveConfigResponse(BaseModel):
 
 
 @router.get("/active", response_model=ActiveConfigResponse)
-def get_active_config() -> ActiveConfigResponse:
-    """当前激活配置方案 + 字段定义（供前端展示「当前配置」卡片）。"""
-    profile = config_store.get_active_profile()
+def get_active_config(
+    type: str = Query(config_store.PROFILE_TYPE_UPLOAD, description="配置类型：upload=文档处理 / webscrape=网站抓取")
+) -> ActiveConfigResponse:
+    """当前激活配置方案（按类型取，两套各自激活）+ 字段定义。
+
+    ★ 2026-08-31：upload/webscrape 各自独立激活，互不顶替；
+    上传页取 upload 类型激活，网站抓取页取 webscrape 类型激活。
+    """
+    profile = config_store.get_active_profile(type)
     return ActiveConfigResponse(
         profile=ProfileOut(**profile) if profile else None,
         fields=config_store.get_field_schema(),

@@ -76,11 +76,31 @@ _USER_AGENT = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+# ★ 2026-08-31 完整浏览器指纹：部分政府网站（如卫健委）WAF 对非浏览器请求返回 412
 _HEADERS = {
     "User-Agent": _USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en;q=0.7",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "max-age=0",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
 }
+
+
+def _http_headers_for(url: str) -> Dict[str, str]:
+    """按目标 URL 生成请求头：浏览器指纹 + 同源 Referer（防 WAF 反爬 412）。"""
+    h = dict(_HEADERS)
+    try:
+        parts = urlparse(url)
+        if parts.scheme in ("http", "https") and parts.netloc:
+            h["Referer"] = f"{parts.scheme}://{parts.netloc}/"
+    except ValueError:
+        pass
+    return h
 
 
 def _collapse_ws(text: str) -> str:
@@ -332,17 +352,40 @@ def fetch_page_markdown(url: str, timeout: int = WEBSCRAPE_TIMEOUT_SECONDS) -> T
     Raises:
         httpx.HTTPError / ValueError: 网络错误或非 HTML 响应
     """
-    with httpx.Client(timeout=timeout, follow_redirects=True, headers=_HEADERS) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        content_type = (resp.headers.get("content-type") or "").lower()
-        if content_type and "html" not in content_type and "xml" not in content_type and "text" not in content_type:
-            raise ValueError(f"响应不是网页（Content-Type: {content_type}）")
-        raw = resp.content
-        encoding = _detect_encoding(raw, content_type or None)
-        html_text = raw.decode(encoding, errors="replace")
+    import time as _t
 
-    parser = HTMLToMarkdown(base_url=str(resp.url))
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        resp = None
+        # 412（WAF 反爬）时重试一次（更换 Referer / 间隔后通常放行）
+        for attempt in range(2):
+            resp = client.get(url, headers=_http_headers_for(url))
+            if resp.status_code == 412 and attempt == 0:
+                _t.sleep(1.0)
+                resp.close()
+                continue
+            break
+        if resp.status_code in (412, 502, 403):
+            # WAF 反爬（412/403）或源站故障（502）→ 浏览器内核降级（自动执行 JS 挑战）
+            log.info("webscrape httpx blocked(%d), fallback to browser: %s", resp.status_code, url)
+            resp.close()
+            from .browser_fetch import browser_fetch_html
+
+            b = browser_fetch_html(url, timeout=timeout)
+            if not b["ok"]:
+                raise ValueError(b["error"])
+            html_text = b["html"]
+            final_url = b["final_url"] or url
+        else:
+            resp.raise_for_status()
+            content_type = (resp.headers.get("content-type") or "").lower()
+            if content_type and "html" not in content_type and "xml" not in content_type and "text" not in content_type:
+                raise ValueError(f"响应不是网页（Content-Type: {content_type}）")
+            raw = resp.content
+            encoding = _detect_encoding(raw, content_type or None)
+            html_text = raw.decode(encoding, errors="replace")
+            final_url = str(resp.url)
+
+    parser = HTMLToMarkdown(base_url=str(final_url))
     parser.feed(html_text)
     parser.close()
 
@@ -431,32 +474,65 @@ def download_attachment(
         不抛异常（抓取失败信息放在 error 字段）。
     """
     out: Dict[str, Any] = {"ok": False, "error": None}
+    import time as _t
+
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=_HEADERS) as client:
-            with client.stream("GET", url) as resp:
-                resp.raise_for_status()
-                ctype = resp.headers.get("content-type") or ""
-                # 明明是网页却按附件下载 → 报错提示换 URL
-                if "html" in ctype.lower():
-                    raise ValueError(f"该链接返回 HTML 网页而非附件文件（Content-Type: {ctype}）")
-                filename = (
-                    _filename_from_disposition(resp.headers.get("content-disposition"))
-                    or _safe_download_name("", url)
-                )
-                filename = _safe_download_name(filename, url)
-                if not Path(filename).suffix:
-                    raise ValueError("无法从链接识别附件文件类型")
-                total = 0
-                tmp = dest_dir / f".{filename}.part"
-                with tmp.open("wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1 << 16):
-                        total += len(chunk)
-                        if total > WEBSCRAPE_MAX_DOWNLOAD_BYTES:
-                            raise ValueError(
-                                f"附件超过下载上限 {WEBSCRAPE_MAX_DOWNLOAD_BYTES // (1024 * 1024)}MB"
-                            )
-                        f.write(chunk)
-                tmp.replace(dest_dir / filename)
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            ok = False
+            total = 0
+            filename = None
+            for attempt in range(2):
+                try:
+                    with client.stream("GET", url, headers=_http_headers_for(url)) as resp:
+                        resp.raise_for_status()
+                        ctype = resp.headers.get("content-type") or ""
+                        # 明明是网页却按附件下载 → 报错提示换 URL
+                        if "html" in ctype.lower():
+                            raise ValueError(f"该链接返回 HTML 网页而非附件文件（Content-Type: {ctype}）")
+                        filename = (
+                            _filename_from_disposition(resp.headers.get("content-disposition"))
+                            or _safe_download_name("", url)
+                        )
+                        filename = _safe_download_name(filename, url)
+                        if not Path(filename).suffix:
+                            raise ValueError("无法从链接识别附件文件类型")
+                        total = 0
+                        tmp = dest_dir / f".{filename}.part"
+                        with tmp.open("wb") as f:
+                            for chunk in resp.iter_bytes(chunk_size=1 << 16):
+                                total += len(chunk)
+                                if total > WEBSCRAPE_MAX_DOWNLOAD_BYTES:
+                                    raise ValueError(
+                                        f"附件超过下载上限 {WEBSCRAPE_MAX_DOWNLOAD_BYTES // (1024 * 1024)}MB"
+                                    )
+                                f.write(chunk)
+                        tmp.replace(dest_dir / filename)
+                    ok = True
+                    break
+                except httpx.HTTPStatusError as e:
+                    sc = e.response.status_code
+                    # 412（WAF 反爬）时先重试一次
+                    if sc == 412 and attempt == 0:
+                        _t.sleep(1.0)
+                        continue
+                    if sc in (412, 502, 403):
+                        # WAF 拦截 / 源站故障 → 浏览器内核降级下载
+                        log.info("webscrape attachment httpx blocked(%d), browser fallback: %s", sc, url)
+                        fname = filename or _safe_download_name("", url)
+                        from .browser_fetch import browser_download_file
+
+                        if browser_download_file(url, dest_dir / fname, timeout=timeout):
+                            filename = fname
+                            total = (dest_dir / fname).stat().st_size
+                            ok = True
+                            break
+                        raise ValueError(
+                            "网站反爬/源站故障，附件下载失败（浏览器内核亦无法获取）："
+                            f"{url}；请确认网站在浏览器中可正常访问"
+                        )
+                    raise
+        if not ok:
+            raise httpx.HTTPError(f"下载失败: {url}")
         out.update(ok=True, filename=filename, rel_path=filename, size=total)
         log.info(
             "webscrape 附件下载成功: url=%s file=%s size=%d",

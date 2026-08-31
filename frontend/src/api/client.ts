@@ -95,6 +95,9 @@ export interface ConfigProfileTypeDef {
 
 export interface ConfigProfilesResponse {
   profiles: ConfigProfile[];
+  /** ★ 2026-08-31 两套配置独立激活：upload/webscrape 各自激活，互不顶替 */
+  active_profile_ids: Record<string, string | undefined>;
+  /** 兼容旧字段：文档处理（upload）类型的激活 ID */
   active_profile_id: string | null;
 }
 
@@ -134,7 +137,7 @@ export const updateConfigProfile = (
 
 /** 删除配置方案。 */
 export const deleteConfigProfile = (profileId: string) =>
-  http<{ ok: boolean; active_profile_id: string | null }>(
+  http<{ ok: boolean; active_profile_ids: Record<string, string | undefined>; active_profile_id: string | null }>(
     `/config/profiles/${encodeURIComponent(profileId)}`,
     { method: "DELETE" }
   );
@@ -145,8 +148,9 @@ export const activateConfigProfile = (profileId: string) =>
     method: "POST",
   });
 
-/** 当前激活配置方案 + 字段定义（前端「当前配置」卡片用）。 */
-export const getActiveConfig = () => http<ActiveConfigResponse>("/config/active");
+/** 当前激活配置方案 + 字段定义（按类型取：upload=文档处理 / webscrape=网站抓取）。 */
+export const getActiveConfig = (type = "upload") =>
+  http<ActiveConfigResponse>(`/config/active?type=${encodeURIComponent(type)}`);
 
 /** 可配置字段定义（配置中心表单用）。 */
 export const getConfigSchema = () => http<ConfigSchemaResponse>("/config/schema");
