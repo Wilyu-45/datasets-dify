@@ -124,6 +124,37 @@ ALTER TABLE process_config_log ADD COLUMN IF NOT EXISTS dataset_id TEXT;
 ALTER TABLE process_config_log ADD COLUMN IF NOT EXISTS chunk_strategy TEXT;
 """
 
+# webscrape_records 表：网站抓取入库台账（★ 2026-08-31 新增，独立于文档上传的 manifest）。
+# 网页抓取的每一条内容确认入库时逐条落一行：源 URL / 递归层级 / 落地文件 /
+# 目标知识库 / 所用配置；流水线（解析→切分→入库）完成后回填产物与状态。
+# 注：manifest 表仍会登记同名行（流水线以 manifest 为工作队列，机制需要），
+# 本表才是网站抓取入库的业务台账；按 (task_id, url) 幂等。
+WEBSCRAPE_RECORD_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS webscrape_records (
+    id            BIGSERIAL PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    title         TEXT,
+    kind          TEXT,
+    depth         INTEGER NOT NULL DEFAULT 0,
+    filename      TEXT,
+    stem          TEXT,
+    dataset_id    TEXT,
+    dataset_name  TEXT,
+    profile_id    TEXT,
+    profile_name  TEXT,
+    status        TEXT,
+    parse         TEXT,
+    chunks        TEXT,
+    dify_doc_id   TEXT,
+    error_msg     TEXT,
+    created_at    TEXT,
+    updated_at    TEXT,
+    UNIQUE (task_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_webscrape_records_time ON webscrape_records (created_at);
+"""
+
 INIT_SQL = (
     MANIFEST_TABLE_SQL
     + "\n"
@@ -132,6 +163,8 @@ INIT_SQL = (
     + PROCESS_CONFIG_LOG_TABLE_SQL
     + "\n"
     + WEBSCRAPE_TASK_TABLE_SQL
+    + "\n"
+    + WEBSCRAPE_RECORD_TABLE_SQL
 )
 
 

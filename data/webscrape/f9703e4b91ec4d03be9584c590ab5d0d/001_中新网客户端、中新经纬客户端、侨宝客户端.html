@@ -1,0 +1,1100 @@
+<!DOCTYPE html
+    PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>中新网客户端、中新经纬客户端、侨宝客户端</title>
+    <base target="_blank">
+    <!--[4,319,63] published at 2026-08-19 16:41:03 from #10 by 邹毅-->
+    <meta http-equiv="X-UA-Compatible" content="IE=EmulateIE7" />
+    <link rel="stylesheet" type="text/css" href="/part/cns_public/191/share.min.css">
+    <script src="/js/jquery1.4.js"></script>
+    <script src="/part/cns_public/123/jquery.share.min.js"></script>
+</head>
+<style>
+    body,
+    div,
+    p,
+    img,
+    a,
+    span,
+    ul,
+    li {
+        margin: 0;
+        padding: 0;
+    }
+
+    a {
+        text-decoration: none;
+        color: #333;
+    }
+
+    .clear {
+        clear: both;
+    }
+
+    img {
+        border: none;
+    }
+
+    .down_top {
+        height: 72px;
+        width: 1000px;
+        margin: 0 auto;
+    }
+
+    .down_top_logo_ydb {
+        float: left;
+        margin-top: 17px;
+        height: 46px;
+        line-height: 46px;
+        font-size: 30px;
+        width: 159px;
+        font-family: microsoft yahei;
+        color: #cc180a;
+        background: url(//i2.chinanews.com/2014/down_weixin/images/logo_ydb.jpg) no-repeat;
+    }
+
+    .down_top_rtext {
+        font-size: 17px;
+        padding-top: 13px;
+        height: 48px;
+        line-height: 48px;
+        font-family: microsoft yahei;
+        color: #cc180a;
+        float: right;
+        width: 155px;
+        text-align: right;
+    }
+
+    .down_top_rtext a {
+        color: #cc180a;
+    }
+
+    .down_top_rtext a:hover {
+        text-decoration: none;
+        color: #cc180a;
+    }
+
+    .down_banner_ydb {
+        width: 100%;
+        height: 600px;
+        background: url(//i2.chinanews.com/2014/down_weixin/images/banner_ydb.jpg) no-repeat top center;
+    }
+
+    .down_khdp {
+        padding-top: 90px;
+    }
+
+    .down_khd {
+        background: url(//i2.chinanews.com/2014/down_weixin/images/downbg.jpg) no-repeat;
+        width: 1033px;
+        height: 264px;
+        margin: 0 auto;
+    }
+
+    .down_khd_box {
+        width: 642px;
+        padding-top: 28px;
+        margin: 0 auto;
+    }
+
+    .down_khd_left {
+        float: left;
+        width: 189px;
+        position: relative;
+    }
+
+    .down_khd_left .gzh_text {
+        position: absolute;
+        top: 0;
+        right: -25px;
+        ;
+        background: url(//i2.chinanews.com/2014/down_weixin/images/fr_text.jpg) no-repeat;
+        width: 25px;
+        height: 123px;
+    }
+
+    .down_khd_left .topimg {
+        width: 182px;
+        height: 183px;
+    }
+
+    .down_khd_left .topimgleft {
+        padding-left: 10px;
+    }
+
+    .down_khd_left p.gzh_img {
+        margin-top: 18px;
+        height: 35px;
+        line-height: 35px;
+        background: url(//i2.chinanews.com/2014/down_weixin/images/wxtb.png) no-repeat 0px 5px;
+        _background: url(//i2.chinanews.com/2014/down_weixin/images/wxtb.jpg) no-repeat 20px 8px;
+        padding-left: 32px;
+        display: block;
+        font-family: microsoft yahei;
+        font-size: 19px;
+        color: #fff;
+    }
+
+    .down_khd_left p.fr_img {
+        margin-top: 18px;
+        height: 35px;
+        line-height: 35px;
+        background: url(//i2.chinanews.com/2014/down_weixin/images/sinatb.png) no-repeat 7px 6px;
+        _background: url(//i2.chinanews.com/2014/down_weixin/images/sinatb.jpg) no-repeat 20px 8px;
+        padding-left: 42px;
+        display: block;
+        font-family: microsoft yahei;
+        font-size: 19px;
+        color: #fff;
+    }
+
+    .down_khd_left p a {
+        color: #fff;
+    }
+
+    .down_khd_left p a:hover {
+        color: #fff;
+        text-decoration: none;
+    }
+
+    .down_khd_right {
+        float: right;
+        width: 193px;
+    }
+
+    .down_hotlinep {
+        padding-top: 87px;
+    }
+
+    .down_hotline {
+        background: #e04a4a;
+        border-top: #ffea01 7px solid;
+        width: 100%;
+        height: 238px;
+    }
+
+    .down_hotline_main {
+        padding-top: 53px;
+        width: 1000px;
+        margin: 0 auto;
+    }
+
+    .down_hotline_left {
+        width: 33%;
+        float: left;
+    }
+
+    .down_hotline .telep_img {
+        width: 46px;
+        background: url(//i3.chinanews.com/2014/down_weixin/images/telep_img.png) no-repeat;
+        height: 46px;
+    }
+
+    .down_hotline .mail_img {
+        width: 46px;
+        background: url(//i3.chinanews.com/2014/down_weixin/images/mail_img.png) no-repeat;
+        height: 46px;
+    }
+
+    .down_hotline .sina_img {
+        width: 46px;
+        background: url(//i3.chinanews.com/2014/down_weixin/images/sina_img.png) no-repeat;
+        height: 46px;
+    }
+
+    * html .down_hotline .telep_img {
+        background: none;
+        filter: progid:DXImageTransform.Microsoft.AlphaImageLoader(src='//i3.chinanews.com/2014/down_weixin/images/telep_img.png');
+    }
+
+    * html .down_hotline .mail_img {
+        background: none;
+        filter: progid:DXImageTransform.Microsoft.AlphaImageLoader(src='//i3.chinanews.com/2014/down_weixin/images/mail_img.png');
+    }
+
+    * html .down_hotline .sina_img {
+        background: none;
+        filter: progid:DXImageTransform.Microsoft.AlphaImageLoader(src='//i3.chinanews.com/2014/down_weixin/images/sina_img.png');
+    }
+
+    .down_hotline .topimg {
+        width: 46px;
+        height: 46px;
+        margin: 0 auto;
+    }
+
+    .down_hotline .topimg img {
+        width: 46px;
+        height: 46px;
+    }
+
+    .down_hotline p {
+        margin-top: 51px;
+        font-family: microsoft yahei;
+        font-size: 18px;
+        color: #fff;
+        text-align: center;
+    }
+
+    .down_hotline_con {
+        width: 33%;
+        float: left;
+    }
+
+    .down_hotline_right {
+        width: 33%;
+        float: right;
+    }
+
+    .pagebottom {
+        width: 1000px;
+        margin: 0 auto;
+        font-size: 12px;
+        clear: both;
+        padding: 72px 0 30px;
+        color: #737373;
+    }
+
+    .pagebottom a:link {
+        color: #737373;
+    }
+
+    .pagebottom a:visited {
+        color: #737373;
+    }
+
+    .pagebottom a:hover {
+        color: #737373;
+    }
+
+    .pagebottom a {
+        color: #737373;
+        text-decoration: none;
+    }
+
+    .pagebottom_1 {
+        height: 24px;
+        line-height: 24px;
+        text-align: center;
+    }
+
+    .pagebottom_2 {
+        text-align: center;
+        line-height: 22px;
+    }
+
+    .donate_title {
+        height: 72px;
+        float: left;
+    }
+
+    .donate_title li {
+        float: left;
+        font-size: 17px;
+        text-align: center;
+        vertical-align: bottom;
+        width: 210px;
+        height: 72px;
+        font: 17px "微软雅黑";
+        line-height: 72px;
+
+    }
+
+    .donate_title li img {
+        vertical-align: middle;
+        margin-right: 10px;
+    }
+
+    .donate_title li a {
+        float: left;
+        display: block;
+    }
+
+    ..donate_title li a:hover {
+        background: url(//www.chinanews.com/fileftp/2016/08/2016-08-30/U435P4T47D36730F968DT20160830153234.jpg) no-repeat center top;
+    }
+
+    .donate_title .donate_sel {
+        background: url(//www.chinanews.com/fileftp/2016/08/2016-08-30/U435P4T47D36730F968DT20160830153234.jpg) no-repeat center top;
+        display: block;
+        padding: 0px;
+        font: 17px bold "微软雅黑";
+        line-height: 72px;
+
+    }
+
+    .donate_title .donate_sel a {
+        display: block;
+    }
+
+    #donate_content_2 {
+        display: none;
+    }
+
+    #donate_content_3 {
+        display: none;
+    }
+
+    #donate_content_4 {
+        display: none;
+    }
+
+    .tabkhd {
+        width: 690px;
+        height: 72px;
+        float: left;
+    }
+
+    .down_banner_qb {
+        width: 100%;
+        height: 806px;
+        background: url(//www.chinanews.com/fileftp/2016/08/2016-08-05/U435P4T47D36243F968DT20160805152016.jpg) no-repeat top center;
+    }
+
+    .down_banner_jw {
+        width: 100%;
+        height: 581px;
+        background: url(//www.chinanews.com/fileftp/2018/08/2018-08-30/U435P4T47D42728F24533DT20180831100214.jpg) no-repeat top center;
+    }
+
+    .down_hotlinep_jw {
+        padding-top: 87px;
+    }
+
+    .down_hotline_jw {
+        background: #e5e5e5;
+        border-top: #fc4666 7px solid;
+        width: 100%;
+        height: 238px;
+    }
+
+    .down_hotline_jw_main {
+        padding-top: 53px;
+        width: 630px;
+        margin: 0 auto;
+    }
+
+    .down_hotline_jw_left {
+        width: 40%;
+        float: left;
+    }
+
+    .down_hotline_jw_left.down_hotline_con {
+        width: 612px;
+        margin: 0 auto;
+    }
+
+    .down_hotline_jw .sina {
+        width: 46px;
+        background: url(//www.chinanews.com/fileftp/2016/08/2016-08-05/U435P4T47D36243F969DT20160805152016.jpg) no-repeat;
+        height: 46px;
+    }
+
+    .down_hotline_jw .mail {
+        width: 46px;
+        background: url(//www.chinanews.com/fileftp/2016/08/2016-08-05/U435P4T47D36243F970DT20160805152016.jpg) no-repeat;
+        height: 26px;
+        margin-top: 10px;
+    }
+
+    .down_hotline_jw_right {
+        width: 60%;
+        float: right;
+    }
+
+    .down_hotline_jw .topimg {
+        float: left;
+    }
+
+    .down_hotline_jw .txt {
+        float: left;
+        line-height: 35px;
+        font-size: 16px;
+        color: #444444;
+        font-family: "微软雅黑";
+    }
+
+    .down_hotline_jw .txt a {
+        color: #444444;
+        text-decoration: none;
+    }
+
+    .down_hotline_jw .txt a:hover {
+        color: #444444;
+    }
+
+    .jwbutton {
+        width: 204px;
+        height: 158px;
+        overflow: hidden;
+        float: right;
+        margin-right: 292px;
+        margin-top: 315px;
+    }
+
+    .jwbutton a {
+        width: 204px;
+        height: 56px;
+        margin-bottom: 46px;
+        display: block;
+    }
+</style>
+
+<body>
+
+    <Script src="//www.chinanews.com/js/jquery1.4.js" type=text/javascript></Script>
+
+    <!-- <Script>
+        $(document).ready(function () {
+            $.getScript("//www.chinaqw.com/test/part/qbapk.js", function () {
+                var qbAndroid = qbapkUrl;
+                var qbHtml = "<a href=" + qbAndroid + "></a>";
+                $(".qbbutton").append(qbHtml);
+            });
+        });
+    </Script> -->
+    <script>
+        $(function () {
+            //$('#down_android').attr("href",androidDownloadUrl);
+            // $('#down_iphone').attr("href", iosDownloadUrl);
+            $('.social-share-icon.icon-wechat').attr("target", "_self");
+        });
+
+        function tabdonate(num) {
+            for (var i = 1; i < 5; i++) {
+                $("#donate_content_" + i).hide();
+                $("#donate_tab_" + i).removeClass("donate_sel");
+            }
+            $("#donate_content_" + num).show();
+            $("#donate_tab_" + num).addClass("donate_sel");
+        }
+
+    </script>
+
+    <style type="text/css">
+        /*导航*/
+        ul,
+        li {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        #menu_lh {
+            width: 58px;
+            /* overflow: hidden; */
+            position: fixed;
+            right: 50%;
+            margin-right: -568px;
+            z-index: 999;
+            _position: absolute;
+            _bottom: auto;
+        }
+
+        .menuTop_lh {
+            top: 126px;
+        }
+
+        .menuBtm_lh {
+            top: 0px;
+            _top: expression(eval(document.documentElement.scrollTop+document.documentElement.clientHeight-this.offsetHeight-(parseInt(this.currentStyle.marginTop, 10)||0)-(parseInt(this.currentStyle.marginBottom, 10)||0)));
+            _margin-top: 0px;
+        }
+        .backToTop {
+
+            width: 60px;
+            height: 50px;
+            line-height: 1.2;
+            cursor: pointer;
+            opacity: 0.6;
+            filter: Alpha(opacity=60);
+        }
+
+        a {
+            cursor: pointer;
+        }
+
+        .backtop {
+            width: 48px;
+            height: 48px;
+        }
+
+        a.fhtop_a {
+            background: url(//www.chinanews.com/fileftp/2015/02/2015-02-26/U412P4T47D31687F970DT20150226140513.gif) no-repeat;
+            width: 48px;
+            height: 48px;
+            display: block;
+            overflow: HIdden;
+        }
+
+        a.fhtop_a:hover {
+            background: url(//www.chinanews.com/fileftp/2015/02/2015-02-26/U412P4T47D31687F969DT20150226140513.gif) no-repeat;
+            width: 48px;
+            height: 48px;
+            display: block;
+            overflow: HIdden;
+        }
+
+        .lh_fenxiang {
+            width: 53px;
+            height: 57px;
+        }
+
+        a.lhfx {
+            background: url(//i2.chinanews.com/2014/down_weixin/images/fx_ydb.jpg) no-repeat;
+            width: 53px;
+            height: 57px;
+            display: block;
+            overflow: HIdden;
+        }
+
+        /*a.lhfx:hover{background:url(//www.chinanews.com/fileftp/2015/02/2015-02-26/U412P4T47D31687F967DT20150226140513.gif) no-repeat;width:48px;height:48px;display:block;overflow:HIdden;}
+*/
+        a.lhfxsel {
+            background: url(//www.chinanews.com/fileftp/2015/02/2015-02-26/U412P4T47D31687F967DT20150226140513.gif) no-repeat;
+            width: 48px;
+            height: 48px;
+            display: block;
+            overflow: HIdden;
+        }
+
+        .nav_layerbox {
+            width: 53px;
+            height: 153px;
+            background: #36b6e6;
+        }
+
+        .nav_layerbox .boxtext {
+            width: 35px;
+            margin: 0 auto;
+            padding-top: 16px;
+        }
+
+        .nav_layerbox .boxtext_ul {}
+
+        .nav_layerbox .boxtext_ul li {
+            width: 35px;
+            height: 30px;
+            margin-bottom: 14px;
+            background: none;
+        }
+
+        .nav_layerbox .boxtext_ul li a {
+            display: block;
+        }
+
+        /*pagebottom*/    
+.pagebottom{color:#8d8d8d;margin:0 auto;padding-top:0px;width:100%;font-size:14px;background-color:#fff;border-top:2px solid #c72a2a;}
+.pagebottom a{color:#8d8d8d}
+.pagebottom_nav{width:1280px;margin:0 auto;height:76px;line-height:56px;text-align:center;font-size:18px;color:#666}
+.pagebottom_nav a{color:#666;text-decoration:none}
+.pagebottom_nav a:hover{color:#666;text-decoration:underline}
+.pagebottom_nav span{padding:0 10px}
+.pagebottom_nav li{float:left;padding:10px 40px}
+.pagebottom_nav li:hover{background-color:#c72a2a}
+.pagebottom_nav li:hover a{color:#fff;text-decoration: none;}
+.pagebottom_nav li a{color:#c72a2a}
+.pagebottom_nav .client{float:left;border-left:1px solid #f0f0f0;height:76px}
+.pagebottom_nav .client a{display:inline-block;text-decoration:none;padding:10px 20px 0}
+.pagebottom_nav .client a div{color:#c72a2a;font-size:12px;margin-top:-40px}
+.pagebottom_nr{color:#8d8d8d;background-color:#f9f9f9;padding-top:10px}
+.pagebottom_nr a{color:#8d8d8d;text-decoration:none}
+.pagebottom_nr a:hover{color:#8d8d8d;text-decoration:underline}
+.pagebottom .des{line-height:32px;text-align:center;font-size:14px;display: inline-block;width:100%;}
+</style>
+    </style>
+    <div class="menuTop_lh" id="menu_lh">
+        <div style="width:53px; height:57px; display:block; padding:0; border:none; ">
+            <div class="lh_fenxiang"><a class='lhfx' target='_self' id="luntandaohang"></a></div>
+        </div>
+        <div class="nav_layerbox" id="luntandaohang_s">
+            <div class="boxtext">
+                <!-- <div class="bshare-custom boxtext_ul">
+                    <ul>
+                        <li><a title="分享到微信" class="bshare-weixin" href="javascript:void(0);" target="_self"></a></li>
+                        <li><a title="分享到新浪微博" class="bshare-sinaminiblog" href="javascript:void(0)" ;
+                                target="_self"></a></li>
+                        <li><a title="分享到qq好友" class="bshare-qqim" href="javascript:void(0);" target="_self"></a></li>
+
+                    </ul>
+                </div>-->
+                <div class="social-share" data-sites="wechat,weibo,qq"></div>
+
+                <style>
+                    .social-share .icon-wechat {
+                        width: 35px;
+                        height: 30px;
+                        background: url(//i2.chinanews.com/2014/down_weixin/images/fx_wx.png) no-repeat;
+                    }
+
+                    .social-share .icon-wechat:hover {
+                        width: 35px;
+                        height: 30px;
+                        background: url(//i2.chinanews.com/2014/down_weixin/images/fx_wx.png) no-repeat;
+                        opacity: 1;
+                    }
+
+                    .social-share .icon-weibo {
+                        width: 35px;
+                        height: 30px;
+                        background: url(//i2.chinanews.com/2014/down_weixin/images/fx_sina.png) no-repeat;
+                    }
+
+                    .social-share .icon-weibo:hover {
+                        width: 35px;
+                        height: 30px;
+                        background: url(//i2.chinanews.com/2014/down_weixin/images/fx_sina.png) no-repeat;
+                        opacity: 1;
+                    }
+
+                    .social-share .icon-qq {
+                        width: 35px;
+                        height: 30px;
+                        background: url(//i2.chinanews.com/2014/down_weixin/images/fx_qq.png) no-repeat;
+                    }
+
+                    .social-share .icon-qq:Hover {
+                        width: 35px;
+                        height: 30px;
+                        background: url(//i2.chinanews.com/2014/down_weixin/images/fx_qq.png) no-repeat;
+                        opacity: 1;
+                    }
+                    .social-share .social-share-icon {
+                        border-radius: 0px;
+                    }
+                    .social-share a {
+                        margin: 6px 0px;
+                    }
+                    .social-share .icon-qq:before {
+                        content: "";
+                    }
+                </style>
+                <div class="clear"></div>
+            </div>
+
+        </div>
+
+        <div style="width:48px;height:48px;display:block;margin-top:2px;padding:0px;border:none;display:none;"
+            id="newsbacktop">
+            <div class="backtop" id="full"><a href='#visit_top' class='fhtop_a' target='_self'></a></div>
+        </div>
+
+    </div>
+
+    <Script language="javascript" type="text/javascript">
+
+        var isIE = !!window.ActiveXObject;
+        var isIE6 = isIE && !window.XMLHttpRequest;
+        function reachBottom() {
+            var btmHeight = "126";// 这里配置元素距页面底部的距离
+            var scrollTop = 0;
+            var clientHeight = 0;
+            var scrollHeight = 0;
+            if (document.documentElement && document.documentElement.scrollTop) {
+
+                scrollTop = document.documentElement.scrollTop;
+
+            } else if (document.body) {
+                scrollTop = document.body.scrollTop;
+            }
+            if (document.body.clientHeight && document.documentElement.clientHeight) {
+                clientHeight = (document.body.clientHeight < document.documentElement.clientHeight) ? document.body.clientHeight : document.documentElement.clientHeight;
+            } else {
+                clientHeight = (document.body.clientHeight > document.documentElement.clientHeight) ? document.body.clientHeight : document.documentElement.clientHeight;
+            }
+            scrollHeight = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+
+            if (scrollTop >= btmHeight) {
+                if (isIE6) {
+                    document.getElementById("menu_lh").style.top = (scrollTop) + "px";
+                } else {
+                    document.getElementById("menu_lh").style.top = "126px";
+                }
+                return true;
+            } else {
+                if (isIE6) {
+                    document.getElementById("menu_lh").style.top = 126 + "px";
+                } else {
+                    //document.getElementById("menu_lh").style.top=(126-scrollTop)+"px";
+                    document.getElementById("menu_lh").style.top = (126) + "px";
+                }
+                return false;
+            }
+        }
+
+        window.onscroll = function () {
+
+            if (reachBottom() == true) {
+                document.getElementById("menu_lh").className = "menuBtm_lh";
+            } else {
+
+                document.getElementById("menu_lh").className = "menuTop_lh";
+            }
+        }
+
+    </Script>
+
+    <div style="width:100%; height:72px; background:#f4f4f4;">
+        <div class="down_top" id="visit_top">
+
+            <div class="">
+                <ul class="donate_title">
+                    <li class="donate_sel" id="donate_tab_1" onmouseover="javascript:tabdonate(1);"><img
+                            src="//www.chinanews.com/fileftp/2016/08/2016-08-08/U435P4T47D36294F971DT20160809131346.jpg" />中新网客户端
+                    </li>
+                    <li id="donate_tab_2" onmouseover="javascript:tabdonate(2);"><img
+                            src="//www.chinanews.com/fileftp/2016/08/2016-08-08/U435P4T47D36294F972DT20160809131346.jpg" />中新经纬客户端
+                    </li>
+                    <li id="donate_tab_3" onmouseover="javascript:tabdonate(3);"><img
+                            src="//www.chinanews.com/fileftp/2016/08/2016-08-08/U435P4T47D36294F973DT20160809131346.jpg" />侨宝客户端
+                    </li>
+                    <li id="donate_tab_4" onmouseover="javascript:tabdonate(4);"><img
+                            src="//www.ecns.cn/part/2016/08/2016-08-04/U435P886T30D206F207DT20160829093256.png"
+                            width="36" />英文网客户端</li>
+                </ul>
+                <div class="down_top_rtext"><a href="//www.chinanews.com/">
+                        < 返回中国新闻网</a>
+                </div>
+                <div class="clear"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="donate_content_1">
+        <style>
+            .w1000 {
+                width: 1000px;
+                margin: 0 auto;
+            }
+
+            .down_banner {
+                width: 100%;
+                height: 605px;
+                background: url(//www.chinanews.com.cn/fileftp/2025/12/2025-12-11/U808P4T47D55864F29949DT20251215100203.jpg) no-repeat top center;
+            }
+
+            .down_bannerbox {
+                width: 982px;
+                margin: 0 auto;
+                position: relative;
+                height: 605px;
+            }
+
+            .down_iphone {
+                position: absolute;
+                width: 185px;
+                height: 61px;
+                left: 568px;
+                top: 326px;
+            }
+
+            .down_android {
+                position: absolute;
+                width: 185px;
+                height: 61px;
+                left: 568px;
+                top: 451px;
+            }
+        </style>
+        <div class="down_banner">
+
+            <div class="down_bannerbox">
+                <a class="down_iphone" id='down_iphone'
+                    href="//itunes.apple.com/us/app/zhong-guo-xin-wen-wang/id589796322"></a>
+                <a class="down_android" id='down_android'
+                    href="//a.app.qq.com/o/simple.jsp?pkgname=com.cns.mc.activity"></a>
+            </div>
+
+        </div>
+        <div class="down_khdp">
+            <div class="down_khd">
+                <div class="down_khd_box">
+                    <div class="down_khd_left">
+                        <div class="gzh_text"></div>
+                        <div class="topimg topimgleft"><a href="//www.chinanews.com/cns2012.shtml"><img
+                                    src="//i2.chinanews.com/2014/down_weixin/images/gzh_ewm.jpg"></a></div>
+                        <p class="gzh_img"><a href="//www.chinanews.com/cns2012.shtml">中新网微信公众号</a></p>
+                    </div>
+                    <div class="down_khd_right down_khd_left">
+                        <div class="topimg"><a href="//weibo.com/chinanewsv"><img
+                                    src="//i2.chinanews.com/2014/down_weixin/images/fr_ewm.jpg"></a></div>
+                        <p class="fr_img"><a href="//weibo.com/chinanewsv">中新网法人微博</a></p>
+                    </div>
+                    <div class="clear"></div>
+                </div>
+
+            </div>
+        </div>
+        <div class="down_hotlinep">
+            <div class="down_hotline">
+                <div class="down_hotline_main">
+                    <!--<div class="down_hotline_left">
+                        <div class="topimg">
+                            <div class="telep_img"></div>
+                        </div>
+                        <p>新闻热线：15699788100</p>
+                    </div>-->
+                    <div class="down_hotline_con">
+                        <div class="topimg">
+                            <div class="sina_img"></div>
+                        </div>
+                        <p>官方微博：@中国新闻网</p>
+                    </div>
+                    <div class="down_hotline_right">
+                        <div class="topimg">
+                            <div class="mail_img"></div>
+                        </div>
+                        <p>邮箱：news@chinanews.com.cn</p>
+                    </div>
+                    <div class="clear"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div id="donate_content_2">
+
+        <div class="down_banner_jw">
+            <div style="width:1000px; margin:0 auto;">
+                <div class="jwbutton">
+                    <a href="//itunes.apple.com/us/app/zhong-xin-jing-wei/id1074179165?mt=8
+"></a>
+                    <a href="//dl.chinanews.com/apps/chinanews/other/JW_App/jw.apk
+"></a>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="down_khdp" style="padding-top:0px;">
+            <div class="down_khd">
+                <img src="//www.chinanews.com/fileftp/2016/08/2016-08-08/U435P4T47D36294F974DT20160810104205.jpg" />
+
+            </div>
+        </div>
+
+        <div class="down_hotlinep_jw">
+            <div class="down_hotline_jw">
+                <div class="down_hotline_jw_main">
+                    <div class="down_hotline_jw_left">
+
+                        <div class="down_hotline_jw_con">
+                            <div class="topimg">
+                                <div class="sina"></div>
+                            </div>
+                            <div class="txt">
+                                <p><a href="//weibo.com/5993531560
+"> 官方微博：@中新经纬</a></p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="down_hotline_jw_right">
+                        <div class="topimg">
+                            <div class="mail"></div>
+                        </div>
+                        <div class="txt">
+                            <p> 邮箱：zhongxinjingwei@chinanews.com.cn
+                            </p>
+                        </div>
+                    </div>
+                    <div class="clear"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        .qbbutton {
+            width: 245px;
+            height: 169px;
+            overflow: hidden;
+            float: right;
+            margin-top: 560px;
+        }
+
+        .qbbutton a {
+            width: 245px;
+            height: 62px;
+            margin-bottom: 44px;
+            display: block;
+        }
+
+        .down_banner_qb {
+            width: 100%;
+            height: 895px;
+            background: url(//www.chinaqw.com/upload_pic/1/201710/12/U674P894T1D2002F11DT20171020135233.jpg) no-repeat top center;
+        }
+
+        .down_hotline_qb {
+            background: #2F91F1 url(//www.chinaqw.com/upload_pic/1/201710/12/U674P894T1D2002F10DT20171020135242.jpg) no-repeat center;
+            border-top: #fc4666 7px solid;
+            width: 100%;
+            height: 300px;
+        }
+    </style>
+    <div id="donate_content_3">
+
+        <div class="down_banner_qb">
+            <div style="width:1125px; margin:0 auto;">
+                <div class="qbbutton">
+                    <a href="https://itunes.apple.com/cn/app/id1070036730"></a>
+                </div>
+            </div>
+        </div>
+        <div class="down_hotlinep_qw" style="padding-top:0px;">
+            <div class="down_hotline_qb">
+            </div>
+        </div>
+    </div>
+
+    <div id="donate_content_4">
+
+        <style>
+            #download {
+                width: 100%;
+                background: url(//www.ecns.cn/part/2016/08/2016-08-04/U435P886T30D206F203DT20160804170618.jpg) no-repeat center top;
+                height: 896px;
+            }
+
+            .downewm {
+                width: 361px;
+                height: 131px;
+                padding-left: 374px;
+                padding-top: 601px;
+            }
+
+            .downewm .left {
+                float: left;
+                width: 206px;
+                height: 131px;
+                overflow: hidden;
+            }
+
+            .downewm .left img {
+                width: 206px;
+                height: 60px;
+                margin-bottom: 10px;
+            }
+
+            .downewm .right {
+                float: right;
+                width: 130px;
+                height: 130px;
+            }
+        </style>
+
+        <div id="download">
+            <div class="w1000" style="position:relative;">
+                <div class="downewm">
+                    <div class="left">
+                        <a href="//itunes.apple.com/cn/app/id1107471990"><img
+                                src="//www.ecns.cn/part/2016/08/2016-08-04/U435P886T30D206F204DT20160804172126.jpg" /></a>
+                        <a href="//dl.chinanews.com/apps/Ecns/ecns_2.3.3_ecns.apk"><img
+                                src="//www.ecns.cn/part/2016/08/2016-08-04/U435P886T30D206F205DT20160804172126.jpg" /></a>
+                    </div>
+                    <div class="right">
+                        <img src="//www.ecns.cn/part/2016/08/2016-08-04/U435P886T30D206F206DT20160804172126.jpg" />
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+        <div class="down_hotlinep_jw" style="padding-top:0px;">
+            <div class="down_hotline_jw">
+                <div class="down_hotline_jw_main">
+                    <div class="down_hotline_jw_right" style="width:340px; margin:0 auto;float:none;">
+                        <div class="topimg">
+                            <div class="mail"></div>
+                        </div>
+                        <div class="txt">
+                            <p> 邮箱：en@chinanews.com.cn</p>
+                        </div>
+                    </div>
+                    <div class="clear"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <style type="text/css">
+/*pagebottom*/    
+.pagebottom{color:#8d8d8d;margin:0 auto;padding-top:0px;width:100%;font-size:14px;background-color:#fff;border-top:2px solid #c72a2a;}
+.pagebottom a{color:#8d8d8d}
+.pagebottom_nav{width:1280px;margin:0 auto;height:76px;line-height:56px;text-align:center;font-size:18px;color:#666}
+.pagebottom_nav a{color:#666;text-decoration:none}
+.pagebottom_nav a:hover{color:#666;text-decoration:underline}
+.pagebottom_nav span{padding:0 10px}
+.pagebottom_nav li{float:left;padding:10px 40px}
+.pagebottom_nav li:hover{background-color:#c72a2a}
+.pagebottom_nav li:hover a{color:#fff;text-decoration: none;}
+.pagebottom_nav li a{color:#c72a2a}
+.pagebottom_nav .client{float:left;border-left:1px solid #f0f0f0;height:76px}
+.pagebottom_nav .client a{display:inline-block;text-decoration:none;padding:10px 20px 0}
+.pagebottom_nav .client a div{color:#c72a2a;font-size:12px;margin-top:-40px}
+.pagebottom_nr{color:#8d8d8d;background-color:#f9f9f9;padding-top:10px}
+.pagebottom_nr a{color:#8d8d8d;text-decoration:none}
+.pagebottom_nr a:hover{color:#8d8d8d;text-decoration:underline}
+.pagebottom .des{line-height:32px;text-align:center;font-size:14px;display: inline-block;width:100%;}
+</style>
+<script>
+function changeCurrent(thisli) {
+    if(thisli.className=="current"){return}
+    else{
+        $(thisli).siblings().removeClass("current");
+        $(thisli).addClass("current");
+    }
+}
+</script>
+
+<div class="clear"></div>
+            <!--底部-->
+            <div class="pagebottom">
+                <div class="pagebottom_nav">
+                    <ul>
+                        <li onMouseOver="changeCurrent(this)"><a href="/common/footer/intro.shtml">关于我们</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="/common/footer/aboutus.shtml">About us</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="/common/footer/contact.shtml">联系我们</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="//ad.chinanews.com.cn/">广告服务</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="/common/footer/news-service.shtml">供稿服务</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="/common/footer/law.shtml">法律声明</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="/hr/">招聘信息</a></li>
+                        <li onMouseOver="changeCurrent(this)"><a href="/common/footer/sitemap.shtml">网站地图</a></li>
+                    </ul>
+
+                </div>
+                <div class="pagebottom_nr">
+
+                    <div class="des">本网站所刊载信息，不代表中新社和中新网观点。 刊用本网站稿件，务经书面授权。</div>
+
+                    <div class="des">未经授权禁止转载、摘编、复制及建立镜像，违者将依法追究法律责任。</div>
+                </div>
+
+                <div class="pagebottom_nr" style="padding-bottom:20px">
+                    <div class="des">[<a href="/news/xuke.html">网上传播视听节目许可证(0106168)</a>] [<a href="//beian.miit.gov.cn">京ICP证040655号</a>] [
+                        <a target="_blank" href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010202009201" style="display:inline-block;height:20px;line-height:20px;"><img src="//www.chinanews.com/fileftp/2016/02/2016-02-29/ghs.png
+                                   " style="float:left;">京公网安备 11010202009201号</a>] [<a href="//beian.miit.gov.cn">京ICP备2021034286号-7</a>] [<a href="/news/zjxuke.html">互联网宗教信息服务许可证：京(2022)0000118；京(2022)0000119</a>]<br>
+                                   [<a href="//image.cns.com.cn/default/113c4582/20240924/certificate01.jpg">互联网新闻信息服务许可证10120180010</a>]<br><a href="https://www.12377.cn/">违法和不良信息举报平台</a> 举报邮箱：jubao@chinanews.com.cn <a href="/kong/2018/01-17/8426100.shtml">举报受理和处置管理办法</a>  总机：86-10-87826688</div>
+                    <!--include virtual="/part/cns_public/75.html"-->
+                    <div class="des">Copyright &#169;1999-2026
+
+<!--<meta name="chinanews_site_verification" content="c5167709490b92f7aa139e4d3cc28777"/>-->
+<!--4,34,1021 published at 2026-01-01 00:00:08 by 0--> chinanews.com. All Rights Reserved</div>
+                </div>
+
+            </div>
+
+        </div>
+
+        <!--页底end-->
+<!--<meta name="chinanews_site_verification" content="e55222144e63a07edc2d9e9a8e8175b2"/>-->
+<!--4,319,141 published at 2026-08-13 10:43:01 by 808-->
+</body>
+
+</html>
+<!--<meta name="chinanews_site_verification" content="9f282848d129e9e9b4bff2d430633a7c"/>-->
+<!--4,319,63 published at 2026-08-19 16:41:03 by 947-->

@@ -42,6 +42,24 @@
 将切分产物批量上传至 Dify 知识库（Knowledge API）：文档级去重、批次上传（默认 30 段/批）、上传报告汇总；图片经 **阿里云 OSS** 托管为公网 URL 后随文档上传，避免内网 tunnel 链接失效。
 - 图片附件上传使用 **App API Key**（`app-` 前缀；Knowledge Key 无 `/files/upload` 权限）；`dify_skip_file_upload=true` 时可完全跳过附件上传，正文只写 OSS 永久 URL
 - 写入 Dify 后**轮询等待索引完成**（超时 / 间隔可配置），单段超长内容保护性截断后再写入
+- 入库成功后**顺手写入文档元数据**（见 3.4.1：doc_metadata 行 + manifest 用户填写列合并推送）
+
+### 3.4.1 文档元数据（Metadata，2026-08-31 新增）
+独立的 **「文档元数据」页**：文档清单**以 Dify 知识库为准**（分页拉取库内全部文档），不依赖 manifest 台账——库内已删除的文档不会再出现（避免按陈旧 dify_doc_id 推送报 404），库里存在但台账没有的文档（后续数据库迁移、台账数据不迁移的场景）同样可以填写元数据。
+
+- **选择知识库**：缺省当前配置的目标知识库（`RAG_DIFY_DATASET_ID`），可切换；
+- **填写元数据**：行上「填写元数据」打开抽屉，编辑 doc_metadata 表的**全部 11 个字段**——类型-一级 / 类型-二级 / 主题-一级 / 主题-二级 / 核心内容摘要 / 实体标签 / 属性标签 / 适用科室 / 生效日期 / 优先级（数字）/ 状态（现行 / 废止…）；表单会回填 **Dify 已写入的值**（本地表为空也能看到已推送的元数据），本地行优先；
+- **保存**：只写 PostgreSQL `doc_metadata` 表；**保存并导入 Dify**：顺手把这一篇推送到所选知识库；
+- **导入元数据到 Dify**（卡片右上角）：以知识库内文档清单为准批量推送（50 篇/批，批量失败自动降级逐篇重试隔离错误），可重复执行覆盖旧值。
+
+**每篇文档推送的元数据 = 本地两个来源合并**（按文档名 stem 匹配，文档 ID 直接用 Dify 清单里的 ID）：
+
+| 来源 | 字段（Dify 元数据字段名） | 优先级 |
+| :--- | :--- | :--- |
+| doc_metadata 表（「文档元数据」页抽屉编辑） | doc_type_primary / doc_type_secondary / topic_primary / topic_secondary / core_summary / entity_label / attribute_label / applicable_scenarios / effective_date / priority / status | 高 |
+| manifest 表用户填写列（历史数据；列已不在台账表格中显示） | seq / category_l1 / category_l2 / keywords / department / verified / process_note | 低 |
+
+同名同义字段 `effective_date` 以 doc_metadata 抽屉的值为准（为空回落 manifest 列）。Dify 知识库中缺失的元数据字段（共 18 个）**首次导入时自动创建**。manifest 台账表格不再显示元数据列（一级分类 / 关键词 / 适用科室等统一在「文档元数据」页填写）。
 
 ### 3.5 人工校验（Verify）
 从 Dify 知识库拉取已入库文档与分段，三栏布局供人工抽查校验，编辑结果**写回 Dify**：
@@ -95,7 +113,7 @@ ragsystem/
 │   │   ├── models/schemas.py   # Pydantic 请求/响应模型
 │   │   ├── api/                # 路由：health / files / manifest / scan / parse /
 │   │   │                       #       parse_progress / chunk / config / dify /
-│   │   │                       #       pipeline / upload / webscrape
+│   │   │                       #       doc_metadata / pipeline / upload / webscrape
 │   │   └── services/           # 业务逻辑
 │   │       ├── scanner.py          # 3.1 扫描
 │   │       ├── mineru_client.py    # 3.2 MinerU API 客户端
@@ -108,22 +126,22 @@ ragsystem/
 │   │       ├── config_run_log.py   # 3.6 处理配置记录（process_config_log 表）
 │   │       ├── webscraper.py       # 3.7 网站抓取（网页转 Markdown / 附件下载 / 任务存储）
 │   │       ├── browser_fetch.py    # 3.7 网站抓取浏览器引擎（Playwright，WAF 412/502 降级）
-│   │       ├── dify_ingest.py      # 3.4 Dify 入库编排
-│   │       ├── dify_uploader.py    # 3.4 Dify 上传（分段 / 索引轮询）
+│   │       ├── dify_ingest.py      # 3.4 Dify 入库编排（入库成功顺手写文档元数据）
+│   │       ├── dify_uploader.py    # 3.4 Dify 上传（分段 / 索引轮询 / 元数据 API）
 │   │       ├── image_host.py       # 3.4 图片托管抽象
 │   │       ├── oss_uploader.py     # 3.4 阿里云 OSS 上传
 │   │       ├── hasher.py           # 文件 MD5
-│   │       ├── doc_metadata.py     # 文档元数据（PostgreSQL）
+│   │       ├── doc_metadata.py     # 3.4.1 文档元数据（PostgreSQL + Dify 推送）
 │   │       ├── manifest_store.py   # manifest 台账（PostgreSQL）
 │   │       └── pipeline.py         # 3.0 入库工作台流水线
 │   ├── requirements.txt
 │   └── .env.example            # 环境变量模板
 ├── frontend/                   # React 前端
 │   └── src/
-│       ├── App.tsx             # 布局与路由（5 个页面）
+│       ├── App.tsx             # 布局与路由（7 个页面）
 │       ├── pages/              # Pipeline(入库工作台) / Parse(解析产物) /
-│       │                       # Chunk(切分产物) / Verify(人工校验) / Config(配置中心) /
-│       │                       # WebScrape(网站抓取)
+│       │                       # Chunk(切分产物) / Verify(人工校验) /
+│       │                       # Metadata(文档元数据) / WebScrape(网站抓取) / Config(配置中心)
 │       └── components/         # ActiveConfigCard / BatchFileUpload / ChunkDetail /
 │                               # ChunksTable / DifyReportTable / ManifestTable /
 │                               # MarkdownPreview / ParsedTable
@@ -249,8 +267,9 @@ npm run dev        # 默认 http://localhost:5173
 | 切分产物 | `GET /api/chunks` · `/api/chunks/{stem}/files` · `/api/chunks/{stem}/chunks` · `/api/chunks/{stem}/preview/{chunk_id}` | 切分产物列表 / 明细 / 预览 |
 | Dify 配置 | `GET/POST /api/dify/config` · `GET /api/dify/test` · `GET /api/dify/datasets` | Dify 配置读写 / 连通性 / 数据集列表 |
 | Dify 入库 | `POST /api/dify/upload` | 上传 chunks 到 Dify 知识库 |
-| Dify 校验 | `GET /api/dify/documents` · `GET /api/dify/documents/{id}/segments` · `POST /api/dify/documents/{id}/segments/{seg_id}` | 人工校验页：文档 / 分段拉取、分段编辑写回 |
-| Dify 元数据 | `GET /api/dify/metadata/fields` · `POST /api/dify/metadata/init-fields` · `POST /api/dify/metadata/sync` | 元数据字段管理 |
+| Dify 校验 | `GET /api/dify/documents` · `GET /api/dify/documents/{id}/segments` · `POST /api/dify/documents/{id}/segments/{seg_id}` | 人工校验页：文档（可选 `dataset_id`，元数据页复用）/ 分段拉取、分段编辑写回 |
+| Dify 元数据 | `GET /api/dify/metadata/fields` · `POST /api/dify/metadata/init-fields` · `POST /api/dify/metadata/sync` | 元数据字段管理 / 一键导入 Dify（**以 Dify 库内文档清单为准**，`target_stems` + `dataset_id` 可选，见 3.4.1） |
+| 文档元数据 | `GET /api/doc-metadata` · `GET/PUT /api/doc-metadata/{stem}` | doc_metadata 表读写（「文档元数据」页抽屉的后端，11 个字段全量编辑） |
 | 上传 | `POST /api/upload/single` · `POST /api/upload/batch` | 单文件 / 批量上传 + 一键入库（`auto_ingest` / `profile_id` 参数） |
 | 上传 | `POST /api/upload/single/ingest` | 对已上传文件单独重跑入库（不重新上传） |
 | 台账 | `GET /api/manifest` · `PATCH /api/manifest/{filename}` | manifest 分页清单 / 更新行（PostgreSQL） |
@@ -279,5 +298,5 @@ data/
 ├── configs/         # 配置方案（profiles.json）
 └── logs/            # 运行日志
 
-文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` 表），应用启动时自动建表，无需手工维护 Excel。
+文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` / `webscrape_records` 等表），应用启动时自动建表，无需手工维护 Excel。
 ```

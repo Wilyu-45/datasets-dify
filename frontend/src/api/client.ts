@@ -282,6 +282,64 @@ export const updateManifestRow = (
     body: JSON.stringify(fields),
   });
 
+// ============ 文档元数据（doc_metadata 表 → Dify 元数据，2026-08-31 新增） ============
+
+/** doc_metadata 表的全部字段（与后端 doc_metadata.METADATA_FIELD_DEFS 一一对应）。 */
+export interface DocMetadataFields {
+  doc_type_primary?: string | null;   // 类型-一级
+  doc_type_secondary?: string | null; // 类型-二级
+  topic_primary?: string | null;      // 主题-一级
+  topic_secondary?: string | null;    // 主题-二级
+  core_summary?: string | null;       // 核心内容摘要
+  entity_label?: string | null;       // 实体标签
+  attribute_label?: string | null;    // 属性标签
+  applicable_scenarios?: string | null; // 适用科室
+  effective_date?: string | null;     // 生效日期
+  priority?: number | null;           // 优先级
+  status?: string | null;             // 现行/废止/...
+}
+
+/** 读取单个文档的元数据行（不存在时返回空对象）。 */
+export const getDocMetadata = (stem: string) =>
+  http<DocMetadataFields>(`/doc-metadata/${encodeURIComponent(stem)}`);
+
+/** 全量文档元数据（{stem: {field: value}}，元数据页用来标注哪些文档已填写）。 */
+export const listDocMetadata = () =>
+  http<{ total: number; rows: Record<string, DocMetadataFields> }>("/doc-metadata");
+
+/** 保存（upsert）单个文档的元数据行（全量提交，空值=清空该字段）。 */
+export const saveDocMetadata = (stem: string, fields: DocMetadataFields) =>
+  http<DocMetadataFields>(`/doc-metadata/${encodeURIComponent(stem)}`, {
+    method: "PUT",
+    body: JSON.stringify(fields),
+  });
+
+/** POST /api/dify/metadata/sync 响应：把元数据导入 Dify 知识库的结果。 */
+export interface MetadataSyncResult {
+  ok: boolean;
+  synced: number;
+  errors: number;
+  total: number;
+  skipped?: number;
+  failed_doc_ids?: string[];
+  message?: string;
+}
+
+/**
+ * 把元数据导入 Dify 知识库（以 Dify 库内文档清单为准，按文档名匹配本地元数据）：
+ * 每篇文档推送 doc_metadata 表行 + manifest 用户填写列（历史数据）的合并结果。
+ * @param targetStems 指定则只同步这些文档（按 Dify 文档名）；缺省同步知识库全部文档
+ * @param datasetId 目标知识库 ID；缺省用后端当前配置
+ */
+export const syncDifyMetadata = (targetStems?: string[], datasetId?: string) =>
+  http<MetadataSyncResult>("/dify/metadata/sync", {
+    method: "POST",
+    body: JSON.stringify({
+      ...(targetStems?.length ? { target_stems: targetStems } : {}),
+      ...(datasetId ? { dataset_id: datasetId } : {}),
+    }),
+  });
+
 export const triggerParse = (dryRun: boolean, force = false) =>
   http<ParseReport>("/parse", {
     method: "POST",
@@ -548,6 +606,8 @@ export interface WebScrapeItem {
   ok: boolean;
   /** content=网页正文 / attachment=附件文件 */
   kind: string;
+  /** 递归层级：0=URL 列表本身，1..N=递归发现的页面 */
+  depth?: number | null;
   /** content：页面标题；attachment：文件名 stem */
   title: string;
   /** attachment：原始文件名 */
@@ -632,6 +692,35 @@ export const listWebScrapeTasks = (limit = 20) =>
     `/webscrape/tasks?limit=${limit}`
   );
 
+/** ★ 2026-08-31 入库台账记录（webscrape_records 表，独立于文档上传的 manifest）。 */
+export interface WebScrapeRecordItem {
+  id: number;
+  task_id: string;
+  url: string;
+  title?: string | null;
+  kind?: string | null;          // content=网页正文 / attachment=附件文件
+  depth?: number | null;         // 递归层级：0=URL 列表本身
+  filename?: string | null;      // pending/ 落地文件名
+  stem?: string | null;
+  dataset_id?: string | null;    // 入库目标知识库
+  dataset_name?: string | null;
+  profile_id?: string | null;    // 确认入库所用配置
+  profile_name?: string | null;
+  status?: string | null;        // landed / parsed / ingested / error
+  parse?: string | null;
+  chunks?: string | null;
+  dify_doc_id?: string | null;
+  error_msg?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+/** 网站抓取入库台账（每条确认入库的抓取内容一行）。 */
+export const listWebScrapeRecords = (limit = 100) =>
+  http<{ total: number; records: WebScrapeRecordItem[] }>(
+    `/webscrape/records?limit=${limit}`
+  );
+
 /** 任务详情（含逐项状态，供预览页渲染）。 */
 export const getWebScrapeTask = (taskId: string) =>
   http<WebScrapeTask>(`/webscrape/task/${encodeURIComponent(taskId)}`);
@@ -695,6 +784,8 @@ export interface DifyDocumentItem {
   word_count?: number | null;
   created_at?: number | null;
   display_position?: number | null;
+  /** Dify 端已写入的文档元数据（部分 Dify 版本返回 doc_metadata） */
+  metadata?: { id: string; name: string; value: string | number }[] | null;
 }
 
 export interface DifySegmentAttachment {
@@ -719,14 +810,15 @@ export interface DifySegmentItem {
   attachments: DifySegmentAttachment[];
 }
 
-/** 列出 Dify 数据集的所有文档（人工校验左栏） */
+/** 列出 Dify 数据集的所有文档（人工校验左栏 / 元数据页；dataset_id 缺省用后端当前配置） */
 export const listDifyDocuments = (
-  params: { page?: number; limit?: number; keyword?: string } = {}
+  params: { page?: number; limit?: number; keyword?: string; dataset_id?: string } = {}
 ) => {
   const qs = new URLSearchParams();
   if (params.page) qs.set("page", String(params.page));
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.keyword) qs.set("keyword", params.keyword);
+  if (params.dataset_id) qs.set("dataset_id", params.dataset_id);
   const q = qs.toString();
   return http<DifyDocumentItem[]>(`/dify/documents${q ? `?${q}` : ""}`);
 };

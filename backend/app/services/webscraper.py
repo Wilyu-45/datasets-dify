@@ -7,8 +7,11 @@
            - 附件文件（PDF/DOCX 等链接）→ 下载原文件到 data/webscrape/{task_id}/
        此阶段不写 manifest、不入库，生成「待确认任务」。
     2. 确认（POST /api/webscrape/task/{id}/confirm）：人在预览页确认内容后，
-       把选中的项落到正式区（Markdown → parsed/{stem}/；附件 → pending/）并
-       登记 manifest，再走 chunk → dify 流水线（附件的 parse 阶段由 MinerU 解析）。
+       把选中的项落到 pending/（网页 → 浏览器渲染 PDF，失败降级原始 HTML；
+       附件 → 原文件）并登记 manifest（parse 列留空），统一走
+       parse(MinerU) → chunk → dify 流水线。
+       ★ 2026-08-31 变更：此前网页 Markdown 直接落 parsed/ 等价「已解析」，
+       错乱正文跳过解析直接进切分；现与附件一致，全部过解析阶段。
 
 ★ 2026-08-31 两套配置：抓取的 URL 不再由页面输入，而是直接来自配置方案中
    webscrape_urls 列表；任务创建时把该列表快照进 site_url（JSON 文本）。
@@ -18,6 +21,10 @@
     - 每个 URL 独立 try/except：1 个失败不影响其他
     - 附件识别：URL 扩展名优先，命中不了再看 Content-Type（文档类 MIME）
     - 下载上限 50MB；正文截断 200_000 字符，防超大内容拖垮预览与入库
+    - ★ 2026-08-31 站内递归：配置的 URL 通常只是网站首页，只抓首页拿不到子页面内容；
+      开启 webscrape_crawl_enabled 后按 BFS 沿页面内链接逐层抓取（深度 / 页数上限
+      在配置中心调整），范围限定在种子 URL 的同域名（带栏目路径时限同栏目），
+      递归发现的附件链接同样下载
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ import uuid
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -42,6 +49,7 @@ WEBSCRAPE_DIRNAME = "webscrape"              # data/webscrape/{task_id}/ 临时�
 WEBSCRAPE_TIMEOUT_SECONDS = 30               # 单页抓取超时
 WEBSCRAPE_MAX_CHARS = 200_000                # 单页正文截断上限
 WEBSCRAPE_STEM_MAX_CHARS = 60                # 由标题生成的 stem 最大长度
+WEBSCRAPE_CRAWL_DELAY_SECONDS = 0.5          # 递归抓取页间礼貌间隔（降低对目标站压力）
 WEBSCRAPE_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 附件下载上限 50MB
 TASK_STATUS_PENDING = "pending"              # 已抓取、待确认
 TASK_STATUS_CONFIRMED = "confirmed"          # 已确认并触发流水线
@@ -343,11 +351,14 @@ def _detect_encoding(raw: bytes, content_type: Optional[str]) -> str:
     return "utf-8"
 
 
-def fetch_page_markdown(url: str, timeout: int = WEBSCRAPE_TIMEOUT_SECONDS) -> Tuple[str, str]:
-    """抓取 HTML 网页并转为 Markdown。
+def fetch_page_html(url: str, timeout: int = WEBSCRAPE_TIMEOUT_SECONDS) -> Tuple[str, str]:
+    """抓取页面原始 HTML（含 WAF 412/403/502 时的浏览器内核降级）。
+
+    递归抓取与正文转换共用本函数：一次请求同时服务「正文转 Markdown」
+    和「提取页面内链接继续递归」。
 
     Returns:
-        (title, markdown) — title 来自 <title> 标签（可能为空）
+        (html_text, final_url) — final_url 为重定向后的最终地址（相对链接基准）
 
     Raises:
         httpx.HTTPError / ValueError: 网络错误或非 HTML 响应
@@ -373,19 +384,19 @@ def fetch_page_markdown(url: str, timeout: int = WEBSCRAPE_TIMEOUT_SECONDS) -> T
             b = browser_fetch_html(url, timeout=timeout)
             if not b["ok"]:
                 raise ValueError(b["error"])
-            html_text = b["html"]
-            final_url = b["final_url"] or url
-        else:
-            resp.raise_for_status()
-            content_type = (resp.headers.get("content-type") or "").lower()
-            if content_type and "html" not in content_type and "xml" not in content_type and "text" not in content_type:
-                raise ValueError(f"响应不是网页（Content-Type: {content_type}）")
-            raw = resp.content
-            encoding = _detect_encoding(raw, content_type or None)
-            html_text = raw.decode(encoding, errors="replace")
-            final_url = str(resp.url)
+            return b["html"], b["final_url"] or url
+        resp.raise_for_status()
+        content_type = (resp.headers.get("content-type") or "").lower()
+        if content_type and "html" not in content_type and "xml" not in content_type and "text" not in content_type:
+            raise ValueError(f"响应不是网页（Content-Type: {content_type}）")
+        raw = resp.content
+        encoding = _detect_encoding(raw, content_type or None)
+        return raw.decode(encoding, errors="replace"), str(resp.url)
 
-    parser = HTMLToMarkdown(base_url=str(final_url))
+
+def _parse_html(html_text: str, base_url: str) -> Tuple[str, str]:
+    """HTML → Markdown（正文转换共用入口）。Returns: (title, markdown)。"""
+    parser = HTMLToMarkdown(base_url=base_url)
     parser.feed(html_text)
     parser.close()
 
@@ -397,8 +408,17 @@ def fetch_page_markdown(url: str, timeout: int = WEBSCRAPE_TIMEOUT_SECONDS) -> T
         elif lines and lines[-1] != "":
             lines.append("")
     markdown = "\n".join(lines).strip()
+    return (parser.title_text or "").strip(), markdown
 
-    title = (parser.title_text or "").strip()
+
+def fetch_page_markdown(url: str, timeout: int = WEBSCRAPE_TIMEOUT_SECONDS) -> Tuple[str, str]:
+    """抓取 HTML 网页并转为 Markdown。
+
+    Returns:
+        (title, markdown) — title 来自 <title> 标签（可能为空）
+    """
+    html_text, final_url = fetch_page_html(url, timeout=timeout)
+    title, markdown = _parse_html(html_text, final_url)
     if markdown and not title:
         title = _title_from_url(url)
     return title, markdown
@@ -414,6 +434,104 @@ def _title_from_url(url: str) -> str:
         if seg:
             return seg
     return parsed.netloc or url
+
+
+# ============ 站内递归：链接提取与范围控制 ============
+
+
+def _normalize_url(url: str) -> str:
+    """链接规范化（递归去重用）：去 fragment、补根路径、scheme/host 小写。
+
+    非 http(s) 链接返回空串（mailto: / javascript: 等一律不跟随）。
+    """
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return ""
+    if p.scheme.lower() not in ("http", "https") or not p.netloc:
+        return ""
+    return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", p.query, ""))
+
+
+class _LinkExtractor(HTMLParser):
+    """提取页面内全部 <a href>（绝对化），供递归抓取发现子页面。
+
+    与 HTMLToMarkdown 不同：不看 SKIP_TAGS —— 导航栏/页脚里的栏目链接
+    恰恰是首页通往子页面的主要入口，必须收集。
+    """
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.links: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if tag != "a":
+            return
+        href = next((v for k, v in attrs if k.lower() == "href" and v), None)
+        if not href:
+            return
+        u = _abs_url(href.strip(), self.base_url)
+        if u.startswith(("http://", "https://")):
+            self.links.append(u)
+
+
+def extract_page_links(html_text: str, base_url: str) -> List[str]:
+    """提取页面内可跟随的绝对链接（规范化 + 去重，保持出现顺序）。"""
+    ex = _LinkExtractor(base_url)
+    try:
+        ex.feed(html_text)
+        ex.close()
+    except Exception:  # noqa: BLE001 页面 HTML 残缺时尽力提取已解析部分
+        pass
+    out: List[str] = []
+    seen: set = set()
+    for u in ex.links:
+        nu = _normalize_url(u)
+        if nu and nu not in seen:
+            seen.add(nu)
+            out.append(nu)
+    return out
+
+
+def _site_scope_ok(link: str, seed: str) -> bool:
+    """递归范围：仅跟随与种子 URL 同站的链接。
+
+    - www 前缀视为同站（www.example.com == example.com）
+    - 种子带栏目路径（如 http://a.gov.cn/zcwjk/）时，限定只抓该栏目子目录，
+      防止从首页递归窜到整站
+    """
+    try:
+        l, s = urlparse(link), urlparse(seed)
+    except ValueError:
+        return False
+    if not l.netloc or not s.netloc:
+        return False
+    if l.netloc.lower().removeprefix("www.") != s.netloc.lower().removeprefix("www."):
+        return False
+    prefix = (s.path or "/").rstrip("/")
+    if prefix and not (l.path or "/").startswith(prefix + "/"):
+        return False
+    return True
+
+
+def profile_crawl_settings(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """读取配置方案中的站内递归参数（旧配置缺字段时按默认值兜底）。"""
+    config = profile.get("config") or {}
+
+    def _clamp_int(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            v = int(config.get(key, default))
+        except (TypeError, ValueError):
+            v = default
+        return max(lo, min(hi, v))
+
+    enabled = config.get("webscrape_crawl_enabled")
+    return {
+        "enabled": bool(enabled) if enabled is not None else True,
+        "depth": _clamp_int("webscrape_crawl_depth", 2, 0, 5),
+        "max_pages": _clamp_int("webscrape_crawl_max_pages", 20, 1, 200),
+    }
 
 
 # ============ 附件识别与下载 ============
@@ -641,6 +759,14 @@ def create_task(
 ) -> Dict[str, Any]:
     """抓取配置方案中的 URL 列表，生成「待确认任务」。
 
+    ★ 2026-08-31 站内递归：开启 webscrape_crawl_enabled（默认开）时，从每个
+    种子 URL（通常是首页）出发，BFS 沿页面内同站链接逐层抓取子页面与附件：
+        - 深度上限 webscrape_crawl_depth（0=旧版只抓 URL 列表本身）
+        - 总页数上限 webscrape_crawl_max_pages（URL 列表本身始终全部处理）
+        - 仅跟随白名单内且与种子同域名（带栏目路径时限同栏目）的链接
+      种子 URL 失败仍逐条生成 error 项（前端展示）；递归发现的页面失败只记
+      日志 —— 坏链在网站上很常见，逐条进任务列表只会刷屏。
+
     Args:
         profile: 网站抓取配置方案 dict（含 id/name/config；抓取来源 = config.webscrape_urls）
 
@@ -650,24 +776,30 @@ def create_task(
             "id", "created_at", "profile_id", "profile_name", "site_url"(JSON 快照),
             "urls", "status": "pending", "items": [...],
         }
-        每个 item：{url, ok, kind(content/attachment), title, filename, rel_path,
-                    char_count, size, truncated, confirmed, error, ...}
-        失败/被拒的 URL 也占一项（ok=False + error），便于前端逐条展示。
+        每个 item：{url, ok, kind(content/attachment), depth(0=种子,1..N=递归层级),
+                    title, filename, rel_path, char_count, size, truncated, confirmed, error, ...}
     """
     import json
+    import time as _t
+    from collections import deque
 
     from app.services import manifest_store  # 仅用于 stem 冲突检查
 
     urls = profile_webscrape_urls(profile)
+    crawl = profile_crawl_settings(profile)
     task_id = uuid.uuid4().hex
     task_dir = task_temp_dir(task_id)
 
     items: List[Dict[str, Any]] = []
     manifest = manifest_store.load()  # 1 次快照，供整批 stem 去重
 
-    for i, raw in enumerate(urls):
+    # ---- 队列初始化：种子 URL 全部入队（保持配置顺序）----
+    # 元素：(url, depth, seed_url, is_seed) — seed_url 用于递归范围判定
+    queue: "deque[Tuple[str, int, str, bool]]" = deque()
+    enqueued: set = set()  # 规范化 URL 去重（防重复抓取与环）
+    for raw in urls:
         url = (raw or "").strip()
-        item: Dict[str, Any] = {"url": url, "ok": False}
+        item: Dict[str, Any] = {"url": url, "ok": False, "depth": 0}
         if not url:
             item["error"] = "URL 为空"
             items.append(item)
@@ -677,22 +809,46 @@ def create_task(
             item["error"] = deny
             items.append(item)
             continue
+        nu = _normalize_url(url) or url
+        if nu in enqueued:
+            item["error"] = "URL 列表中重复（本次只抓取一次）"
+            items.append(item)
+            continue
+        enqueued.add(nu)
+        queue.append((url, 0, url, True))
+
+    # 页数上限：URL 列表本身始终全部处理，递归总量受上限约束（上限不低于列表长度）
+    max_items = max(len(urls), crawl["max_pages"]) if crawl["enabled"] else len(urls)
+    seq = 0          # 临时文件名序号（与处理顺序一致，失败项跳过号段无妨）
+    fetched_any = False
+
+    while queue:
+        url, depth, seed, is_seed = queue.popleft()
+        if not is_seed and len(items) >= max_items:
+            log.info("webscrape 递归达到页数上限 %d，停止扩展", max_items,
+                     extra={"step": "webscrape", "status": "crawl_capped"})
+            break
+        if fetched_any and crawl["enabled"]:
+            _t.sleep(WEBSCRAPE_CRAWL_DELAY_SECONDS)  # 礼貌间隔，降低对目标站压力
+        fetched_any = True
+
+        item: Dict[str, Any] = {"url": url, "ok": False, "depth": depth}
         try:
             if is_attachment_url(url):
                 dl = download_attachment(url, task_dir, timeout=timeout)
                 if not dl.get("ok"):
-                    item["error"] = dl.get("error") or "附件下载失败"
-                else:
-                    item.update(
-                        ok=True,
-                        kind="attachment",
-                        title=_safe_stem(Path(dl["filename"]).stem, url),
-                        filename=dl["filename"],
-                        rel_path=dl["rel_path"],
-                        size=dl.get("size"),
-                    )
+                    raise ValueError(dl.get("error") or "附件下载失败")
+                item.update(
+                    ok=True,
+                    kind="attachment",
+                    title=_safe_stem(Path(dl["filename"]).stem, url),
+                    filename=dl["filename"],
+                    rel_path=dl["rel_path"],
+                    size=dl.get("size"),
+                )
             else:
-                title, markdown = fetch_page_markdown(url, timeout=timeout)
+                html_text, final_url = fetch_page_html(url, timeout=timeout)
+                title, markdown = _parse_html(html_text, final_url)
                 if not markdown:
                     raise ValueError("页面未提取到正文内容")
                 truncated = len(markdown) > WEBSCRAPE_MAX_CHARS
@@ -703,17 +859,34 @@ def create_task(
                 used = {it.get("stem_base") for it in items if it.get("ok")}
                 if stem in used:
                     stem = f"{stem[:40]}__{hashlib.sha1(url.encode('utf-8')).hexdigest()[:6]}"
-                rel = f"{i:03d}_{stem}.md"
+                rel = f"{seq:03d}_{stem}.md"
                 (task_dir / rel).write_text(markdown, encoding="utf-8")
+                # ★ 原始 HTML 一并保存：确认入库时渲染 PDF 失败的降级源
+                #   （file:// 打印或直接入 pending 走本地解析）
+                html_rel = f"{seq:03d}_{stem}.html"
+                (task_dir / html_rel).write_text(html_text, encoding="utf-8", errors="replace")
                 item.update(
                     ok=True,
                     kind="content",
                     title=title or stem,
                     stem_base=stem,
                     rel_path=rel,
+                    html_rel_path=html_rel,
                     char_count=len(markdown),
                     truncated=truncated,
                 )
+                # ★ 递归扩展：从本页提取同站链接，未超深度即入队
+                #   （网页/附件在出队时按 URL 分类处理，附件下载后不再扩展）
+                if crawl["enabled"] and depth < crawl["depth"]:
+                    for link in extract_page_links(html_text, final_url):
+                        if link in enqueued:
+                            continue
+                        if url_allowed_check(link, urls) is not None:
+                            continue
+                        if not _site_scope_ok(link, seed):
+                            continue
+                        enqueued.add(link)
+                        queue.append((link, depth + 1, seed, False))
         except (httpx.HTTPError, ValueError, OSError) as e:
             item["error"] = str(e)
             log.warning("webscrape 抓取失败: url=%s err=%s", url, e,
@@ -721,7 +894,11 @@ def create_task(
         except Exception as e:  # noqa: BLE001
             item["error"] = f"未知错误: {e}"
             log.exception("webscrape 抓取异常: url=%s", url)
-        items.append(item)
+
+        # 种子失败保留 error 项（前端逐条展示）；递归项失败只记日志不进列表
+        if is_seed or item.get("ok"):
+            items.append(item)
+        seq += 1
 
     # 失败项统一补全字段，保证前端渲染结构一致
     for it in items:
@@ -747,8 +924,11 @@ def create_task(
         "items": items,
     }
     log.info(
-        "webscrape 任务已创建: id=%s urls=%d ok=%d",
-        task_id, len(urls), sum(1 for it in items if it.get("ok")),
+        "webscrape 任务已创建: id=%s urls=%d items=%d(递归发现 %d) ok=%d crawl=%s",
+        task_id, len(urls), len(items),
+        sum(1 for it in items if it.get("depth")),
+        sum(1 for it in items if it.get("ok")),
+        crawl,
         extra={"step": "webscrape", "status": "task_created", "task_id": task_id},
     )
     return task
@@ -788,10 +968,15 @@ def _unique_pending_name(desired: str, url: str) -> str:
 def land_confirmed_items(task: Dict[str, Any], confirmed_urls: List[str]) -> List[Dict[str, Any]]:
     """把任务中选中的项落地为正式产物并登记 manifest，返回每项落地结果。
 
-    - content（网页正文）：临时 md 移到 parsed/{stem}/{stem}.md，
-      manifest 的 parse 列填产物目录绝对路径 → 等价「已解析」，切分/入库直接可用
-    - attachment（附件文件）：移到 pending/{filename}，manifest 的 parse 列为空
-      → 由流水线 parse（MinerU）阶段解析
+    ★ 2026-08-31 网页内容与附件一样走解析流水线（用户反馈正文直接切分太错乱）：
+        - content（网页正文）：
+            ① 浏览器在线渲染 PDF → pending/{stem}.pdf → MinerU 解析
+            ② 渲染失败 → 抓取时保存的原始 HTML 打印 PDF → 同上
+            ③ 仍失败 → 原始 HTML 直接入 pending/ → 解析阶段本地解析
+          manifest 的 parse 列留空 → 流水线 parse 阶段统一处理；
+          临时区的 Markdown 仅作预览，不入库。
+        - attachment（附件文件）：移到 pending/{filename}，同样 parse 列为空
+          → 由流水线 parse（MinerU）阶段解析
     两项都以 import_status="已抓取"、process_note=源 URL 登记。
 
     Returns:
@@ -810,41 +995,29 @@ def land_confirmed_items(task: Dict[str, Any], confirmed_urls: List[str]) -> Lis
         url = it["url"]
         out: Dict[str, Any] = {"url": url, "kind": it.get("kind"), "ok": False, "error": None}
         try:
-            src = task_dir / it["rel_path"]
-            if not src.is_file():
-                raise FileNotFoundError(f"临时文件不存在: {it.get('rel_path')}")
             if it.get("kind") == "content":
                 stem = _padded_unique_stem(it.get("stem_base") or _safe_stem(it.get("title", ""), url), url)
-                parsed_dir = settings.parsed_dir / stem
-                parsed_dir.mkdir(parents=True, exist_ok=True)
-                md_path = parsed_dir / f"{stem}.md"
-                src.replace(md_path)
-                filename = f"{stem}.md"
-                manifest_row = ManifestRow(
-                    filename=filename,
-                    import_status="已抓取",
-                    process_note=url,
-                    md5=hashlib.md5(md_path.read_bytes()).hexdigest(),
-                    parse=str(parsed_dir.resolve()),
-                    status="已抓取",
-                )
+                filename = _land_content_as_document(it, stem, url, task_dir)
             else:  # attachment
+                src = task_dir / (it.get("rel_path") or "")
+                if not src.is_file():
+                    raise FileNotFoundError(f"临时文件不存在: {it.get('rel_path')}")
                 desired = it.get("filename") or ""
                 target_name = _unique_pending_name(desired, url)
                 src.replace(settings.pending_dir / target_name)
                 filename = target_name
                 stem = Path(target_name).stem
-                manifest_row = ManifestRow(
-                    filename=filename,
-                    import_status="已抓取",
-                    process_note=url,
-                    status="已抓取",
-                )
+            manifest_row = ManifestRow(
+                filename=filename,
+                import_status="已抓取",
+                process_note=url,
+                status="已抓取",
+            )
             manifest_store.upsert(manifest_row)
             out.update(ok=True, stem=stem, filename=filename)
             log.info(
-                "webscrape 确认落地: url=%s kind=%s stem=%s",
-                url, out["kind"], stem,
+                "webscrape 确认落地: url=%s kind=%s file=%s",
+                url, out["kind"], filename,
                 extra={"step": "webscrape", "status": "landed", "url": url},
             )
         except Exception as e:  # noqa: BLE001
@@ -852,6 +1025,44 @@ def land_confirmed_items(task: Dict[str, Any], confirmed_urls: List[str]) -> Lis
             log.exception("webscrape 确认落地失败: url=%s", url)
         results.append(out)
     return results
+
+
+def _land_content_as_document(it: Dict[str, Any], stem: str, url: str, task_dir: Path) -> str:
+    """把网页正文落成 pending/ 中的待解析文档（PDF 优先，HTML 兜底）。
+
+    三级降级：在线渲染 PDF → 本地 HTML 打印 PDF → 原始 HTML 文件。
+    每级都防御性捕获异常（渲染层任何意外都不能跳过后面的降级路径）。
+    返回落在 pending/ 的文件名（manifest parse 列留空，由解析阶段处理）。
+    """
+    from .browser_fetch import browser_print_local_html_pdf, browser_print_pdf
+
+    html_src = task_dir / (it.get("html_rel_path") or "")
+    pdf_name = _unique_pending_name(f"{stem}.pdf", url)
+
+    def _try_render(render) -> bool:
+        try:
+            return bool(render())
+        except Exception as e:  # noqa: BLE001
+            log.warning("webscrape PDF 渲染异常: url=%s err=%s", url, e,
+                        extra={"step": "webscrape", "status": "render_error", "url": url})
+            return False
+
+    # ① 在线渲染：内容/版式与网站当前一致，MinerU 结构识别效果最好
+    if _try_render(lambda: browser_print_pdf(url, settings.pending_dir / pdf_name)):
+        return pdf_name
+
+    # ② 网站已不可达/改版 → 用抓取时保存的原始 HTML 打印（保证=预览内容）
+    if html_src.is_file():
+        if _try_render(lambda: browser_print_local_html_pdf(html_src, settings.pending_dir / pdf_name)):
+            return pdf_name
+        # ③ 浏览器打印彻底失败 → 原始 HTML 直接入 pending/（解析阶段本地解析）
+        html_name = _unique_pending_name(f"{stem}.html", url)
+        html_src.replace(settings.pending_dir / html_name)
+        return html_name
+
+    raise FileNotFoundError(
+        f"网页 PDF 渲染失败，且抓取时保存的原始 HTML 不存在: {it.get('html_rel_path')}"
+    )
 
 
 # ============ 任务持久化（webscrape_tasks 表） ============

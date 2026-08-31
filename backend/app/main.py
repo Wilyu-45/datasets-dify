@@ -20,6 +20,7 @@ from app.api import scan as scan_api
 from app.api import chunk as chunk_api
 from app.api import config_api
 from app.api import dify as dify_api
+from app.api import doc_metadata as doc_metadata_api  # ★ 2026-08-31 文档元数据编辑
 from app.api import pipeline as pipeline_api
 from app.api import upload as upload_api
 from app.api import webscrape as webscrape_api  # ★ 2026-08: 网站抓取
@@ -82,6 +83,7 @@ app.include_router(parse_progress_api.router, prefix="/api")  # ★ 2026-08-07
 app.include_router(chunk_api.router, prefix="/api")
 app.include_router(config_api.router, prefix="/api")
 app.include_router(dify_api.router, prefix="/api")
+app.include_router(doc_metadata_api.router, prefix="/api")  # ★ 2026-08-31 文档元数据编辑
 app.include_router(pipeline_api.router, prefix="/api")
 app.include_router(upload_api.router, prefix="/api")
 app.include_router(webscrape_api.router, prefix="/api")  # ★ 2026-08: 网站抓取

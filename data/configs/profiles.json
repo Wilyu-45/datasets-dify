@@ -33,47 +33,15 @@
     },
     {
       "id": "662a230b1049412598d86b615bfcb7bf",
-      "name": "卫健委信息",
+      "name": "测试",
       "type": "webscrape",
       "created_at": "2026-08-31 13:44:59",
-      "updated_at": "2026-08-31 13:45:29",
+      "updated_at": "2026-08-31 15:44:22",
       "config": {
         "webscrape_urls": [
-          "https://www.nhc.gov.cn/wjw/xinx/xinxi.shtml"
+          "https://www.chinanews.com.cn/"
         ],
         "dify_dataset_id": "",
-        "chunk_strategy": "structure",
-        "chunk_target_chars": 1500,
-        "chunk_split_target": 1200,
-        "chunk_overlap": 100,
-        "chunk_hard_limit": 1800,
-        "chunk_appendix_threshold": 1500,
-        "chunk_max_images_per_segment": 10,
-        "chunk_table_row_threshold": 20,
-        "chunk_table_max_chars": 5000,
-        "chunk_fixed_size_chars": 800,
-        "chunk_fixed_overlap_chars": 100,
-        "chunk_semantic_threshold": 0.78,
-        "chunk_parent_size_chars": 1500,
-        "chunk_child_size_chars": 400,
-        "chunk_llm_enabled": false,
-        "chunk_llm_chunk_prompt": "你是一名文档切分专家。请把下面文档切成语义完整、主题集中的片段。要求：1) 每个片段围绕单一主题；2) 不要切断表格、公式、代码块；3) 保留原文顺序，不遗漏、不改写原文；4) 片段长度 300~800 字。只输出一个 JSON 数组，数组元素是切分后的原文段落字符串，不要输出其他内容。",
-        "llm_api_base_url": "",
-        "llm_api_key": "",
-        "llm_model": "",
-        "chunk_embedding_api_url": "",
-        "chunk_embedding_api_key": ""
-      }
-    },
-    {
-      "id": "e2f9632fd2a14f348e5f091daa149974",
-      "name": "????-??",
-      "type": "upload",
-      "created_at": "2026-08-31 14:54:55",
-      "updated_at": "2026-08-31 14:54:55",
-      "config": {
-        "webscrape_urls": [],
-        "dify_dataset_id": "b2c4f340-97c9-474c-bfb2-0fdb71e23250",
         "chunk_strategy": "structure",
         "chunk_target_chars": 1500,
         "chunk_split_target": 1200,

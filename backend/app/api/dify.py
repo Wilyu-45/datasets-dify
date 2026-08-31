@@ -42,7 +42,7 @@ log = logging.getLogger("ragsystem.api.dify")
 
 
 class DifyDocumentItem(BaseModel):
-    """人工校验左栏的单个文档条目。"""
+    """人工校验左栏的单个文档条目（元数据页也复用）。"""
 
     id: str
     name: str
@@ -51,6 +51,8 @@ class DifyDocumentItem(BaseModel):
     word_count: Optional[int] = None
     created_at: Optional[int] = None
     display_position: Optional[int] = None  # 服务端返回的 position 字段（部分 Dify 版本）
+    # ★ 2026-08-31 Dify 端已写入的文档元数据（部分 Dify 版本返回 doc_metadata 字段）
+    metadata: Optional[List[Dict[str, Any]]] = None
 
 
 class DifySegmentItem(BaseModel):
@@ -254,21 +256,28 @@ def post_dify_upload(body: Optional[DifyUploadRequest] = None) -> DifyUploadRepo
 
 
 @router.get("/dify/documents", response_model=List[DifyDocumentItem])
-def get_dify_documents(page: int = 1, limit: int = 50, keyword: Optional[str] = None) -> List[DifyDocumentItem]:
-    """列出 Dify 数据集中的所有文档（人工校验左栏）。
+def get_dify_documents(
+    page: int = 1,
+    limit: int = 50,
+    keyword: Optional[str] = None,
+    dataset_id: Optional[str] = None,
+) -> List[DifyDocumentItem]:
+    """列出 Dify 数据集中的所有文档（人工校验左栏 / 元数据页）。
 
     通过 ``GET /datasets/{id}/documents`` 拉取，兼容 Dify 自托管和云服务。
+    ★ 2026-08-31 dataset_id 可选：缺省用当前配置的目标知识库，
+    元数据页切换知识库时传入对应 ID。
     """
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置（backend/.env 的 RAG_DIFY_API_KEY）")
-    if not settings.dify_dataset_id:
+    if not (dataset_id or settings.dify_dataset_id):
         raise HTTPException(status_code=400, detail="dify_dataset_id 未配置（backend/.env 的 RAG_DIFY_DATASET_ID）")
     log.info(
         "api /dify/documents called",
         extra={"step": "api", "status": "list_documents", "page": page, "limit": limit},
     )
     try:
-        client = DifyClient()
+        client = DifyClient(dataset_id=dataset_id or None)
         payload = client.list_documents(page=page, limit=limit, keyword=keyword)
         items = payload.get("data") or []
         out: List[DifyDocumentItem] = []
@@ -282,6 +291,7 @@ def get_dify_documents(page: int = 1, limit: int = 50, keyword: Optional[str] = 
                     word_count=d.get("word_count"),
                     created_at=d.get("created_at"),
                     display_position=d.get("position"),
+                    metadata=d.get("doc_metadata") or None,
                 )
             )
         return out
@@ -416,58 +426,116 @@ def post_init_metadata_fields() -> Dict[str, Any]:
 
 class MetadataSyncRequest(BaseModel):
     """POST /api/dify/metadata/sync 的入参。"""
-    target_stems: Optional[List[str]] = None  # None=全部已入库文档，指定则只同步这些
+
+    target_stems: Optional[List[str]] = None  # None=知识库全部文档，指定则只同步这些（按文档名）
+    dataset_id: Optional[str] = None  # 目标知识库 ID（缺省用当前配置 RAG_DIFY_DATASET_ID）
+
+
+def _list_all_dify_documents(client: DifyClient, max_pages: int = 100) -> List[Dict[str, Any]]:
+    """拉取目标知识库的全部文档（分页，每页 100，最多 max_pages 页）。"""
+    docs: List[Dict[str, Any]] = []
+    page = 1
+    while page <= max_pages:
+        payload = client.list_documents(page=page, limit=100)
+        items = payload.get("data") or []
+        docs.extend(items)
+        if not payload.get("has_more") or not items:
+            break
+        page += 1
+    return docs
 
 
 @router.post("/dify/metadata/sync")
 def post_sync_metadata(body: Optional[MetadataSyncRequest] = None) -> Dict[str, Any]:
-    """从元数据表同步文档元数据到已入库的 Dify 文档。
+    """把元数据导入 Dify 知识库（★ 2026-08-31 重写：以 Dify 库内文档清单为准）。
 
-    用于：
-    1. 首次导入元数据（文档已入库但无元数据）
-    2. 元数据更新后重新同步
+    文档清单直接来自目标知识库（分页拉取），按**文档名（stem）**匹配本地元数据：
+      1. doc_metadata 表行（元数据页「填写元数据」抽屉保存，11 个字段）
+      2. manifest 表用户填写列（历史数据；序号/一级二级分类/关键词/适用科室/校对/处理备注）
+    好处：文档 ID 全部来自 Dify 自身（不会因台账里的陈旧 dify_doc_id 报 404）；
+    知识库里存在但台账没有的文档（后续迁移场景）同样可同步。
+    缺失的 Dify 元数据字段自动创建；批量写入失败时逐篇重试隔离错误（如单篇被删）。
     """
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置")
     body = body or MetadataSyncRequest()
     log.info("api /dify/metadata/sync called", extra={"target_stems": body.target_stems})
     try:
-        client = DifyClient()
-        # 1) 确保字段存在
+        client = DifyClient(dataset_id=body.dataset_id or None)
+        # 1) 确保字段存在（doc_metadata 字段 + manifest 用户列，缺失自动创建）
         field_map = doc_metadata.ensure_metadata_fields(client)
-        # 2) 加载文档元数据
+        # 2) 本地元数据来源：doc_metadata 表 + manifest 用户填写列（按 stem 建索引）
         doc_meta = doc_metadata.load_doc_metadata()
-        if not doc_meta:
-            return {"ok": True, "synced": 0, "message": "元数据表无数据"}
-        # 3) 获取已入库的文档列表（通过 manifest）
-        manifest = dify_ingest._load_manifest_index()
+        manifest_by_stem: Dict[str, Any] = {}
+        for fname, row in dify_ingest._load_manifest_index().items():
+            stem = Path(fname).stem
+            if stem not in manifest_by_stem:
+                manifest_by_stem[stem] = row
+            chunks_clean = (row.chunks or "").replace("\\", "/").strip()
+            if chunks_clean and "/" in chunks_clean:
+                manifest_by_stem.setdefault(Path(chunks_clean).name, row)
+        # 3) 以 Dify 库内文档清单为准，逐文档合并元数据
+        docs = _list_all_dify_documents(client)
         operations = []
-        for fname, row in manifest.items():
-            if not row.dify_doc_id or (row.dify_status or "") != "done":
+        for d in docs:
+            doc_id = str(d.get("id") or "")
+            stem = str(d.get("name") or "").strip()
+            if not doc_id or not stem:
                 continue
-            stem = Path(row.chunks or "").name if row.chunks else Path(fname).stem
             if body.target_stems and stem not in body.target_stems:
                 continue
-            op = doc_metadata.build_metadata_operation(
-                row.dify_doc_id, stem, field_map, doc_meta,
+            values = doc_metadata.build_merged_metadata(
+                manifest_by_stem.get(stem), doc_meta.get(stem) or {}
             )
+            op = doc_metadata.build_metadata_operation(doc_id, values, field_map)
             if op:
                 operations.append(op)
         if not operations:
-            return {"ok": True, "synced": 0, "message": "无匹配的已入库文档或无对应元数据"}
-        # 4) 批量更新（每批最多 50 个文档）
+            return {
+                "ok": True,
+                "synced": 0,
+                "errors": 0,
+                "total": 0,
+                "skipped": len(docs),
+                "message": "知识库内没有匹配到带元数据的文档（先在「元数据」页填写，或清单列里有历史数据）",
+            }
+        # 4) 批量写入（50 篇/批）；批失败降级为逐篇重试，隔离单篇错误（如刚被删除）
         synced = 0
-        errors = 0
+        failed: List[str] = []
         batch_size = 50
+
+        def _push_single(op: Dict[str, Any]) -> bool:
+            try:
+                client.batch_update_document_metadata([op])
+                return True
+            except DifyError as e:
+                log.error(
+                    "元数据写入失败: document_id=%s err=%s",
+                    op.get("document_id"), e,
+                )
+                return False
+
         for i in range(0, len(operations), batch_size):
             batch = operations[i : i + batch_size]
             try:
                 client.batch_update_document_metadata(batch)
                 synced += len(batch)
             except DifyError as e:
-                log.error("元数据批量更新失败: %s", e)
-                errors += len(batch)
-        return {"ok": errors == 0, "synced": synced, "errors": errors, "total": len(operations)}
+                log.warning("元数据批量更新失败，降级逐篇重试: %s", e)
+                for op in batch:
+                    if _push_single(op):
+                        synced += 1
+                    else:
+                        failed.append(op["document_id"])
+        return {
+            "ok": not failed,
+            "synced": synced,
+            "errors": len(failed),
+            "total": len(operations),
+            "skipped": len(docs) - len(operations),
+            "failed_doc_ids": failed,
+            "message": "" if not failed else f"{len(failed)} 篇文档写入失败（可能已被删除），详见后端日志",
+        }
     except DifyError as e:
         raise HTTPException(status_code=502, detail=f"Dify 调用失败: {e}") from e
     except Exception as e:  # noqa: BLE001

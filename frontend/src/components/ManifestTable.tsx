@@ -1,12 +1,12 @@
 import {
-  Card,
-  Table,
-  Tag,
-  Tooltip,
   Button,
+  Card,
   Input,
   InputNumber,
   message,
+  Table,
+  Tag,
+  Tooltip,
 } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { useEffect, useRef, useState } from "react";
@@ -195,15 +195,16 @@ export default function ManifestTable({
     }
   };
 
+  // ---- 文档元数据（doc_metadata 表，→ Dify 元数据）----
+  // ★ 2026-08-31 已迁移到「文档元数据」页（以 Dify 库内文档清单为准），
+  //   本表不再承载元数据编辑 / 导入 Dify 入口。
+
+  // ---- 表格 ----
+
   // ---- 行内编辑（web 端维护清单元数据，替代原 Excel 填列） ----
-  type EditableField =
-    | "seq"
-    | "category_l1"
-    | "category_l2"
-    | "keywords"
-    | "department"
-    | "effective_date"
-    | "verified";
+  // ★ 2026-08-31 一级分类/二级分类/关键词/适用科室/生效日期/校对等元数据列已移至
+  //   「文档元数据」页统一填写（本表只保留序号，不再显示元数据列）
+  type EditableField = "seq";
 
   const [editing, setEditing] = useState<{ filename: string; field: EditableField } | null>(
     null
@@ -337,7 +338,7 @@ export default function ManifestTable({
   return (
     <Card
       size="small"
-      title={`📋 manifest 表 （${total} 行） · 点击「序号/分类/关键词/科室/生效日期/校对」单元格可直接编辑`}
+      title={`📋 manifest 台账（${total} 行） · 点击「序号」单元格可编辑 · 文档元数据请到「文档元数据」页填写`}
       extra={
         <Button size="small" icon={<ReloadOutlined />} onClick={() => load(page)}>
           刷新
@@ -349,7 +350,7 @@ export default function ManifestTable({
         rowKey="filename"
         loading={loading}
         dataSource={rows}
-        scroll={{ x: 2200 }}
+        scroll={{ x: 1900 }}
         pagination={{
           current: page,
           pageSize: 50,
@@ -368,45 +369,8 @@ export default function ManifestTable({
             render: editableRender("seq", true),
           },
           { title: "文件名称", dataIndex: "filename", fixed: "left", width: 200, ellipsis: true },
-          {
-            title: "一级分类",
-            dataIndex: "category_l1",
-            width: 100,
-            render: editableRender("category_l1"),
-          },
-          {
-            title: "二级分类",
-            dataIndex: "category_l2",
-            width: 100,
-            render: editableRender("category_l2"),
-          },
-          {
-            title: "关键词",
-            dataIndex: "keywords",
-            width: 140,
-            ellipsis: true,
-            render: editableRender("keywords"),
-          },
-          {
-            title: "适用科室",
-            dataIndex: "department",
-            width: 100,
-            render: editableRender("department"),
-          },
-          {
-            title: "生效日期",
-            dataIndex: "effective_date",
-            width: 100,
-            render: editableRender("effective_date"),
-          },
           { title: "导入", dataIndex: "import_status", width: 80 },
           { title: "处理", dataIndex: "process_status", width: 80 },
-          {
-            title: "校对",
-            dataIndex: "verified",
-            width: 70,
-            render: editableRender("verified"),
-          },
           {
             title: "parse",
             dataIndex: "parse",

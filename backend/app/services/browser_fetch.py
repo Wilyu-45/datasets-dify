@@ -78,18 +78,37 @@ def _get_browser():
 
     注意：默认 headless 模式使用精简 headless shell，其 UA 带 HeadlessChrome 特征，
     会被瑞数类 WAF 识别并卡在 412 挑战；这里显式指定完整内核 + --headless=new。
+
+    ★ 2026-08-31 Windows 事件循环策略修复：
+    uvicorn 在 Windows 上把 asyncio 策略设为 WindowsSelectorEventLoopPolicy
+    （uvicorn/loops/asyncio.py），Playwright sync API 的 asyncio.new_event_loop()
+    随之拿到 SelectorEventLoop —— 它不支持子进程，启动 Node 驱动时抛
+    NotImplementedError。这里在 start() 前临时切回 Proactor 策略（Python 默认、
+    支持子进程），启动完成后恢复原策略，不影响 uvicorn 主循环。
     """
     global _browser, _playwright
     with _lock:
         if _browser is None:
+            import asyncio
+            import sys
+
             from playwright.sync_api import sync_playwright
 
             executable = _find_chromium_executable()
             launch_kwargs = dict(headless=True, args=_LAUNCH_ARGS)
             if executable:
                 launch_kwargs["executable_path"] = executable
-            _playwright = sync_playwright().start()
-            _browser = _playwright.chromium.launch(**launch_kwargs)
+            old_policy = None
+            if sys.platform == "win32" \
+                    and not isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsProactorEventLoopPolicy):
+                old_policy = asyncio.get_event_loop_policy()
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            try:
+                _playwright = sync_playwright().start()
+                _browser = _playwright.chromium.launch(**launch_kwargs)
+            finally:
+                if old_policy is not None:
+                    asyncio.set_event_loop_policy(old_policy)
             log.info(
                 "browser engine started (playwright chromium%s)",
                 f" full-core @ {executable}" if executable else " (headless-shell)",
@@ -149,19 +168,22 @@ def browser_fetch_html(
 
     说明：浏览器可自动通过 412 类 JS 挑战；但若源站/云防护回源故障（502），
     浏览器同样拿不到真实页面，此时返回明确错误而非静默失败。
+    ★ 浏览器获取/上下文创建也在 try 内：任何失败都返回 ok=False，
+    由调用方走降级路径（绝不向上抛异常）。
     """
     start = time.monotonic()
-    browser = _get_browser()
-    ctx = _new_context(browser)
-    page = ctx.new_page()
-    doc_statuses: List[int] = []
-    page.on(
-        "response",
-        lambda r: doc_statuses.append(r.status)
-        if r.request.resource_type == "document"
-        else None,
-    )
+    ctx = None
     try:
+        browser = _get_browser()
+        ctx = _new_context(browser)
+        page = ctx.new_page()
+        doc_statuses: List[int] = []
+        page.on(
+            "response",
+            lambda r: doc_statuses.append(r.status)
+            if r.request.resource_type == "document"
+            else None,
+        )
         try:
             page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
         except Exception as e:  # noqa: BLE001
@@ -224,10 +246,11 @@ def browser_fetch_html(
         log.exception("browser fetch error: url=%s", url)
         return {"ok": False, "error": f"浏览器抓取异常: {e}"}
     finally:
-        try:
-            ctx.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if ctx is not None:
+            try:
+                ctx.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def browser_cookies_for(url: str, timeout: int = 45) -> List[Dict[str, str]]:
@@ -237,17 +260,18 @@ def browser_cookies_for(url: str, timeout: int = 45) -> List[Dict[str, str]]:
         cookie 列表（name/value/domain）；失败返回空列表。
     """
     start = time.monotonic()
-    browser = _get_browser()
-    ctx = _new_context(browser)
-    page = ctx.new_page()
-    doc_statuses: List[int] = []
-    page.on(
-        "response",
-        lambda r: doc_statuses.append(r.status)
-        if r.request.resource_type == "document"
-        else None,
-    )
+    ctx = None
     try:
+        browser = _get_browser()
+        ctx = _new_context(browser)
+        page = ctx.new_page()
+        doc_statuses: List[int] = []
+        page.on(
+            "response",
+            lambda r: doc_statuses.append(r.status)
+            if r.request.resource_type == "document"
+            else None,
+        )
         try:
             page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
         except Exception:  # noqa: BLE001
@@ -269,10 +293,11 @@ def browser_cookies_for(url: str, timeout: int = 45) -> List[Dict[str, str]]:
         log.exception("browser cookies error: url=%s", url)
         return []
     finally:
-        try:
-            ctx.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if ctx is not None:
+            try:
+                ctx.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def browser_download_file(url: str, dest: Path, timeout: int = 60) -> Optional[str]:
@@ -281,10 +306,11 @@ def browser_download_file(url: str, dest: Path, timeout: int = 60) -> Optional[s
     Returns:
         成功返回下载提示字符串；失败返回 None（由调用方兜底）。
     """
-    browser = _get_browser()
-    ctx = _new_context(browser)
-    page = ctx.new_page()
+    ctx = None
     try:
+        browser = _get_browser()
+        ctx = _new_context(browser)
+        page = ctx.new_page()
         with ctx.expect_download(timeout=timeout * 1000) as dl_info:
             try:
                 page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
@@ -298,7 +324,117 @@ def browser_download_file(url: str, dest: Path, timeout: int = 60) -> Optional[s
         log.warning("browser download failed: url=%s", url)
         return None
     finally:
+        if ctx is not None:
+            try:
+                ctx.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# 打印 PDF 前注入的隐藏样式：与 webscraper.HTMLToMarkdown.SKIP_TAGS 对齐，
+# 把导航栏/页脚/侧栏等版面噪音从 PDF 里去掉（MinerU 只解析可见内容）。
+_PDF_HIDE_NOISE_CSS = (
+    "nav,footer,aside,form,iframe,noscript,svg,canvas{display:none!important}"
+)
+
+
+def _print_page_pdf(page, dest: Path) -> None:
+    """等待渲染稳定 → 隐藏噪音 → 打印 A4 PDF（供两个入口共用）。"""
+    try:
+        page.add_style_tag(content=_PDF_HIDE_NOISE_CSS)
+    except Exception:  # noqa: BLE001 样式注入失败不影响打印
+        pass
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    page.pdf(
+        path=str(dest),
+        format="A4",
+        print_background=True,
+        margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"},
+    )
+
+
+def browser_print_pdf(url: str, dest: Path, timeout: int = 60) -> bool:
+    """★ 2026-08-31 用浏览器打开 url 并打印为 PDF（网页内容走 MinerU 解析的前置）。
+
+    - 与 browser_fetch_html 相同的挑战等待逻辑（WAF 站点先过挑战再打印）
+    - 打印前隐藏 nav/footer/aside 等噪音（与正文转换的 SKIP_TAGS 对齐）
+    Returns:
+        成功 True；失败 False（调用方降级为 HTML 本地解析）。
+    ★ 浏览器获取/上下文创建也在 try 内：任何失败都返回 False，绝不抛异常
+    （否则会跳过调用方的 HTML 降级路径）。
+    """
+    start = time.monotonic()
+    ctx = None
+    try:
+        browser = _get_browser()
+        ctx = _new_context(browser)
+        page = ctx.new_page()
+        doc_statuses: List[int] = []
+        page.on(
+            "response",
+            lambda r: doc_statuses.append(r.status)
+            if r.request.resource_type == "document"
+            else None,
+        )
         try:
-            ctx.close()
+            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+        except Exception:  # noqa: BLE001
+            log.debug("pdf goto warn: %s", url)
+        deadline = start + timeout
+        while not _challenge_passed(doc_statuses) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:  # noqa: BLE001
             pass
+        _print_page_pdf(page, dest)
+        log.info(
+            "browser print pdf ok: url=%s -> %s dt=%.1fs",
+            url, dest.name, time.monotonic() - start,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("browser print pdf failed: url=%s err=%s", url, e)
+        return False
+    finally:
+        if ctx is not None:
+            try:
+                ctx.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def browser_print_local_html_pdf(html_path: Path, dest: Path) -> bool:
+    """把本地保存的 HTML 打印为 PDF（file:// 打开，不再访问网络）。
+
+    场景：确认入库时在线渲染失败（网站已改版/不可达）的降级路径 ——
+    用抓取时保存的原始 HTML 保证「预览的内容 = 入库的内容」。
+    注意：页面里相对路径的 CSS/图片在 file:// 下无法解析，版式可能退化，
+    但 DOM 顺序的正文文本完整，MinerU 仍可提取。
+    """
+    start = time.monotonic()
+    ctx = None
+    try:
+        browser = _get_browser()
+        ctx = _new_context(browser)
+        page = ctx.new_page()
+        page.goto(html_path.resolve().as_uri(), timeout=30_000, wait_until="domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:  # noqa: BLE001
+            pass
+        _print_page_pdf(page, dest)
+        log.info(
+            "browser print local html pdf ok: %s -> %s dt=%.1fs",
+            html_path.name, dest.name, time.monotonic() - start,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("browser print local html pdf failed: %s err=%s", html_path.name, e)
+        return False
+    finally:
+        if ctx is not None:
+            try:
+                ctx.close()
+            except Exception:  # noqa: BLE001
+                pass

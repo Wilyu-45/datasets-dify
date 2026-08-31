@@ -11,8 +11,9 @@
        GET /api/webscrape/task/{id}           — 任务详情（逐项状态）
        GET /api/webscrape/task/{id}/preview/{idx} — 预览：网页正文全文 / 附件元信息
     3. POST /api/webscrape/task/{id}/confirm  — 人为勾选需要的项 + 再次选择配置
-       → 选中项落地（正文 → parsed/，附件 → pending/）并登记 manifest →
-       走 parse(MinerU) → chunk → dify 流水线 → 返回 PipelineReport
+       → 选中项落地 pending/（网页 → 浏览器渲染 PDF；附件 → 原文件）并登记
+       manifest（parse 列留空）→ 走 parse(MinerU) → chunk → dify 流水线 →
+       返回 PipelineReport（★ 2026-08-31 网页正文不再跳过解析直接切分）
 
 ★ 2026-08-31 两套配置：抓取 URL 来自配置本身，页面不再输入。
 
@@ -30,7 +31,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.services import config_run_log, config_store, webscraper
+from app.services import config_run_log, config_store, webscraper, webscrape_store
 
 router = APIRouter(tags=["webscrape"])
 log = logging.getLogger("ragsystem.api.webscrape")
@@ -57,6 +58,7 @@ class WebScrapeItem(BaseModel):
     url: str
     ok: bool
     kind: str = "content"              # content=网页正文 / attachment=附件文件
+    depth: Optional[int] = None        # 递归层级：0=URL 列表本身，1..N=递归发现的页面
     title: str = ""                    # content：页面标题；attachment：文件名 stem
     filename: Optional[str] = None     # attachment：原始文件名
     rel_path: Optional[str] = None     # 相对 data/webscrape/{task_id}/ 的路径
@@ -147,6 +149,7 @@ def _task_to_model(task: Dict[str, Any]) -> WebScrapeTask:
             "url": it.get("url", ""),
             "ok": bool(it.get("ok")),
             "kind": it.get("kind") or "content",
+            "depth": it.get("depth"),
             "title": it.get("title") or "",
             "filename": it.get("filename"),
             "rel_path": it.get("rel_path"),
@@ -256,6 +259,17 @@ def list_webscrape_tasks(limit: int = 20) -> WebScrapeTaskList:
     return WebScrapeTaskList(total=len(tasks), tasks=tasks)
 
 
+@router.get("/webscrape/records")
+def list_webscrape_records(limit: int = 100) -> Dict[str, Any]:
+    """★ 2026-08-31 网站抓取入库台账（webscrape_records 表）。
+
+    每条确认入库的抓取内容一行（独立于文档上传的 manifest 表）：
+    源 URL / 递归层级 / 落地文件 / 目标知识库 / 所用配置 / 流水线产物与状态。
+    """
+    records = webscrape_store.list_records(limit)
+    return {"total": len(records), "records": records}
+
+
 @router.get("/webscrape/task/{task_id}", response_model=WebScrapeTask)
 def get_webscrape_task(task_id: str) -> WebScrapeTask:
     """任务详情（含逐项状态，供预览页渲染）。"""
@@ -342,6 +356,28 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
         errs = "; ".join(f"{r['url']}: {r['error']}" for r in landed)
         raise HTTPException(status_code=400, detail=f"勾选的项全部落地失败: {errs}")
 
+    # ★ 2026-08-31 入库台账：每落地成功一项，登记一行到 webscrape_records
+    #   （独立于文档上传的 manifest；流水线完成后回填产物与状态）
+    item_by_url = {it.get("url"): it for it in task.get("items") or []}
+    for r in ok_landed:
+        src_item = item_by_url.get(r.get("url")) or {}
+        try:
+            webscrape_store.upsert_record(
+                task_id,
+                r["url"],
+                title=str(src_item.get("title") or ""),
+                kind=str(r.get("kind") or "content"),
+                depth=int(src_item.get("depth") or 0),
+                filename=str(r.get("filename") or ""),
+                stem=str(r.get("stem") or ""),
+                dataset_id=dataset_id,
+                dataset_name=dataset_name or "",
+                profile_id=str(profile.get("id") or ""),
+                profile_name=str(profile.get("name") or ""),
+            )
+        except Exception:  # noqa: BLE001 台账失败不阻断入库主流程
+            log.exception("webscrape 入库台账登记失败: task=%s url=%s", task_id, r.get("url"))
+
     # 3) 复用上传批量流水线：parse → chunk → dify（附件由 MinerU 解析）
     from app.api.upload import _run_batch_pipeline
 
@@ -358,6 +394,37 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
     except Exception as e:  # noqa: BLE001
         pipeline_error = str(e)
         log.exception("webscrape confirm 流水线失败: task=%s", task_id)
+
+    # ★ 回填入库台账：从 manifest 同步解析/切分/入库产物与最终状态
+    try:
+        from app.services import manifest_store
+
+        manifest = manifest_store.load()
+        by_stem = {Path(fname).stem: row for fname, row in manifest.items()}
+        results = {}
+        for r in ok_landed:
+            row = by_stem.get(r.get("stem") or "")
+            if row is None:
+                continue
+            err = row.error_msg or ""
+            if err:
+                status, msg = webscrape_store.STATUS_ERROR, err
+            elif row.dify_doc_id:
+                status, msg = webscrape_store.STATUS_INGESTED, ""
+            elif row.parse:
+                status, msg = webscrape_store.STATUS_PARSED, ""
+            else:
+                status, msg = webscrape_store.STATUS_LANDED, ""
+            results[r.get("stem") or ""] = {
+                "status": status,
+                "parse": row.parse or "",
+                "chunks": row.chunks or "",
+                "dify_doc_id": row.dify_doc_id or "",
+                "error_msg": msg,
+            }
+        webscrape_store.update_pipeline_result(stems, results)
+    except Exception:  # noqa: BLE001 回填失败不影响确认结果返回
+        log.exception("webscrape 入库台账回填失败: task=%s", task_id)
 
     # 4) 更新任务状态
     task["status"] = webscraper.TASK_STATUS_CONFIRMED

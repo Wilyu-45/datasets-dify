@@ -233,6 +233,13 @@ class Settings(BaseSettings):
     # 知识库内容外延来源；在「配置中心」的网站抓取配置中维护，
     # 网站抓取页先选择该配置，再抓取其配置中的全部 URL（不再手动输入）。
     webscrape_urls: list[str] = []
+    # ★ 2026-08-31 站内递归抓取：配置的一般是网站首页，只抓首页拿不到子页面内容；
+    #   开启后从每个抓取 URL 出发，沿页面内同站链接（同域名/同栏目范围）逐层继续抓取。
+    webscrape_crawl_enabled: bool = True
+    # 递归深度：0=只抓 URL 列表本身（旧版行为），1=再抓页面内链接一层，2=两层……
+    webscrape_crawl_depth: int = 2
+    # 单次任务最多抓取的页面/附件总数（含 URL 列表本身），防止大站把任务拖垮
+    webscrape_crawl_max_pages: int = 20
     # HTTP 超时（秒）
     dify_timeout: int = 60
     # 等待文档 indexing_status=completed 的最长秒数

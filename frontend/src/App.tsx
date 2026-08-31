@@ -6,6 +6,7 @@ import {
   ThunderboltOutlined,
   SettingOutlined,
   GlobalOutlined,
+  ProfileOutlined,
 } from "@ant-design/icons";
 import { useState } from "react";
 import ParsePage from "./pages/ParsePage";
@@ -14,6 +15,7 @@ import PipelinePage from "./pages/PipelinePage";
 import VerifyPage from "./pages/VerifyPage";
 import ConfigPage from "./pages/ConfigPage";
 import WebScrapePage from "./pages/WebScrapePage";
+import MetadataPage from "./pages/MetadataPage";
 
 const { Header, Content, Sider } = Layout;
 const { Title } = Typography;
@@ -65,6 +67,11 @@ export default function App() {
                 label: "人工校验",
               },
               {
+                key: "metadata",
+                icon: <ProfileOutlined />,
+                label: "文档元数据",
+              },
+              {
                 key: "webscrape",
                 icon: <GlobalOutlined />,
                 label: "网站抓取",
@@ -84,6 +91,7 @@ export default function App() {
           {page === "parse" && <ParsePage />}
           {page === "chunk" && <ChunkPage />}
           {page === "verify" && <VerifyPage />}
+          {page === "metadata" && <MetadataPage />}
           {page === "webscrape" && <WebScrapePage onOpenConfig={() => setPage("config")} />}
           {page === "config" && <ConfigPage />}
         </Content>

@@ -337,6 +337,7 @@ def upload_one_doc(
     force: bool = False,
     field_map: Optional[Dict[str, Dict[str, Any]]] = None,
     doc_meta_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    manifest_row: Optional[Any] = None,
 ) -> Tuple[str, List[ChunkUploadInfo], Optional[str]]:
     """把单个 chunks 目录入库到 Dify。
 
@@ -731,13 +732,14 @@ def upload_one_doc(
         )
 
     # 10) ★★★ 文档元数据写入（2026-08 新增）：
-    #   从 doc_metadata 表读取的文档元数据（doc_type_primary / topic_primary 等）
-    #   通过 Dify Metadata API 设置到文档上。
-    #   field_map 和 doc_meta_cache 由 upload_all_docs 传入（避免每文档重复读元数据表）。
-    if field_map and doc_meta_cache:
-        op = doc_metadata.build_metadata_operation(
-            doc.document_id, stem, field_map, doc_meta_cache,
+    #   合并 doc_metadata 表行 + manifest 用户填写列（序号/分类/关键词等），
+    #   通过 Dify Metadata API 设置到文档上；缺字段时 Dify 端自动创建
+    #   （field_map / doc_meta_cache 由 upload_all_docs 传入，避免每文档重复读元数据表）。
+    if field_map:
+        values = doc_metadata.build_merged_metadata(
+            manifest_row, (doc_meta_cache or {}).get(stem) or {},
         )
+        op = doc_metadata.build_metadata_operation(doc.document_id, values, field_map)
         if op:
             try:
                 client.batch_update_document_metadata([op])
@@ -792,18 +794,23 @@ def upload_all_docs(
     rows_to_write: List[Any] = []
 
     # ★ 加载文档元数据 + 确保 Dify 元数据字段存在
+    #   doc_metadata 表有行，或 manifest 用户填写列（分类/关键词等）有值时才建字段，
+    #   避免完全不用元数据时也往 Dify 知识库里创建一堆空字段
     field_map: Optional[Dict[str, Dict[str, Any]]] = None
     doc_meta_cache: Optional[Dict[str, Dict[str, Any]]] = None
     if not dry_run and chunk_dirs:
         try:
             doc_meta_cache = doc_metadata.load_doc_metadata()
-            if doc_meta_cache:
+            manifest_has_meta = any(
+                doc_metadata.build_merged_metadata(row, {}) for row in manifest.values()
+            )
+            if doc_meta_cache or manifest_has_meta:
                 c0 = client or DifyClient()
                 field_map = doc_metadata.ensure_metadata_fields(c0)
                 log.info(
                     "dify: 文档元数据已加载，字段已同步",
                     extra={"step": "dify", "status": "metadata_loaded",
-                           "docs_with_meta": len(doc_meta_cache),
+                           "docs_with_meta": len(doc_meta_cache or {}),
                            "fields": len(field_map)},
                 )
         except Exception as meta_exc:  # noqa: BLE001
@@ -875,6 +882,7 @@ def upload_all_docs(
             dify_doc_id, _chunk_infos, err = upload_one_doc(
                 chunks_dir, c, force=force,
                 field_map=field_map, doc_meta_cache=doc_meta_cache,
+                manifest_row=existing_row,
             )
         except Exception as e:  # noqa: BLE001
             log.exception("dify 上传单文档失败: stem=%s", stem)
