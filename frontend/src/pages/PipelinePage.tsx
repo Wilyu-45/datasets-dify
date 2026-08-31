@@ -1,4 +1,4 @@
-import { Space, Typography } from "antd";
+import { Alert, Button, Space, Typography } from "antd";
 import { useEffect, useState } from "react";
 import BatchFileUpload from "../components/BatchFileUpload";
 import ManifestTable from "../components/ManifestTable";
@@ -22,16 +22,25 @@ interface Props {
 export default function PipelinePage({ onOpenConfig }: Props) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [lastReport, setLastReport] = useState<PipelineReport | null>(null);
-  // ★ 2026-08：当前激活配置方案
+  // ★ 2026-08：当前激活配置方案（仅文档处理配置可用于上传入库）
   const [activeProfileId, setActiveProfileId] = useState<string | undefined>();
   const [activeProfileName, setActiveProfileName] = useState<string | undefined>();
+  // 激活方案是「网站抓取配置」时给出提示（两套配置分开）
+  const [activeIsWebscrape, setActiveIsWebscrape] = useState(false);
 
-  // 加载当前激活配置方案（上传处理将使用它）
+  // 加载当前激活配置方案（上传处理将使用它；网站抓取配置不能用于上传页）
   useEffect(() => {
     getActiveConfig()
       .then((r) => {
-        setActiveProfileId(r.profile?.id);
-        setActiveProfileName(r.profile?.name);
+        const isWeb = (r.profile?.type ?? "upload") === "webscrape";
+        setActiveIsWebscrape(isWeb);
+        if (isWeb) {
+          setActiveProfileId(undefined);
+          setActiveProfileName(undefined);
+        } else {
+          setActiveProfileId(r.profile?.id);
+          setActiveProfileName(r.profile?.name);
+        }
       })
       .catch(() => {
         setActiveProfileId(undefined);
@@ -67,10 +76,23 @@ export default function PipelinePage({ onOpenConfig }: Props) {
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
           上传文档后自动登记并全流程处理：
           <code>① 解析</code> → <code>② 切分</code> → <code>③ 入库</code>。
-          处理前请先在<strong>配置中心</strong>配置知识库 ID 与切分策略并选择配置方案。
+          处理前请先在<strong>配置中心</strong>配置<strong>文档处理配置</strong>
+          （知识库 ID 与切分策略）并激活；网站抓取配置不用于本页。
           下方可查看入库明细与文件清单。
         </Paragraph>
       </div>
+      {activeIsWebscrape && (
+        <Alert
+          type="warning"
+          showIcon
+          message="当前激活的是「网站抓取配置」，不能用于文档上传入库"
+          action={
+            <Button type="link" size="small" onClick={onOpenConfig}>
+              去配置中心激活文档处理配置
+            </Button>
+          }
+        />
+      )}
       <BatchFileUpload
         onAfterUpload={onAfterBatchUpload}
         profileId={activeProfileId}

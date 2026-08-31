@@ -1,14 +1,17 @@
 """知识库外延：网站抓取（2026-08 新增）。
 
 流程（任务式，两步确认）：
-    1. 抓取（POST /api/webscrape/run）：先选配置方案（决定「抓取网站 URL」
-       白名单），逐 URL 分类处理：
+    1. 抓取（POST /api/webscrape/run）：先选「网站抓取配置」（决定抓取来源：
+       其 webscrape_urls 列表），逐 URL 分类处理：
            - 网页内容（HTML）→ 正文转为 Markdown，落到 data/webscrape/{task_id}/
            - 附件文件（PDF/DOCX 等链接）→ 下载原文件到 data/webscrape/{task_id}/
        此阶段不写 manifest、不入库，生成「待确认任务」。
     2. 确认（POST /api/webscrape/task/{id}/confirm）：人在预览页确认内容后，
        把选中的项落到正式区（Markdown → parsed/{stem}/；附件 → pending/）并
        登记 manifest，再走 chunk → dify 流水线（附件的 parse 阶段由 MinerU 解析）。
+
+★ 2026-08-31 两套配置：抓取的 URL 不再由页面输入，而是直接来自配置方案中
+   webscrape_urls 列表；任务创建时把该列表快照进 site_url（JSON 文本）。
 
 设计要点：
     - 不引入新依赖：抓取用 httpx（requirements 已有），HTML→Markdown 用标准库 html.parser
@@ -473,33 +476,58 @@ def download_attachment(
 # ============ 站点白名单校验 ============
 
 
-def url_allowed_check(url: str, site_url: str) -> Optional[str]:
-    """校验 URL 是否属于配置的「抓取网站 URL」。
+def profile_webscrape_urls(profile: Dict[str, Any]) -> List[str]:
+    """取配置方案中的抓取 URL 列表（兼容旧字段 webscrape_site_url 单值）。"""
+    config = profile.get("config") or {}
+    urls = config.get("webscrape_urls") or []
+    if isinstance(urls, str):
+        # 旧版可能存了单值字符串/JSON 文本，兼容解析
+        import json
+
+        try:
+            urls = json.loads(urls)
+        except json.JSONDecodeError:
+            urls = [urls]
+    if not isinstance(urls, list):
+        urls = [urls]
+    out = [str(u).strip() for u in urls if str(u).strip()]
+    # 旧字段兜底（新列表为空时用旧「抓取网站 URL」单值）
+    if not out:
+        legacy = str(config.get("webscrape_site_url") or "").strip()
+        if legacy:
+            out = [legacy]
+    return out
+
+
+def url_allowed_check(url: str, allowed_urls: List[str]) -> Optional[str]:
+    """校验 URL 是否属于配置的「抓取网站 URL 列表」。
 
     Returns:
         None = 允许；否则返回拒绝原因（供前端/日志展示）。
     """
-    if not site_url or not site_url.strip():
-        return "配置方案未设置「抓取网站 URL」，请先在配置中心完善配置"
-    site_url = site_url.strip().rstrip("/")
-    try:
-        site = urlparse(site_url)
-    except ValueError:
-        return f"配置的抓取网站 URL 非法: {site_url}"
-    if site.scheme not in ("http", "https") or not site.netloc:
-        return f"配置的抓取网站 URL 非法（需 http(s)://域名）: {site_url}"
+    allowed_urls = [u for u in (allowed_urls or []) if u and u.strip()]
+    if not allowed_urls:
+        return "配置方案未设置「抓取网站 URL 列表」，请先在配置中心完善配置"
     try:
         target = urlparse(url)
     except ValueError:
         return f"URL 非法: {url}"
     if target.scheme not in ("http", "https") or not target.netloc:
         return "URL 必须以 http:// 或 https:// 开头"
-    # 同域名校验；配置 URL 带路径前缀时要求目标以该前缀开头
-    if target.netloc.lower() == site.netloc.lower():
+    hosts = set()
+    for au in allowed_urls:
+        try:
+            p = urlparse(au.strip().rstrip("/"))
+        except ValueError:
+            continue
+        if p.netloc:
+            hosts.add(p.netloc.lower())
+            # 配置 URL 带路径前缀时，目标必须以前缀开头（同一站点的子目录）
+            if au.strip().rstrip("/") and url.startswith(au.strip().rstrip("/") + "/"):
+                return None
+    if target.netloc.lower() in hosts:
         return None
-    if site.path and (site_url + "/") and url.startswith(site_url + "/"):
-        return None
-    return f"URL 不属于配置的抓取网站（{site_url}），仅允许抓取该网站下的内容"
+    return f"URL 不属于配置的抓取网站列表（{', '.join(allowed_urls)}），仅允许抓取列表中的网站"
 
 
 # ============ 任务式抓取 ============
@@ -533,31 +561,30 @@ def task_temp_dir(task_id: str) -> Path:
 
 def create_task(
     profile: Dict[str, Any],
-    urls: List[str],
     timeout: int = WEBSCRAPE_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
-    """抓取一批 URL 生成「待确认任务」。
+    """抓取配置方案中的 URL 列表，生成「待确认任务」。
 
     Args:
-        profile: 配置方案 dict（含 id/name/config；决定抓取网站白名单）
-        urls: 待抓取的 URL 列表
+        profile: 网站抓取配置方案 dict（含 id/name/config；抓取来源 = config.webscrape_urls）
 
     Returns:
         任务 dict：
         {
-            "id", "created_at", "profile_id", "profile_name", "site_url",
-            "status": "pending", "items": [...],
+            "id", "created_at", "profile_id", "profile_name", "site_url"(JSON 快照),
+            "urls", "status": "pending", "items": [...],
         }
         每个 item：{url, ok, kind(content/attachment), title, filename, rel_path,
                     char_count, size, truncated, confirmed, error, ...}
         失败/被拒的 URL 也占一项（ok=False + error），便于前端逐条展示。
     """
+    import json
+
     from app.services import manifest_store  # 仅用于 stem 冲突检查
 
+    urls = profile_webscrape_urls(profile)
     task_id = uuid.uuid4().hex
     task_dir = task_temp_dir(task_id)
-    config = profile.get("config") or {}
-    site_url = str(config.get("webscrape_site_url") or "").strip()
 
     items: List[Dict[str, Any]] = []
     manifest = manifest_store.load()  # 1 次快照，供整批 stem 去重
@@ -569,7 +596,7 @@ def create_task(
             item["error"] = "URL 为空"
             items.append(item)
             continue
-        deny = url_allowed_check(url, site_url)
+        deny = url_allowed_check(url, urls)
         if deny:
             item["error"] = deny
             items.append(item)
@@ -638,13 +665,14 @@ def create_task(
         "created_at": _now_str(),
         "profile_id": profile.get("id"),
         "profile_name": profile.get("name"),
-        "site_url": site_url,
+        "site_url": json.dumps(urls, ensure_ascii=False),  # URL 列表快照（JSON 文本）
+        "urls": urls,
         "status": TASK_STATUS_PENDING,
         "items": items,
     }
     log.info(
-        "webscrape 任务已创建: id=%s urls=%d ok=%d site=%s",
-        task_id, len(urls), sum(1 for it in items if it.get("ok")), site_url,
+        "webscrape 任务已创建: id=%s urls=%d ok=%d",
+        task_id, len(urls), sum(1 for it in items if it.get("ok")),
         extra={"step": "webscrape", "status": "task_created", "task_id": task_id},
     )
     return task
@@ -796,7 +824,7 @@ def save_task(task: Dict[str, Any]) -> None:
 
 
 def get_task(task_id: str) -> Optional[Dict[str, Any]]:
-    """按 id 读取任务（items 从 JSONB 解析）。"""
+    """按 id 读取任务（items 从 JSONB 解析，urls 从 site_url JSON 解析）。"""
     import json
 
     from app import db
@@ -817,7 +845,28 @@ def get_task(task_id: str) -> Optional[Dict[str, Any]]:
             task["items"] = json.loads(raw)
         except json.JSONDecodeError:
             task["items"] = []
+    _attach_task_urls(task)
     return task
+
+
+def _attach_task_urls(task: Dict[str, Any]) -> None:
+    """从 site_url 列（JSON 文本快照）解析出 urls 列表，挂到 task['urls']。"""
+    import json
+
+    raw = task.get("site_url")
+    urls: List[str] = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            urls = [str(u) for u in parsed]
+        elif isinstance(parsed, str) and parsed.strip():
+            urls = [parsed]
+        elif isinstance(raw, str) and raw.strip():
+            urls = [raw]
+    task["urls"] = urls
 
 
 def list_tasks(limit: int = 20) -> List[Dict[str, Any]]:
@@ -851,5 +900,6 @@ def list_tasks(limit: int = 20) -> List[Dict[str, Any]]:
         t["ok_count"] = sum(1 for it in items if it.get("ok"))
         t["confirmed_count"] = sum(1 for it in items if it.get("confirmed"))
         t.pop("items", None)  # 列表页不需要明细
+        _attach_task_urls(t)
         out.append(t)
     return out

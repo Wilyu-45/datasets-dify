@@ -4,12 +4,24 @@
  * 展示正在使用的配置方案（知识库 ID + 切分策略 + 关键参数），
  * 配置中心修改并激活后，其他页面刷新即可看到最新配置 ——
  * 实现「其他网页根据配置的改变而改变」。
+ *
+ * ★ 2026-08-31 两套配置：卡片同时标注配置类型（文档处理 / 网站抓取）。
  */
 import { Card, Descriptions, Empty, Skeleton, Space, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { getActiveConfig, type ConfigProfile } from "../api/client";
 
 const { Text } = Typography;
+
+/** 配置类型 → 展示名 / Tag 颜色。 */
+const TYPE_LABELS: Record<string, string> = {
+  upload: "文档处理配置",
+  webscrape: "网站抓取配置",
+};
+const TYPE_COLORS: Record<string, string> = {
+  upload: "blue",
+  webscrape: "purple",
+};
 
 export default function ActiveConfigCard() {
   const [profile, setProfile] = useState<ConfigProfile | null>(null);
@@ -51,6 +63,9 @@ export default function ActiveConfigCard() {
       title={
         <Space>
           <span>当前配置</span>
+          <Tag color={TYPE_COLORS[profile.type ?? "upload"] ?? "default"}>
+            {TYPE_LABELS[profile.type ?? "upload"] ?? profile.type}
+          </Tag>
           <Tag color="green">{profile.name}</Tag>
         </Space>
       }

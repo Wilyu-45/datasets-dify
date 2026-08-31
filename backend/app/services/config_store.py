@@ -8,10 +8,16 @@
 数据持久化：data/configs/profiles.json
     {
       "profiles": [
-        {"id": "...", "name": "默认配置", "created_at": "...", "updated_at": "...", "config": {...}}
+        {"id": "...", "name": "默认配置", "type": "upload", "created_at": "...", "updated_at": "...", "config": {...}}
       ],
       "active_profile_id": "..."
     }
+
+profile.type 区分两套配置（2026-08 新增）：
+    - upload   （文档处理配置）：上传文档 → 解析/切分/入库 时使用
+    - webscrape（网站抓取配置）：网站抓取专用，在文档处理基础上多一个
+      「抓取网站 URL 列表」（webscrape_urls）；网站抓取页需先选此类配置，
+      再抓取其配置中的 URL 列表（页面不再手动输入 URL）
 
 config 的 key 与 Settings 属性名一一对应（chunk_target_chars / chunk_strategy /
 dify_dataset_id 等），运行时用 contextmanager 临时覆盖 settings 属性并恢复，
@@ -35,26 +41,49 @@ log = logging.getLogger("ragsystem.config_store")
 CONFIGS_DIRNAME = "configs"
 PROFILES_FILENAME = "profiles.json"
 
+# 配置方案类型：两套配置（2026-08 新增）
+#   上传文档处理用 upload；网站抓取用 webscrape（多一份「抓取网站 URL 列表」）。
+PROFILE_TYPE_UPLOAD = "upload"
+PROFILE_TYPE_WEBSCRAPE = "webscrape"
+PROFILE_TYPES: List[Dict[str, Any]] = [
+    {
+        "key": PROFILE_TYPE_UPLOAD,
+        "label": "文档处理配置",
+        "description": "上传文档（解析/切分/入库）时使用的配置方案",
+    },
+    {
+        "key": PROFILE_TYPE_WEBSCRAPE,
+        "label": "网站抓取配置",
+        "description": "网站抓取专用：在文档处理配置基础上多一个「抓取网站 URL 列表」；网站抓取页先选此配置，再抓取其配置的 URL 列表",
+    },
+]
+
 # 所有可配置字段定义（key 必须与 Settings 属性名一致）。
 # 前端据此动态渲染表单；新增字段只需在这里补一项。
 #
+# types：该字段属于哪些配置类型（不填 = 所有类型通用）；
+#        目前仅 webscrape_urls 限定在网站抓取配置中显示。
 # strategies：该字段生效于哪些切分策略（列表形式）；通用字段（知识库 ID /
 # 切分策略本身）不填 strategies，表示所有策略都适用。
 # 前端在选择不同切分策略时，只显示与当前策略相关的配置项。
 PROFILE_FIELDS: List[Dict[str, Any]] = [
     {
-        "key": "webscrape_site_url",
-        "label": "抓取网站 URL",
-        "type": "str",
-        "default": "",
-        "description": "网站抓取时允许抓取的目标网站地址（同域名校验）；需先选择该配置，才能在网站抓取页抓取其内容",
+        "key": "webscrape_urls",
+        "label": "抓取网站 URL 列表",
+        "type": "urls",
+        "default": [],
+        "types": [PROFILE_TYPE_WEBSCRAPE],
+        "description": "网站抓取的目标 URL 列表（每行一个，可同时包含网页与附件链接，仅限同域名）；网站抓取页选择此配置后将抓取列表中的全部 URL",
     },
     {
         "key": "dify_dataset_id",
         "label": "知识库 ID",
         "type": "select_dataset",
         "default": "",
-        "description": "Dify 目标知识库 ID（可在知识库下拉中选择）",
+        # ★ 2026-08-31 仅文档处理配置需要知识库 ID：网站抓取的内容在确认入库时
+        # 每次单独选择目标知识库（可入不同知识库），配置里不再写死。
+        "types": [PROFILE_TYPE_UPLOAD],
+        "description": "Dify 目标知识库 ID（可在知识库下拉中选择）；网站抓取配置不含此项，确认入库时另行选择",
     },
     {
         "key": "chunk_strategy",
@@ -335,8 +364,25 @@ def _load() -> Dict[str, Any]:
         return data
 
 
+def profile_type_of(profile: Optional[Dict[str, Any]]) -> str:
+    """取配置方案类型（缺省/非法值都视为 upload，兼容旧数据）。"""
+    ptype = (profile or {}).get("type") or PROFILE_TYPE_UPLOAD
+    if ptype not in (PROFILE_TYPE_UPLOAD, PROFILE_TYPE_WEBSCRAPE):
+        return PROFILE_TYPE_UPLOAD
+    return ptype
+
+
+def get_profile_types() -> List[Dict[str, Any]]:
+    """配置类型定义（前端 Segmented/筛选用）。"""
+    return [dict(t) for t in PROFILE_TYPES]
+
+
 def list_profiles() -> List[Dict[str, Any]]:
-    return _load().get("profiles", [])
+    profiles = _load().get("profiles", [])
+    # 返回时补全 type 键（旧数据无 type 视为 upload），保证 API 模型可正常序列化
+    for p in profiles:
+        p.setdefault("type", profile_type_of(p))
+    return profiles
 
 
 def get_active_profile_id() -> Optional[str]:
@@ -367,15 +413,23 @@ def resolve_profile(profile_id: Optional[str] = None) -> Optional[Dict[str, Any]
     return get_active_profile()
 
 
-def create_profile(name: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def create_profile(
+    name: str,
+    config: Optional[Dict[str, Any]] = None,
+    profile_type: str = PROFILE_TYPE_UPLOAD,
+) -> Optional[Dict[str, Any]]:
+    """创建配置方案。profile_type 非法时返回 None（由 API 层 400）。"""
+    if profile_type not in (PROFILE_TYPE_UPLOAD, PROFILE_TYPE_WEBSCRAPE):
+        return None
     data = _load()
     now = _now_iso()
     profile = {
         "id": uuid.uuid4().hex,
         "name": name.strip() or f"配置方案 {now}",
+        "type": profile_type,
         "created_at": now,
         "updated_at": now,
-        "config": _merge_config(config or {}),
+        "config": _sanitize_config_for_type(_merge_config(config or {}), profile_type),
     }
     data["profiles"].append(profile)
     # 若还没有激活方案，自动激活刚创建的
@@ -393,7 +447,10 @@ def update_profile(profile_id: str, name: Optional[str], config: Optional[Dict[s
         if name is not None:
             p["name"] = name.strip() or p["name"]
         if config is not None:
-            p["config"] = _merge_config(config, base=p.get("config"))
+            p["config"] = _sanitize_config_for_type(
+                _merge_config(config, base=p.get("config")),
+                p.get("type", PROFILE_TYPE_UPLOAD),
+            )
         p["updated_at"] = _now_iso()
         _write(data)
         return p
@@ -431,6 +488,21 @@ def _merge_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None)
         if k in valid_keys:
             merged[k] = v
     return merged
+
+
+def _sanitize_config_for_type(config: Dict[str, Any], profile_type: str) -> Dict[str, Any]:
+    """按配置类型清理字段：types 不含该类型的字段重置为字段默认值。
+
+    ★ 2026-08-31 网站抓取配置不需要知识库 ID：
+    创建/更新时把 dify_dataset_id 重置为空（不继承 settings 默认知识库），
+    入库目标在确认时单独选择（可入不同知识库）。
+    """
+    out = dict(config)
+    for f in PROFILE_FIELDS:
+        types = f.get("types")
+        if types and profile_type not in types:
+            out[f["key"]] = f.get("default")
+    return out
 
 
 def get_field_schema() -> List[Dict[str, Any]]:

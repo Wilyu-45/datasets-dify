@@ -9,6 +9,7 @@ import {
   Modal,
   Popconfirm,
   Row,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -18,11 +19,13 @@ import {
   Typography,
   message,
 } from "antd";
+import { MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useState } from "react";
 import {
   activateConfigProfile,
   createConfigProfile,
   deleteConfigProfile,
+  getConfigProfileTypes,
   getConfigSchema,
   listChunkStrategies,
   listConfigProfiles,
@@ -31,11 +34,24 @@ import {
   updateConfigProfile,
   type ConfigFieldDef,
   type ConfigProfile,
+  type ConfigProfileTypeDef,
   type DifyDatasetItem,
   type RunConfigLogItem,
 } from "../api/client";
 
 const { Title, Paragraph, Text } = Typography;
+
+/** 配置方案类型 → 展示名（与后端 PROFILE_TYPES 对齐）。 */
+const PROFILE_TYPE_LABELS: Record<string, string> = {
+  upload: "文档处理配置",
+  webscrape: "网站抓取配置",
+};
+
+/** 配置方案类型 → Tag 颜色。 */
+const PROFILE_TYPE_COLORS: Record<string, string> = {
+  upload: "blue",
+  webscrape: "purple",
+};
 
 /** 处理来源标识 → 中文展示。 */
 const SOURCE_LABELS: Record<string, string> = {
@@ -60,11 +76,11 @@ function FieldControl({
   onChange,
 }: {
   field: ConfigFieldDef;
-  value: number | boolean | string | undefined;
-  onChange: (v: number | boolean | string) => void;
+  value: number | boolean | string | string[] | undefined;
+  onChange: (v: number | boolean | string | string[]) => void;
 }) {
   if (field.type === "bool") {
-    return <Switch checked={Boolean(value)} onChange={onChange} />;
+    return <Switch checked={Boolean(value)} onChange={(v) => onChange(v)} />;
   }
   if (field.type === "int" || field.type === "float") {
     return (
@@ -76,6 +92,40 @@ function FieldControl({
         value={value as number}
         onChange={(v) => onChange(v ?? 0)}
       />
+    );
+  }
+  if (field.type === "urls") {
+    // 抓取网站 URL 列表：可增删的多行输入
+    const list = Array.isArray(value) ? (value as string[]) : [];
+    return (
+      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+        {list.map((u, i) => (
+          <Space.Compact key={i} style={{ width: "100%" }}>
+            <Input
+              value={u}
+              placeholder="https://example.com/xxx（每行一个 URL）"
+              onChange={(e) => {
+                const next = [...list];
+                next[i] = e.target.value;
+                onChange(next);
+              }}
+            />
+            <Button
+              icon={<MinusCircleOutlined />}
+              onClick={() => onChange(list.filter((_, j) => j !== i))}
+            />
+          </Space.Compact>
+        ))}
+        <Button
+          type="dashed"
+          block
+          size="small"
+          icon={<PlusOutlined />}
+          onClick={() => onChange([...list, ""])}
+        >
+          添加 URL
+        </Button>
+      </Space>
     );
   }
   return (
@@ -93,6 +143,9 @@ export default function ConfigPage() {
   const [fields, setFields] = useState<ConfigFieldDef[]>([]);
   const [datasets, setDatasets] = useState<DifyDatasetItem[]>([]);
   const [strategies, setStrategies] = useState<{ key: string; name: string }[]>([]);
+  const [profileTypes, setProfileTypes] = useState<ConfigProfileTypeDef[]>([]);
+  /** 当前查看/创建的配置类型：upload=文档处理 / webscrape=网站抓取 */
+  const [activeType, setActiveType] = useState<string>("upload");
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<ConfigProfile | null>(null);
   const [saving, setSaving] = useState(false);
@@ -102,7 +155,7 @@ export default function ConfigPage() {
   const [runLogsLoading, setRunLogsLoading] = useState(false);
   // 配置项单独受控（不依赖 Form.Item 的 valuePropName 注入，Switch/Input 兼容性更好）
   const [configValues, setConfigValues] = useState<
-    Record<string, number | boolean | string>
+    Record<string, number | boolean | string | string[]>
   >({});
 
   const [msgApi, contextHolder] = message.useMessage();
@@ -118,17 +171,19 @@ export default function ConfigPage() {
   };
 
   const load = async () => {
-    const [pr, sch, ds, st] = await Promise.all([
+    const [pr, sch, ds, st, pt] = await Promise.all([
       listConfigProfiles(),
       getConfigSchema(),
       listDifyDatasets(),
       listChunkStrategies(),
+      getConfigProfileTypes(),
     ]);
     setProfiles(pr.profiles);
     setActiveId(pr.active_profile_id);
     setFields(sch.fields);
     setDatasets(ds);
     setStrategies(st.strategies);
+    setProfileTypes(pt.types);
   };
 
   useEffect(() => {
@@ -145,16 +200,16 @@ export default function ConfigPage() {
 
   /** 用默认值（可基于指定方案）构造初始 configValues。 */
   const buildInit = (base?: ConfigProfile) => {
-    const init: Record<string, number | boolean | string> = {};
+    const init: Record<string, number | boolean | string | string[]> = {};
     for (const f of fields) {
-      init[f.key] = base?.config[f.key] ?? (f.default as number | boolean | string);
+      init[f.key] = base?.config[f.key] ?? f.default;
     }
     return init;
   };
 
   const openCreate = () => {
     setEditing(null);
-    const base = profiles.find((p) => p.id === activeId);
+    const base = profiles.find((p) => p.id === activeId && (p.type ?? "upload") === activeType);
     form.setFieldsValue({ name: "" });
     setConfigValues(buildInit(base));
     setModalOpen(true);
@@ -175,7 +230,7 @@ export default function ConfigPage() {
         await updateConfigProfile(editing.id, { name, config: configValues });
         msgApi.success("配置方案已更新");
       } else {
-        await createConfigProfile(name, configValues);
+        await createConfigProfile(name, configValues, activeType);
         msgApi.success("配置方案已创建");
       }
       setModalOpen(false);
@@ -208,24 +263,33 @@ export default function ConfigPage() {
     }
   };
 
-  const setCfg = (key: string, v: number | boolean | string) =>
+  const setCfg = (key: string, v: number | boolean | string | string[]) =>
     setConfigValues((prev) => ({ ...prev, [key]: v }));
 
   /** 当前选中的切分策略。 */
   const currentStrategy = String(configValues.chunk_strategy || "structure");
   const currentStrategyMeta = strategies.find((s) => s.key === currentStrategy) ?? null;
 
-  /** 当前策略下应显示的配置字段（通用字段 + 该策略专属字段）。 */
+  /** 当前类型下应显示的配置字段（类型通用 + 该类型专属；再按切分策略过滤）。 */
   const visibleFields = useMemo(() => {
-    const filtered = fields.filter((f) => {
+    return fields.filter((f) => {
       if (f.key === "dify_dataset_id" || f.key === "chunk_strategy") return false;
+      // 类型过滤：字段标记了 types 且不含当前类型 → 不显示（如 webscrape_urls）
+      const ts = f.types ?? [];
+      if (ts.length && !ts.includes(activeType)) return false;
       const ss = f.strategies ?? [];
       // 无 strategies 元数据（旧 schema）时视为通用字段，全部显示
       if (!ss.length) return true;
       return ss.includes(currentStrategy);
     });
-    return filtered;
-  }, [fields, currentStrategy]);
+  }, [fields, currentStrategy, activeType]);
+
+  /** 当前类型下的配置方案列表。 */
+  const visibleProfiles = useMemo(
+    () => profiles.filter((p) => (p.type ?? "upload") === activeType),
+    [profiles, activeType]
+  );
+  const typeLabel = (t?: string) => PROFILE_TYPE_LABELS[t ?? "upload"] ?? t ?? "文档处理配置";
 
   const activeProfile = profiles.find((p) => p.id === activeId) ?? null;
 
@@ -237,25 +301,30 @@ export default function ConfigPage() {
           配置中心
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-          上传处理前需先配置好<strong>知识库 ID</strong> 与
-          <strong>切分策略</strong>（含全部切分参数），并选择一个配置方案激活。
-          上传入库时将使用所选（当前激活）配置方案。
+          配置分两套：<strong>文档处理配置</strong>（上传文档入库时使用）与{" "}
+          <strong>网站抓取配置</strong>（网站抓取页使用，在文档处理基础上多一个
+          「抓取网站 URL 列表」）。上传入库时将使用所选（当前激活）配置方案。
         </Paragraph>
       </div>
 
       <Card
         size="small"
-        title="当前激活配置"
+        title={activeProfile ? `当前激活配置（${typeLabel(activeProfile.type)}）` : "当前激活配置"}
         extra={
           <Button type="primary" onClick={openCreate} disabled={!fields.length}>
-            新建配置方案
+            新建{typeLabel(activeType)}
           </Button>
         }
       >
         {activeProfile ? (
           <Descriptions size="small" column={{ xs: 1, md: 3 }}>
             <Descriptions.Item label="方案名称">
-              {activeProfile.name}
+              <Space>
+                {activeProfile.name}
+                <Tag color={PROFILE_TYPE_COLORS[activeProfile.type ?? "upload"] ?? "default"}>
+                  {typeLabel(activeProfile.type)}
+                </Tag>
+              </Space>
             </Descriptions.Item>
             <Descriptions.Item label="知识库 ID">
               {String(activeProfile.config.dify_dataset_id || "（未设置）")}
@@ -263,6 +332,14 @@ export default function ConfigPage() {
             <Descriptions.Item label="切分策略">
               {String(activeProfile.config.chunk_strategy || "structure")}
             </Descriptions.Item>
+            {(activeProfile.type ?? "upload") === "webscrape" && (
+              <Descriptions.Item label="抓取 URL 列表">
+                {Array.isArray(activeProfile.config.webscrape_urls)
+                  ? (activeProfile.config.webscrape_urls as string[]).length
+                  : 0}{" "}
+                个 URL
+              </Descriptions.Item>
+            )}
           </Descriptions>
         ) : (
           <Paragraph type="secondary" style={{ margin: 0 }}>
@@ -271,9 +348,37 @@ export default function ConfigPage() {
         )}
       </Card>
 
+      {/* 配置类型切换：两套配置分开管理 */}
+      <Segmented
+        block
+        value={activeType}
+        onChange={(v) => setActiveType(String(v))}
+        options={profileTypes.length
+          ? profileTypes.map((t) => ({ label: t.label, value: t.key }))
+          : [
+              { label: "文档处理配置", value: "upload" },
+              { label: "网站抓取配置", value: "webscrape" },
+            ]}
+      />
+      <Paragraph type="secondary" style={{ marginTop: 0, marginBottom: 4 }}>
+        {profileTypes.find((t) => t.key === activeType)?.description ??
+          (activeType === "webscrape"
+            ? "网站抓取配置：在文档处理配置基础上多一个「抓取网站 URL 列表」；网站抓取页先选此配置，再抓取其配置的 URL 列表"
+            : "上传文档（解析/切分/入库）时使用的配置方案")}
+        {activeType === "upload" && visibleProfiles.length === 0 && (
+          <span style={{ color: "#fa541c" }}>（暂无文档处理配置，上传页将不可用）</span>
+        )}
+        {activeType === "webscrape" && visibleProfiles.length === 0 && (
+          <span style={{ color: "#fa541c" }}>（暂无网站抓取配置，网站抓取页将不可用）</span>
+        )}
+      </Paragraph>
+
       <Row gutter={[16, 16]}>
-        {profiles.map((p) => {
+        {visibleProfiles.map((p) => {
           const isActive = p.id === activeId;
+          const urls = Array.isArray(p.config.webscrape_urls)
+            ? (p.config.webscrape_urls as string[])
+            : [];
           return (
             <Col xs={24} md={12} lg={8} key={p.id}>
               <Card
@@ -281,6 +386,9 @@ export default function ConfigPage() {
                 title={
                   <Space>
                     {p.name}
+                    <Tag color={PROFILE_TYPE_COLORS[p.type ?? "upload"] ?? "default"}>
+                      {typeLabel(p.type)}
+                    </Tag>
                     {isActive && <Tag color="green">当前激活</Tag>}
                   </Space>
                 }
@@ -322,6 +430,30 @@ export default function ConfigPage() {
                   <Descriptions.Item label="硬上限">
                     {String(p.config.chunk_hard_limit ?? "-")}
                   </Descriptions.Item>
+                  {(p.type ?? "upload") === "webscrape" && (
+                    <Descriptions.Item label="抓取 URL 列表">
+                      {urls.length === 0 ? (
+                        <Text type="danger" style={{ fontSize: 12 }}>
+                          未配置（网站抓取页不可用）
+                        </Text>
+                      ) : (
+                        <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                          {urls.slice(0, 3).map((u, i) => (
+                            <Text key={i} ellipsis style={{ fontSize: 12, maxWidth: 260 }}>
+                              {u}
+                            </Text>
+                          ))}
+                          {urls.length > 3 && (
+                            <Tooltip title={urls.join("\n")}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                …共 {urls.length} 个 URL
+                              </Text>
+                            </Tooltip>
+                          )}
+                        </Space>
+                      )}
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="更新时间">
                     {p.updated_at}
                   </Descriptions.Item>
@@ -330,6 +462,11 @@ export default function ConfigPage() {
             </Col>
           );
         })}
+        {visibleProfiles.length === 0 && (
+          <Col span={24}>
+            <Paragraph type="secondary">暂无{typeLabel(activeType)}，点击右上角「新建」创建。</Paragraph>
+          </Col>
+        )}
       </Row>
 
       {/* 处理配置记录：每次实际触发处理时落库的配置快照（process_config_log 表） */}
@@ -448,7 +585,7 @@ export default function ConfigPage() {
       </Card>
 
       <Modal
-        title={editing ? `编辑配置方案「${editing.name}」` : "新建配置方案"}
+        title={editing ? `编辑${typeLabel(editing.type)}「${editing.name}」` : `新建${typeLabel(activeType)}`}
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={handleSave}
@@ -466,6 +603,34 @@ export default function ConfigPage() {
           </Form.Item>
 
           <Space direction="vertical" size="small" style={{ width: "100%" }}>
+            {/* 网站抓取配置专属：抓取网站 URL 列表 */}
+            {activeType === "webscrape" && fieldMap.get("webscrape_urls") && (
+              <div
+                style={{
+                  padding: 12,
+                  border: "1px solid #f2e6ff",
+                  borderRadius: 8,
+                  backgroundColor: "#f9f0ff",
+                }}
+              >
+                <Typography.Text strong>
+                  {fieldMap.get("webscrape_urls")?.label ?? "抓取网站 URL 列表"}{" "}
+                  <Tag color="purple">网站抓取专用</Tag>
+                </Typography.Text>
+                <Typography.Paragraph
+                  type="secondary"
+                  style={{ fontSize: 12, marginTop: 4, marginBottom: 8 }}
+                >
+                  {fieldMap.get("webscrape_urls")?.description}
+                </Typography.Paragraph>
+                <FieldControl
+                  field={fieldMap.get("webscrape_urls")!}
+                  value={configValues.webscrape_urls}
+                  onChange={(v) => setCfg("webscrape_urls", v)}
+                />
+              </div>
+            )}
+
             {/* 知识库 ID */}
             <div>
               <Typography.Text strong>

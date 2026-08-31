@@ -2,8 +2,9 @@
 
 两步式流程（先抓取待确认，确认后才入库）：
 
-    1. POST /api/webscrape/run                — 选配置 + URL 列表 → 抓取生成「待确认任务」
-       配置方案必填：其「抓取网站 URL」决定本批可抓取的网站（同域名白名单）；
+    1. POST /api/webscrape/run                — 选「网站抓取配置」→ 抓取其配置的 URL 列表，生成「待确认任务」
+       配置方案必选网站抓取类型（type=webscrape），其「抓取网站 URL 列表」
+       （webscrape_urls）即本批抓取来源；
        网页正文转 Markdown、附件文件下载，都先落在 data/webscrape/{task_id}/ 临时区，
        不写 manifest、不触发流水线。
     2. GET /api/webscrape/tasks               — 任务历史列表
@@ -12,6 +13,8 @@
     3. POST /api/webscrape/task/{id}/confirm  — 人为勾选需要的项 + 再次选择配置
        → 选中项落地（正文 → parsed/，附件 → pending/）并登记 manifest →
        走 parse(MinerU) → chunk → dify 流水线 → 返回 PipelineReport
+
+★ 2026-08-31 两套配置：抓取 URL 来自配置本身，页面不再输入。
 
 错误隔离：单个 URL 抓取失败只影响该项；confirm 只处理勾选项，未勾选项留在任务里。
 """
@@ -40,10 +43,12 @@ MAX_URLS_PER_REQUEST = 50
 
 
 class WebScrapeRunRequest(BaseModel):
-    """抓取请求（生成待确认任务）。"""
+    """抓取请求（生成待确认任务）：URL 列表来自配置本身，无需页面传入。"""
 
-    profile_id: str = Field(..., description="配置方案 ID（必填：决定抓取网站 URL 白名单）")
-    urls: List[str] = Field(..., description="待抓取的 URL 列表（每行一个）")
+    profile_id: str = Field(
+        ...,
+        description="网站抓取配置方案 ID（必填：其「抓取网站 URL 列表」即抓取来源）",
+    )
 
 
 class WebScrapeItem(BaseModel):
@@ -61,6 +66,8 @@ class WebScrapeItem(BaseModel):
     confirmed: bool = False            # 是否已确认（confirm 后回填）
     ingest_status: Optional[str] = None  # confirm 后：ok / error
     ingest_error: Optional[str] = None
+    dataset_id: Optional[str] = None   # confirm 后：入库的目标知识库 ID（每次确认时选择）
+    dataset_name: Optional[str] = None # confirm 后：目标知识库名称（溯源展示用）
     error: Optional[str] = None        # 抓取失败原因
 
 
@@ -72,7 +79,8 @@ class WebScrapeTask(BaseModel):
     updated_at: Optional[str] = None
     profile_id: Optional[str] = None
     profile_name: Optional[str] = None
-    site_url: Optional[str] = None     # 抓取网站的配置快照
+    site_url: Optional[str] = None     # 抓取网站的配置快照（URL 列表 JSON 文本）
+    urls: List[str] = []               # 抓取来源 URL 列表（由 site_url 快照解析）
     status: str                        # pending / confirmed / done / cancelled
     confirm_time: Optional[str] = None
     confirm_profile: Optional[str] = None  # 确认时选用的配置名
@@ -91,10 +99,15 @@ class WebScrapeRunResponse(BaseModel):
 
 
 class WebScrapeConfirmRequest(BaseModel):
-    """确认请求：勾选需要的内容 + 选择确认入库用的配置。"""
+    """确认请求：勾选需要的内容 + 选择确认入库用的配置 + 目标知识库。
+
+    ★ 2026-08-31：网站抓取配置不含知识库 ID（可入不同知识库），
+    每次确认入库时单独指定目标知识库（dataset_id），覆盖配置中可能残留的库。
+    """
 
     urls: List[str] = Field(..., description="确认要入库的 URL 列表（未勾选的不处理）")
-    profile_id: str = Field(..., description="确认时选择的配置方案 ID（决定入库参数）")
+    profile_id: str = Field(..., description="确认时选择的配置方案 ID（决定切分等入库参数）")
+    dataset_id: str = Field(..., description="目标知识库 ID（Dify 数据集），本次确认的内容入库到这个知识库")
 
 
 class WebScrapeConfirmResponse(BaseModel):
@@ -143,6 +156,8 @@ def _task_to_model(task: Dict[str, Any]) -> WebScrapeTask:
             "confirmed": bool(it.get("confirmed")),
             "ingest_status": it.get("ingest_status"),
             "ingest_error": it.get("ingest_error"),
+            "dataset_id": it.get("dataset_id"),
+            "dataset_name": it.get("dataset_name"),
             "error": it.get("error"),
         }
         items.append(WebScrapeItem(**base))
@@ -153,6 +168,7 @@ def _task_to_model(task: Dict[str, Any]) -> WebScrapeTask:
         profile_id=task.get("profile_id"),
         profile_name=task.get("profile_name"),
         site_url=task.get("site_url"),
+        urls=list(task.get("urls") or []),
         status=task.get("status") or webscraper.TASK_STATUS_PENDING,
         confirm_time=task.get("confirm_time"),
         confirm_profile=task.get("confirm_profile"),
@@ -161,6 +177,26 @@ def _task_to_model(task: Dict[str, Any]) -> WebScrapeTask:
         ok_count=sum(1 for it in items if it.ok),
         confirmed_count=sum(1 for it in items if it.confirmed),
     )
+
+
+def _lookup_dataset_name(dataset_id: str) -> Optional[str]:
+    """按 ID 查 Dify 知识库名称（溯源展示用）；查询失败仅返回 None，不影响确认流程。"""
+    from app.services.dify_uploader import DifyClient, DifyError
+
+    if not dataset_id:
+        return None
+    try:
+        client = DifyClient()
+        for page in range(1, 6):
+            payload = client.list_datasets(page=page, limit=100)
+            for d in payload.get("data") or []:
+                if str(d.get("id")) == str(dataset_id):
+                    return str(d.get("name") or "") or None
+            if not payload.get("has_more"):
+                break
+    except (DifyError, Exception):  # noqa: BLE001
+        return None
+    return None
 
 
 def _load_task_or_404(task_id: str) -> Dict[str, Any]:
@@ -175,30 +211,34 @@ def _load_task_or_404(task_id: str) -> Dict[str, Any]:
 
 @router.post("/webscrape/run", response_model=WebScrapeRunResponse)
 def run_webscrape(req: WebScrapeRunRequest) -> WebScrapeRunResponse:
-    """第一步：抓取 URL 列表生成「待确认任务」（不注册 manifest、不入库）。"""
-    urls = [u for u in (req.urls or []) if u and u.strip()]
-    if not urls:
-        raise HTTPException(status_code=400, detail="URL 列表为空")
-    if len(urls) > MAX_URLS_PER_REQUEST:
-        raise HTTPException(status_code=400, detail=f"单次最多抓取 {MAX_URLS_PER_REQUEST} 个 URL")
-
-    # 配置方案必填：决定「抓取网站 URL」白名单
+    """第一步：按配置的 URL 列表抓取生成「待确认任务」（不注册 manifest、不入库）。"""
+    # 配置方案必填且必须是「网站抓取配置」：决定抓取来源（webscrape_urls 列表）
     profile = config_store.get_profile(req.profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail=f"配置方案不存在: {req.profile_id}")
-    site_url = str((profile.get("config") or {}).get("webscrape_site_url") or "").strip()
-    if not site_url:
+    if config_store.profile_type_of(profile) != config_store.PROFILE_TYPE_WEBSCRAPE:
         raise HTTPException(
             status_code=400,
-            detail=f"配置方案「{profile.get('name')}」未设置「抓取网站 URL」，请先在配置中心完善配置",
+            detail=(
+                f"配置方案「{profile.get('name')}」是文档处理配置，不能用于网站抓取；"
+                "请先在「配置中心」创建并选择网站抓取配置（带「抓取网站 URL 列表」）"
+            ),
         )
+    urls = webscraper.profile_webscrape_urls(profile)
+    if not urls:
+        raise HTTPException(
+            status_code=400,
+            detail=f"配置方案「{profile.get('name')}」未设置「抓取网站 URL 列表」，请先在配置中心完善配置",
+        )
+    if len(urls) > MAX_URLS_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"配置的 URL 列表超过单次上限 {MAX_URLS_PER_REQUEST} 个")
 
     log.info(
-        "webscrape run start: urls=%d profile=%s site=%s",
-        len(urls), profile.get("name"), site_url,
+        "webscrape run start: urls=%d profile=%s",
+        len(urls), profile.get("name"),
         extra={"step": "webscrape", "status": "start"},
     )
-    task = webscraper.create_task(profile, urls)
+    task = webscraper.create_task(profile)
     webscraper.save_task(task)
     resp = WebScrapeRunResponse(task=_task_to_model(task))
     log.info(
@@ -260,11 +300,19 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
     confirmed_urls = [u for u in (req.urls or []) if u and u.strip()]
     if not confirmed_urls:
         raise HTTPException(status_code=400, detail="未勾选任何内容")
+    dataset_id = (req.dataset_id or "").strip()
+    if not dataset_id:
+        raise HTTPException(status_code=400, detail="未选择目标知识库（本次确认的内容入到该知识库）")
 
-    # 确认时再次选择配置（决定入库参数）
+    # 确认时再次选择配置（决定切分等入库参数）；知识库 ID 不入配置，
+    # 每次确认单独指定 dataset_id 并覆盖到本次生效的配置上（可入不同知识库）
     profile = config_store.get_profile(req.profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail=f"配置方案不存在: {req.profile_id}")
+    profile_config = dict(profile.get("config") or {})
+    profile_config["dify_dataset_id"] = dataset_id
+    profile_effective = dict(profile, config=profile_config)
+    dataset_name = _lookup_dataset_name(dataset_id)
 
     # 1) 落地勾选项（正文 → parsed/，附件 → pending/）+ 登记 manifest
     t0 = time.perf_counter()
@@ -282,6 +330,9 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
         it["confirmed"] = True
         if r.get("ok"):
             it["ingest_status"] = "ok"
+            it["dataset_id"] = dataset_id            # 溯源：本次确认入到哪个知识库
+            it["dataset_name"] = dataset_name
+            it["confirm_profile"] = profile.get("name")
         else:
             it["ingest_status"] = "error"
             it["ingest_error"] = r.get("error")
@@ -299,7 +350,7 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
     try:
         pipeline = _run_batch_pipeline(
             target_stems=stems,
-            profile=profile,
+            profile=profile_effective,
             source=config_run_log.SOURCE_WEBSCRAPE,
         )
         if pipeline and pipeline.get("status") == "failed":

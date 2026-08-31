@@ -7,12 +7,13 @@
 
 端点：
     GET    /api/config/profiles        所有配置方案 + 当前激活 id
-    POST   /api/config/profiles        创建方案
+    POST   /api/config/profiles        创建方案（profile_type: upload/webscrape）
     PUT    /api/config/profiles/{id}   更新方案
     DELETE /api/config/profiles/{id}   删除方案
     POST   /api/config/profiles/{id}/activate  激活方案
     GET    /api/config/active          当前激活方案（含字段定义）
     GET    /api/config/schema          可配置字段定义（前端动态渲染表单）
+    GET    /api/config/profile-types   配置类型定义（文档处理/网站抓取，前端分栏）
     GET    /api/config/run-logs        处理配置记录（每次实际处理时落库的配置快照）
 """
 
@@ -33,6 +34,7 @@ log = logging.getLogger("ragsystem.api.config")
 class ProfileCreateBody(BaseModel):
     name: str
     config: Optional[Dict[str, Any]] = None
+    profile_type: str = config_store.PROFILE_TYPE_UPLOAD  # upload / webscrape
 
 
 class ProfileUpdateBody(BaseModel):
@@ -43,6 +45,7 @@ class ProfileUpdateBody(BaseModel):
 class ProfileOut(BaseModel):
     id: str
     name: str
+    type: str = config_store.PROFILE_TYPE_UPLOAD
     created_at: str
     updated_at: str
     config: Dict[str, Any]
@@ -64,7 +67,9 @@ def get_profiles() -> ProfilesResponse:
 
 @router.post("/profiles", response_model=ProfileOut)
 def create_profile(body: ProfileCreateBody) -> ProfileOut:
-    profile = config_store.create_profile(body.name, body.config)
+    profile = config_store.create_profile(body.name, body.config, body.profile_type)
+    if not profile:
+        raise HTTPException(status_code=400, detail=f"非法配置类型: {body.profile_type}")
     return ProfileOut(**profile)
 
 
@@ -115,6 +120,16 @@ class SchemaResponse(BaseModel):
 def get_schema() -> SchemaResponse:
     """所有可配置字段定义（含当前 settings 实际值）。前端据此动态渲染表单。"""
     return SchemaResponse(fields=config_store.get_field_schema())
+
+
+class ProfileTypesResponse(BaseModel):
+    types: List[Dict[str, Any]]
+
+
+@router.get("/profile-types", response_model=ProfileTypesResponse)
+def get_profile_types() -> ProfileTypesResponse:
+    """配置类型定义（文档处理 / 网站抓取），前端据此分栏管理与按类型过滤字段。"""
+    return ProfileTypesResponse(types=config_store.get_profile_types())
 
 
 # ============ 处理配置记录（2026-08 新增） ============

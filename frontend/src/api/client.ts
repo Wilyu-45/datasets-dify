@@ -63,23 +63,34 @@ export interface HealthInfo {
 export interface ConfigFieldDef {
   key: string;
   label: string;
-  type: "int" | "float" | "bool" | "str" | "select_dataset" | "select_strategy";
-  default: number | boolean | string;
+  type: "int" | "float" | "bool" | "str" | "urls" | "select_dataset" | "select_strategy";
+  default: number | boolean | string | string[];
   description?: string;
   min?: number;
   max?: number;
   step?: number;
+  /** 该字段生效的配置类型（upload/webscrape）；不填/空数组表示所有类型通用。 */
+  types?: string[];
   /** 该字段生效的切分策略列表；不填/空数组表示所有策略通用。 */
   strategies?: string[];
 }
 
-/** 一个配置方案 = 知识库 ID + 切分策略 + 全部切分参数。 */
+/** 一个配置方案 = 知识库 ID + 切分策略 + 全部切分参数；type 区分两套配置。 */
 export interface ConfigProfile {
   id: string;
   name: string;
+  /** upload=文档处理配置 / webscrape=网站抓取配置 */
+  type: string;
   created_at: string;
   updated_at: string;
-  config: Record<string, number | boolean | string>;
+  config: Record<string, number | boolean | string | string[]>;
+}
+
+/** 配置类型定义（文档处理 / 网站抓取），前端分栏管理。 */
+export interface ConfigProfileTypeDef {
+  key: string;
+  label: string;
+  description?: string;
 }
 
 export interface ConfigProfilesResponse {
@@ -100,20 +111,21 @@ export interface ConfigSchemaResponse {
 export const listConfigProfiles = () =>
   http<ConfigProfilesResponse>("/config/profiles");
 
-/** 创建配置方案。 */
+/** 创建配置方案（profileType: upload=文档处理 / webscrape=网站抓取）。 */
 export const createConfigProfile = (
   name: string,
-  config: Record<string, number | boolean | string>
+  config: Record<string, number | boolean | string | string[]>,
+  profileType?: string
 ) =>
   http<ConfigProfile>("/config/profiles", {
     method: "POST",
-    body: JSON.stringify({ name, config }),
+    body: JSON.stringify({ name, config, profile_type: profileType ?? "upload" }),
   });
 
 /** 更新配置方案。 */
 export const updateConfigProfile = (
   profileId: string,
-  body: { name?: string; config?: Record<string, number | boolean | string> }
+  body: { name?: string; config?: Record<string, number | boolean | string | string[]> }
 ) =>
   http<ConfigProfile>(`/config/profiles/${encodeURIComponent(profileId)}`, {
     method: "PUT",
@@ -138,6 +150,10 @@ export const getActiveConfig = () => http<ActiveConfigResponse>("/config/active"
 
 /** 可配置字段定义（配置中心表单用）。 */
 export const getConfigSchema = () => http<ConfigSchemaResponse>("/config/schema");
+
+/** 配置类型定义（文档处理 / 网站抓取），配置中心分栏用。 */
+export const getConfigProfileTypes = () =>
+  http<{ types: ConfigProfileTypeDef[] }>("/config/profile-types");
 
 /** 一条处理配置记录：每次实际触发处理时落库的配置快照（process_config_log 表）。 */
 export interface RunConfigLogItem {
@@ -545,6 +561,10 @@ export interface WebScrapeItem {
   /** confirm 后：ok / error */
   ingest_status?: string | null;
   ingest_error?: string | null;
+  /** confirm 后：入库的目标知识库 ID（每次确认时选择，可入不同库） */
+  dataset_id?: string | null;
+  /** confirm 后：目标知识库名称（溯源展示用） */
+  dataset_name?: string | null;
   /** 抓取失败原因 */
   error?: string | null;
 }
@@ -556,8 +576,10 @@ export interface WebScrapeTask {
   updated_at?: string | null;
   profile_id?: string | null;
   profile_name?: string | null;
-  /** 抓取网站的配置快照 */
+  /** 抓取网站的配置快照（URL 列表 JSON 文本） */
   site_url?: string | null;
+  /** 抓取来源 URL 列表（由 site_url 快照解析） */
+  urls?: string[];
   /** pending=待确认 / confirmed=已确认并触发流水线 */
   status: string;
   confirm_time?: string | null;
@@ -579,18 +601,19 @@ export interface WebScrapePreviewResponse {
 }
 
 /**
- * 第一步：选配置 + URL 列表 → 抓取生成「待确认任务」（不登记 manifest、不入库）。
+ * 第一步：选「网站抓取配置」→ 抓取其配置的 URL 列表，生成「待确认任务」
+ * （不登记 manifest、不入库）。
  *
- * 配置方案必填：其「抓取网站 URL」字段决定本批可抓取的网站（同域名白名单）；
- * 网页正文转 Markdown、附件文件下载，都先落在后端临时区，确认后才入库。
+ * 配置方案必须是网站抓取类型，其「抓取网站 URL 列表」（webscrape_urls）
+ * 即本批抓取来源；网页正文转 Markdown、附件文件下载，都先落在后端临时区，
+ * 确认后才入库。
  */
 export const runWebScrape = (
-  profileId: string,
-  urls: string[]
+  profileId: string
 ): Promise<{ task: WebScrapeTask; error: string | null }> =>
   http<{ task: WebScrapeTask; error: string | null }>("/webscrape/run", {
     method: "POST",
-    body: JSON.stringify({ profile_id: profileId, urls }),
+    body: JSON.stringify({ profile_id: profileId }),
   });
 
 /** 任务历史列表（不含 items 明细）。 */
@@ -616,14 +639,18 @@ export const previewWebScrapeItem = (taskId: string, index: number) =>
   );
 
 /**
- * 第二步：人为确认勾选内容 + 选择确认入库用的配置。
+ * 第二步：人为确认勾选内容 + 选择确认入库用的配置 + 目标知识库。
  * 后端把选中项落地（正文 → parsed/，附件 → pending/）并登记 manifest，
- * 再走 parse(MinerU) → chunk → dify 流水线。
+ * 再走 parse(MinerU) → chunk → dify 流水线（本次内容入到 datasetId 指定的知识库）。
+ *
+ * ★ 2026-08-31：网站抓取配置不含知识库 ID；同一抓取任务可分多批确认，
+ * 每批选不同目标知识库，即可把内容入到不同的知识库。
  */
 export const confirmWebScrapeTask = (
   taskId: string,
   urls: string[],
-  profileId: string
+  profileId: string,
+  datasetId: string
 ): Promise<{
   task: WebScrapeTask;
   landed: {
@@ -651,7 +678,7 @@ export const confirmWebScrapeTask = (
     error: string | null;
   }>(`/webscrape/task/${encodeURIComponent(taskId)}/confirm`, {
     method: "POST",
-    body: JSON.stringify({ urls, profile_id: profileId }),
+    body: JSON.stringify({ urls, profile_id: profileId, dataset_id: datasetId }),
   });
 
 // ============ §3.5 人工校验相关 ============

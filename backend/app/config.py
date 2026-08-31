@@ -229,10 +229,10 @@ class Settings(BaseSettings):
     dify_indexing_technique: str = "high_quality"
     # 文档形态：text_model / hierarchical_model / qa_model
     dify_doc_form: str = "text_model"
-    # 网站抓取：允许抓取的目标网站地址（2026-08 新增）。
-    # 知识库内容外延来源；需先在「配置中心」配置并选择方案，
-    # 网站抓取页只能抓取该网站（同域名）下的页面/附件。
-    webscrape_site_url: str = ""
+    # 网站抓取：允许抓取的 URL 列表（2026-08 新增，网站抓取配置专用字段）。
+    # 知识库内容外延来源；在「配置中心」的网站抓取配置中维护，
+    # 网站抓取页先选择该配置，再抓取其配置中的全部 URL（不再手动输入）。
+    webscrape_urls: list[str] = []
     # HTTP 超时（秒）
     dify_timeout: int = 60
     # 等待文档 indexing_status=completed 的最长秒数

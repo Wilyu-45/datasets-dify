@@ -27,9 +27,9 @@
         "chunk_llm_chunk_prompt": "你是一名文档切分专家。请把下面文档切成语义完整、主题集中的片段。要求：1) 每个片段围绕单一主题；2) 不要切断表格、公式、代码块；3) 保留原文顺序，不遗漏、不改写原文；4) 片段长度 300~800 字。只输出一个 JSON 数组，数组元素是切分后的原文段落字符串，不要输出其他内容。",
         "llm_api_base_url": "",
         "llm_api_key": "",
-        "llm_model": "",
-        "webscrape_site_url": "https://example.com"
-      }
+        "llm_model": ""
+      },
+      "type": "upload"
     }
   ],
   "active_profile_id": "13652c278bbc4ff28b25687eb189ebb3"

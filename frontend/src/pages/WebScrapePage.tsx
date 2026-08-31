@@ -2,13 +2,18 @@
  * 网站抓取页面（2026-08 新增：知识库内容外延，两步式确认）。
  *
  * 流程：
- *   ① 选择配置方案（其「抓取网站 URL」决定可抓取哪个网站）→ 解锁抓取
- *   ② 输入 URL 列表 → 抓取：网页正文转 Markdown、附件文件下载，
+ *   ① 选择「网站抓取配置」（其「抓取网站 URL 列表」webscrape_urls 即抓取来源）
+ *   ② 确认抓取来源并开始抓取：网页正文转 Markdown、附件文件下载，
  *      生成「待确认任务」（此阶段不入库）
  *   ③ 预览内容（正文渲染 / 附件信息）→ 勾选确实需要的内容 →
  *      再次选择配置 → 点「确认并入库」→ 走 parse(MinerU) → 切分 → Dify 入库
  *
- * 布局：顶部配置选择；左侧配置信息 + URL 输入；右侧任务表格 + 预览抽屉；
+ * ★ 2026-08-31 两套配置：URL 来自配置本身（不再手动输入）；
+ *   只有「网站抓取配置」能在此页用于抓取；
+ *   网站抓取配置不含知识库 ID：确认入库时每次选择目标知识库（可入不同库），
+ *   同一抓取任务可分多批确认，分别入到不同知识库。
+ *
+ * 布局：顶部配置选择；左侧配置信息；右侧任务表格 + 预览抽屉；
  *       底部历史任务列表。
  */
 import {
@@ -20,7 +25,6 @@ import {
   Descriptions,
   Drawer,
   Empty,
-  Input,
   Modal,
   Radio,
   Row,
@@ -29,6 +33,7 @@ import {
   Spin,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -37,11 +42,13 @@ import {
   confirmWebScrapeTask,
   getWebScrapeTask,
   listConfigProfiles,
+  listDifyDatasets,
   listWebScrapeTasks,
   previewWebScrapeItem,
   runWebScrape,
   type ConfigProfile,
   type DifyActionRecord,
+  type DifyDatasetItem,
   type PipelineReport,
   type WebScrapeItem,
   type WebScrapePreviewResponse,
@@ -65,13 +72,11 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function WebScrapePage({ onOpenConfig }: Props) {
-  // ---- 配置选择（先选配置，才能去对应的网站抓取内容）----
+  // ---- 配置选择（先选网站抓取配置，其 URL 列表即抓取来源）----
   const [profiles, setProfiles] = useState<ConfigProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string>();
-  const [siteUrl, setSiteUrl] = useState("");
 
   // ---- 抓取 ----
-  const [urlsText, setUrlsText] = useState("");
   const [running, setRunning] = useState(false);
 
   // ---- 任务与预览 ----
@@ -86,6 +91,11 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   // ---- 确认入库 ----
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmProfileId, setConfirmProfileId] = useState<string>();
+  // ★ 2026-08-31 目标知识库：每次确认时选择（网站抓取配置不含知识库 ID，可入不同库）
+  const [confirmDatasetId, setConfirmDatasetId] = useState<string>();
+  const [datasets, setDatasets] = useState<DifyDatasetItem[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  const [datasetsError, setDatasetsError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmResult, setConfirmResult] = useState<{
     pipeline: PipelineReport | null;
@@ -95,33 +105,59 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   // ---- 历史任务 ----
   const [historyTasks, setHistoryTasks] = useState<WebScrapeTaskListItem[]>([]);
 
-  // 加载配置方案
+  // 加载配置方案（只取网站抓取类型）+ 知识库列表
   useEffect(() => {
+    loadDatasets();
     listConfigProfiles()
       .then((pr) => {
-        setProfiles(pr.profiles);
-        if (pr.active_profile_id) setSelectedProfileId(pr.active_profile_id);
+        const webProfiles = pr.profiles.filter((p) => (p.type ?? "upload") === "webscrape");
+        setProfiles(webProfiles);
+        // 默认选中：激活方案若是网站抓取类型则用之，否则第一个网站抓取配置
+        const active = pr.profiles.find((p) => p.id === pr.active_profile_id);
+        if (active && (active.type ?? "upload") === "webscrape") {
+          setSelectedProfileId(active.id);
+        } else if (webProfiles.length) {
+          setSelectedProfileId(webProfiles[0].id);
+        }
       })
       .catch(() => setProfiles([]));
     refreshHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 选中配置后展示其抓取网站 URL
+  // 选中配置后展示其「抓取网站 URL 列表」
   const selectedProfile = useMemo(
     () => profiles.find((p) => p.id === selectedProfileId) ?? null,
     [profiles, selectedProfileId]
   );
-  const selectedSiteUrl = selectedProfile
-    ? String(selectedProfile.config.webscrape_site_url || "")
-    : "";
+  const profileUrls = useMemo(() => {
+    const v = selectedProfile?.config.webscrape_urls;
+    return Array.isArray(v) ? (v as string[]).map((s) => s.trim()).filter(Boolean) : [];
+  }, [selectedProfile]);
+  const selectedSiteLabel = selectedProfile ? selectedProfile.name : "";
 
-  const profileOptions = profiles.map((p) => ({
-    value: p.id,
-    label: `${p.name}${
-      p.config.webscrape_site_url ? `（${String(p.config.webscrape_site_url)}）` : "（未配置抓取网站）"
-    }`,
-  }));
+  const profileOptions = profiles.map((p) => {
+    const urls = Array.isArray(p.config.webscrape_urls)
+      ? (p.config.webscrape_urls as string[]).filter((s) => s.trim())
+      : [];
+    return {
+      value: p.id,
+      label: `${p.name}（${urls.length} 个抓取 URL${urls.length ? "" : "，未配置"}）`,
+    };
+  });
+
+  // 加载 Dify 知识库列表（确认入库时选择目标知识库用）
+  const loadDatasets = () => {
+    setDatasetsLoading(true);
+    setDatasetsError(null);
+    listDifyDatasets()
+      .then((ds) => setDatasets(ds))
+      .catch((e) => {
+        setDatasets([]);
+        setDatasetsError(String(e));
+      })
+      .finally(() => setDatasetsLoading(false));
+  };
 
   const refreshHistory = () => {
     listWebScrapeTasks(10)
@@ -130,21 +166,13 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   };
 
   // ---- 抓取 ----
-  const parseUrls = (): string[] =>
-    urlsText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-
   const handleRun = async () => {
     if (!selectedProfileId) return;
-    const urls = parseUrls();
-    if (urls.length === 0) return;
     setRunning(true);
     setConfirmResult(null);
     setSelectedUrls([]);
     try {
-      const r = await runWebScrape(selectedProfileId, urls);
+      const r = await runWebScrape(selectedProfileId);
       if (r.error) {
         Modal.error({ title: "抓取失败", content: r.error });
         return;
@@ -185,10 +213,15 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   );
 
   const handleConfirmSubmit = async () => {
-    if (!task || !confirmProfileId || selectedUrls.length === 0) return;
+    if (!task || !confirmProfileId || !confirmDatasetId || selectedUrls.length === 0) return;
     setConfirming(true);
     try {
-      const r = await confirmWebScrapeTask(task.id, selectedUrls, confirmProfileId);
+      const r = await confirmWebScrapeTask(
+        task.id,
+        selectedUrls,
+        confirmProfileId,
+        confirmDatasetId
+      );
       setConfirmResult({ pipeline: r.pipeline, error: r.error });
       setTask(r.task);
       setConfirmOpen(false);
@@ -282,6 +315,20 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
       },
     },
     {
+      // ★ 2026-08-31 溯源：确认入库后显示入到哪个知识库
+      title: "入库知识库",
+      key: "dataset",
+      width: 120,
+      render: (_, it) =>
+        it.dataset_name || it.dataset_id ? (
+          <Tooltip title={it.dataset_id ?? ""}>
+            <Tag color="purple">{it.dataset_name ?? it.dataset_id}</Tag>
+          </Tooltip>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+    {
       title: "操作",
       key: "action",
       width: 90,
@@ -308,98 +355,126 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
           网站抓取
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-          知识库内容外延：先选择配置方案（决定可抓取的网站），输入网页 URL 后
-          抓取正文 / 下载附件 → 在预览页确认内容确实是需要的 → 选择配置后
-          确认入库，走
+          知识库内容外延：先选<strong>网站抓取配置</strong>（其「抓取网站 URL 列表」
+          即抓取来源，无需手动输入），一键抓取正文 / 下载附件 → 在预览页确认内容
+          确实是需要的 → 选择配置后确认入库，走
           <code>① MinerU 解析（附件）</code> → <code>② 切分</code> →{" "}
           <code>③ 入库</code> 流水线。
         </Paragraph>
       </div>
 
-      {/* ① 配置选择：先选配置，才能去对应的网站抓取内容 */}
-      <Card size="small" title="① 选择配置（决定抓取网站）">
-        <Space direction="vertical" style={{ width: "100%" }}>
-          <Space wrap>
-            <Text strong>配置方案：</Text>
-            <Select
-              style={{ minWidth: 360 }}
-              placeholder="请选择配置方案"
-              value={selectedProfileId}
-              onChange={(v) => {
-                setSelectedProfileId(v);
-                setConfirmResult(null);
-              }}
-              options={profileOptions}
-              optionRender={(o) => (
-                <Space direction="vertical" size={0}>
-                  <span>{o.label}</span>
-                </Space>
-              )}
+      {/* ① 配置选择：先选网站抓取配置（其 URL 列表即抓取来源） */}
+      <Card size="small" title="① 选择网站抓取配置（决定抓取来源）">
+        {profiles.length === 0 ? (
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Alert
+              type="warning"
+              showIcon
+              message="尚未创建「网站抓取配置」"
+              description="请先到配置中心创建网站抓取配置（在文档处理配置基础上配置「抓取网站 URL 列表」），之后才能在此页抓取其内容。"
             />
-            <Button type="link" onClick={onOpenConfig}>
-              配置中心管理
+            <Button type="primary" onClick={onOpenConfig}>
+              去配置中心创建
             </Button>
           </Space>
-          {selectedProfile && (
-            <Text
-              type={selectedSiteUrl ? "secondary" : "danger"}
-              style={{ fontSize: 12 }}
-            >
-              {selectedSiteUrl
-                ? `可抓取网站：${selectedSiteUrl}（仅限同域名页面 / 附件）`
-                : "该配置未设置「抓取网站 URL」：请到配置中心完善配置后重新选择"}
-            </Text>
-          )}
-        </Space>
+        ) : (
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Space wrap>
+              <Text strong>网站抓取配置：</Text>
+              <Select
+                style={{ minWidth: 360 }}
+                placeholder="请选择网站抓取配置"
+                value={selectedProfileId}
+                onChange={(v) => {
+                  setSelectedProfileId(v);
+                  setConfirmResult(null);
+                }}
+                options={profileOptions}
+                optionRender={(o) => (
+                  <Space direction="vertical" size={0}>
+                    <span>{o.label}</span>
+                  </Space>
+                )}
+              />
+              <Button type="link" onClick={onOpenConfig}>
+                配置中心管理
+              </Button>
+            </Space>
+            {selectedProfile && (
+              <Text
+                type={profileUrls.length ? "secondary" : "danger"}
+                style={{ fontSize: 12 }}
+              >
+                {profileUrls.length
+                  ? `该配置共 ${profileUrls.length} 个抓取 URL，抓取时全部处理（同域名校验）`
+                  : "该配置未设置「抓取网站 URL 列表」：请到配置中心完善配置后重新选择"}
+              </Text>
+            )}
+          </Space>
+        )}
       </Card>
 
       <Row gutter={16}>
-        {/* ② 抓取输入 */}
+        {/* ② 抓取来源展示 + 一键抓取 */}
         <Col xs={24} lg={10}>
-          <Card size="small" title="② 输入 URL 并抓取" extra={selectedProfile && <Text type="secondary" style={{ fontSize: 12 }}>{selectedProfile.name}</Text>}>
-            <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-              <div>
-                <Typography.Text strong>网页 URL（每行一个）</Typography.Text>
-                <textarea
-                  value={urlsText}
-                  onChange={(e) => setUrlsText(e.target.value)}
-                  placeholder={
-                    selectedSiteUrl
-                      ? `${selectedSiteUrl}/some-page\n${selectedSiteUrl}/uploads/report.pdf`
-                      : "请先在上方选择配置方案"
-                  }
-                  disabled={!selectedSiteUrl}
-                  style={{
-                    width: "100%",
-                    minHeight: 140,
-                    marginTop: 8,
-                    padding: 8,
-                    border: "1px solid #d9d9d9",
-                    borderRadius: 6,
-                    fontFamily: "monospace",
-                    fontSize: 12,
-                    resize: "vertical",
-                  }}
-                />
-              </div>
+          <Card
+            size="small"
+            title="② 确认抓取来源并开始抓取"
+            extra={selectedProfile && <Text type="secondary" style={{ fontSize: 12 }}>{selectedProfile.name}</Text>}
+          >
+            {!selectedProfile ? (
+              <Empty description="请先在上方选择网站抓取配置" />
+            ) : profileUrls.length === 0 ? (
               <Alert
-                type="info"
+                type="warning"
                 showIcon
-                message="自动识别内容类型"
-                description="网页 → 正文转 Markdown；PDF/DOCX 等附件链接 → 下载原文件，确认后由 MinerU 解析。"
+                message="该配置尚未配置抓取 URL 列表"
+                description="请到配置中心的「网站抓取配置」中填写「抓取网站 URL 列表」（每行一个，可包含网页与附件链接）。"
               />
-              <Button
-                type="primary"
-                block
-                loading={running}
-                disabled={!selectedSiteUrl || parseUrls().length === 0}
-                onClick={handleRun}
-              >
-                {running
-                  ? "抓取中..."
-                  : `开始抓取${parseUrls().length ? `（${parseUrls().length} 个 URL）` : ""}`}
-              </Button>
-            </Space>
+            ) : (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <div>
+                  <Typography.Text strong>
+                    将抓取以下 {profileUrls.length} 个 URL
+                  </Typography.Text>
+                  <Space
+                    direction="vertical"
+                    size={2}
+                    style={{ width: "100%", marginTop: 8 }}
+                  >
+                    {profileUrls.map((u, i) => (
+                      <Space key={i} size={6} style={{ width: "100%" }}>
+                        <Tag color={u.match(/\.(pdf|docx?|xlsx?|pptx?|txt|md|zip|rar)(\?|$)/i) ? "blue" : "cyan"}>
+                          {u.match(/\.(pdf|docx?|xlsx?|pptx?|txt|md|zip|rar)(\?|$)/i)
+                            ? "附件"
+                            : "网页"}
+                        </Tag>
+                        <Text ellipsis style={{ fontSize: 12, maxWidth: 300 }} copyable>
+                          {u}
+                        </Text>
+                      </Space>
+                    ))}
+                  </Space>
+                </div>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="自动识别内容类型"
+                  description="网页 → 正文转 Markdown；PDF/DOCX 等附件链接 → 下载原文件，确认后由 MinerU 解析。"
+                />
+                <Button
+                  type="primary"
+                  block
+                  loading={running}
+                  disabled={profileUrls.length === 0}
+                  onClick={handleRun}
+                >
+                  {running
+                    ? "抓取中..."
+                    : `开始抓取（${profileUrls.length} 个 URL）`}
+                </Button>
+              </Space>
+            )}
           </Card>
         </Col>
 
@@ -417,7 +492,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
             }
           >
             {!task ? (
-              <Empty description="尚无抓取任务：选择配置后输入 URL 开始抓取" />
+              <Empty description="尚无抓取任务：选择网站抓取配置后点击「开始抓取」" />
             ) : (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
                 {task.status !== "pending" && (
@@ -453,6 +528,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                     disabled={selectedUrls.length === 0 || task.status !== "pending"}
                     onClick={() => {
                       setConfirmProfileId(selectedProfileId);
+                      setConfirmDatasetId(undefined); // 每次确认重新选目标知识库，避免误入上个库
                       setConfirmResult(null);
                       setConfirmOpen(true);
                     }}
@@ -554,7 +630,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         okText="确认并入库"
         cancelText="取消"
         confirmLoading={confirming}
-        okButtonProps={{ disabled: !confirmProfileId }}
+        okButtonProps={{ disabled: !confirmProfileId || !confirmDatasetId }}
       >
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Alert
@@ -564,7 +640,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
             description="确认后将把勾选内容落地并触发流水线：附件走 MinerU 解析 → 切分 → Dify 入库（此操作不可撤销）。"
           />
           <div>
-            <Text strong>选择入库使用的配置方案：</Text>
+            <Text strong>选择入库使用的配置方案（仅网站抓取配置，决定切分参数）：</Text>
             <div style={{ marginTop: 8 }}>
               <Radio.Group
                 value={confirmProfileId}
@@ -578,6 +654,45 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                   </Radio>
                 ))}
               </Radio.Group>
+            </div>
+          </div>
+          {/* ★ 2026-08-31 目标知识库：每次确认时选择，可把不同批次内容入到不同知识库 */}
+          <div>
+            <Text strong>
+              目标知识库（本次确认的内容入到这个知识库）：
+            </Text>
+            <div style={{ marginTop: 8 }}>
+              <Space.Compact style={{ width: "100%" }}>
+                <Select
+                  style={{ width: "100%" }}
+                  placeholder={datasetsLoading ? "知识库加载中..." : "请选择目标知识库"}
+                  value={confirmDatasetId}
+                  onChange={setConfirmDatasetId}
+                  loading={datasetsLoading}
+                  disabled={!datasets.length && !datasetsLoading}
+                  options={datasets.map((d) => ({
+                    value: d.id,
+                    label: `${d.name}（${d.document_count} 文档）`,
+                  }))}
+                  showSearch
+                  optionFilterProp="label"
+                />
+                <Button onClick={loadDatasets} loading={datasetsLoading}>
+                  刷新
+                </Button>
+              </Space.Compact>
+              <Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 4 }}>
+                同一抓取任务可分多批确认：每批勾选部分内容 → 选一个知识库 → 确认；
+                下一批换一个知识库即可入到不同库。
+              </Text>
+              {datasetsError && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 8 }}
+                  message={`知识库列表加载失败：${datasetsError}`}
+                />
+              )}
             </div>
           </div>
         </Space>
@@ -594,7 +709,21 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
           columns={[
             { title: "时间", dataIndex: "created_at", width: 160 },
             { title: "配置", dataIndex: "profile_name", width: 140 },
-            { title: "抓取网站", dataIndex: "site_url", ellipsis: true },
+            {
+              title: "抓取 URL 列表",
+              dataIndex: "urls",
+              ellipsis: true,
+              render: (urls: string[] | undefined) =>
+                urls && urls.length ? (
+                  <Tooltip title={urls.join("\n")}>
+                    <Text style={{ fontSize: 12 }} copyable={{ text: urls.join(", ") }}>
+                      {urls.length === 1 ? urls[0] : `共 ${urls.length} 个 URL`}
+                    </Text>
+                  </Tooltip>
+                ) : (
+                  "-"
+                ),
+            },
             {
               title: "状态",
               dataIndex: "status",
