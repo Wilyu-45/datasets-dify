@@ -76,6 +76,29 @@ CREATE TABLE IF NOT EXISTS doc_metadata (
 );
 """
 
+# webscrape_task 表：网站抓取任务（2026-08 新增）。
+# 每次「网站抓取页 → 选配置 → 抓取」生成一个任务，内容先落在 data/webscrape/{id}/ 临时区，
+# 人为预览确认（content/attachment 逐项勾选）后，确认接口再把选中项落到 parsed//pending/ 并触发流水线。
+# 设计要点：
+# - items 为 JSONB：每个 URL 一项，含 kind(content=网页正文/attachment=附件文件)、临时路径、
+#   标题/文件名/字符数/大小、确认标记与最终入库状态（confirmed/error），预览正文不落库（读文件）。
+# - profile_id/profile_name/site_url 为抓取时的配置快照；确认时可能更换配置，记录在 confirm_profile。
+WEBSCRAPE_TASK_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS webscrape_tasks (
+    id               TEXT PRIMARY KEY,
+    created_at       TEXT,
+    updated_at       TEXT,
+    profile_id       TEXT,
+    profile_name     TEXT,
+    site_url         TEXT,
+    status           TEXT,
+    confirm_time     TEXT,
+    confirm_profile  TEXT,
+    items            JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_webscrape_tasks_time ON webscrape_tasks (created_at);
+"""
+
 # process_config_log 表：每次实际触发处理（上传入库 / 流水线）时，
 # 记录当时实际生效的配置快照（配置方案 ID/名称 + 全部配置项 JSONB + 知识库 ID + 切分策略），
 # 用于事后追溯「这批文档当时是用什么配置切分/入库的」。
@@ -107,6 +130,8 @@ INIT_SQL = (
     + DOC_METADATA_TABLE_SQL
     + "\n"
     + PROCESS_CONFIG_LOG_TABLE_SQL
+    + "\n"
+    + WEBSCRAPE_TASK_TABLE_SQL
 )
 
 

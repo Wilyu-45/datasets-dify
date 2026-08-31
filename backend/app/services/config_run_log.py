@@ -37,6 +37,7 @@ SOURCE_UPLOAD_SINGLE = "upload_single"      # 单文件上传 + 一键入库
 SOURCE_UPLOAD_BATCH = "upload_batch"        # 批量上传 + 一键入库
 SOURCE_UPLOAD_REINGEST = "upload_reingest"  # 已上传文件单独重跑入库
 SOURCE_PIPELINE_API = "pipeline_api"        # /api/pipeline/run 直接触发
+SOURCE_WEBSCRAPE = "webscrape"              # 网站抓取 + 一键入库
 
 
 def snapshot_settings_config() -> Dict[str, Any]:

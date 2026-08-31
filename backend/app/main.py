@@ -22,6 +22,7 @@ from app.api import config_api
 from app.api import dify as dify_api
 from app.api import pipeline as pipeline_api
 from app.api import upload as upload_api
+from app.api import webscrape as webscrape_api  # ★ 2026-08: 网站抓取
 from app import db
 from app.config import settings
 from app.logging_config import setup as setup_logging
@@ -83,6 +84,7 @@ app.include_router(config_api.router, prefix="/api")
 app.include_router(dify_api.router, prefix="/api")
 app.include_router(pipeline_api.router, prefix="/api")
 app.include_router(upload_api.router, prefix="/api")
+app.include_router(webscrape_api.router, prefix="/api")  # ★ 2026-08: 网站抓取
 
 
 # 图片静态托管：把 data/output/ 暴露为 /static/output/*

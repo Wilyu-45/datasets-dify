@@ -520,6 +520,140 @@ export const triggerPipeline = (dryRun: boolean, force = false, strategy?: strin
     }),
   });
 
+// ============ §3.x 网站抓取（2026-08 新增：知识库内容外延，两步式） ============
+
+/** 单个 URL 的抓取结果（任务项）。 */
+export interface WebScrapeItem {
+  url: string;
+  ok: boolean;
+  /** content=网页正文 / attachment=附件文件 */
+  kind: string;
+  /** content：页面标题；attachment：文件名 stem */
+  title: string;
+  /** attachment：原始文件名 */
+  filename?: string | null;
+  /** 相对 data/webscrape/{task_id}/ 的路径 */
+  rel_path?: string | null;
+  /** content：正文字符数 */
+  char_count?: number | null;
+  /** attachment：文件大小（字节） */
+  size?: number | null;
+  /** 正文是否超长截断 */
+  truncated?: boolean;
+  /** 是否已确认（confirm 后回填） */
+  confirmed?: boolean;
+  /** confirm 后：ok / error */
+  ingest_status?: string | null;
+  ingest_error?: string | null;
+  /** 抓取失败原因 */
+  error?: string | null;
+}
+
+/** 抓取任务（含 items 明细）。 */
+export interface WebScrapeTask {
+  id: string;
+  created_at: string;
+  updated_at?: string | null;
+  profile_id?: string | null;
+  profile_name?: string | null;
+  /** 抓取网站的配置快照 */
+  site_url?: string | null;
+  /** pending=待确认 / confirmed=已确认并触发流水线 */
+  status: string;
+  confirm_time?: string | null;
+  confirm_profile?: string | null;
+  items: WebScrapeItem[];
+  total: number;
+  ok_count: number;
+  confirmed_count: number;
+}
+
+/** 单项预览内容（网页正文全文 / 附件元信息）。 */
+export interface WebScrapePreviewResponse {
+  url: string;
+  kind: string;
+  title: string;
+  filename?: string | null;
+  content?: string | null;
+  size?: number | null;
+}
+
+/**
+ * 第一步：选配置 + URL 列表 → 抓取生成「待确认任务」（不登记 manifest、不入库）。
+ *
+ * 配置方案必填：其「抓取网站 URL」字段决定本批可抓取的网站（同域名白名单）；
+ * 网页正文转 Markdown、附件文件下载，都先落在后端临时区，确认后才入库。
+ */
+export const runWebScrape = (
+  profileId: string,
+  urls: string[]
+): Promise<{ task: WebScrapeTask; error: string | null }> =>
+  http<{ task: WebScrapeTask; error: string | null }>("/webscrape/run", {
+    method: "POST",
+    body: JSON.stringify({ profile_id: profileId, urls }),
+  });
+
+/** 任务历史列表（不含 items 明细）。 */
+export interface WebScrapeTaskListItem extends Omit<WebScrapeTask, "items"> {
+  total: number;
+  ok_count: number;
+  confirmed_count: number;
+}
+
+export const listWebScrapeTasks = (limit = 20) =>
+  http<{ total: number; tasks: WebScrapeTaskListItem[] }>(
+    `/webscrape/tasks?limit=${limit}`
+  );
+
+/** 任务详情（含逐项状态，供预览页渲染）。 */
+export const getWebScrapeTask = (taskId: string) =>
+  http<WebScrapeTask>(`/webscrape/task/${encodeURIComponent(taskId)}`);
+
+/** 预览任务中某一项（网页正文返回 Markdown 全文；附件返回文件信息）。 */
+export const previewWebScrapeItem = (taskId: string, index: number) =>
+  http<WebScrapePreviewResponse>(
+    `/webscrape/task/${encodeURIComponent(taskId)}/preview/${index}`
+  );
+
+/**
+ * 第二步：人为确认勾选内容 + 选择确认入库用的配置。
+ * 后端把选中项落地（正文 → parsed/，附件 → pending/）并登记 manifest，
+ * 再走 parse(MinerU) → chunk → dify 流水线。
+ */
+export const confirmWebScrapeTask = (
+  taskId: string,
+  urls: string[],
+  profileId: string
+): Promise<{
+  task: WebScrapeTask;
+  landed: {
+    url: string;
+    kind: string;
+    stem?: string | null;
+    filename?: string | null;
+    ok: boolean;
+    error?: string | null;
+  }[];
+  pipeline: PipelineReport | null;
+  error: string | null;
+}> =>
+  http<{
+    task: WebScrapeTask;
+    landed: {
+      url: string;
+      kind: string;
+      stem?: string | null;
+      filename?: string | null;
+      ok: boolean;
+      error?: string | null;
+    }[];
+    pipeline: PipelineReport | null;
+    error: string | null;
+  }>(`/webscrape/task/${encodeURIComponent(taskId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ urls, profile_id: profileId }),
+  });
+
 // ============ §3.5 人工校验相关 ============
 
 export interface DifyDocumentItem {

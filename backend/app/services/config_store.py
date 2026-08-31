@@ -43,6 +43,13 @@ PROFILES_FILENAME = "profiles.json"
 # 前端在选择不同切分策略时，只显示与当前策略相关的配置项。
 PROFILE_FIELDS: List[Dict[str, Any]] = [
     {
+        "key": "webscrape_site_url",
+        "label": "抓取网站 URL",
+        "type": "str",
+        "default": "",
+        "description": "网站抓取时允许抓取的目标网站地址（同域名校验）；需先选择该配置，才能在网站抓取页抓取其内容",
+    },
+    {
         "key": "dify_dataset_id",
         "label": "知识库 ID",
         "type": "select_dataset",
