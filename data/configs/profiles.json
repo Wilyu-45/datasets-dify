@@ -36,10 +36,10 @@
       "name": "测试",
       "type": "webscrape",
       "created_at": "2026-08-31 13:44:59",
-      "updated_at": "2026-08-31 15:44:22",
+      "updated_at": "2026-09-01 10:00:50",
       "config": {
         "webscrape_urls": [
-          "https://www.chinanews.com.cn/"
+          "https://www.ja.gov.cn/public/6596411/25963936.html"
         ],
         "dify_dataset_id": "",
         "chunk_strategy": "structure",
@@ -62,7 +62,10 @@
         "llm_api_key": "",
         "llm_model": "",
         "chunk_embedding_api_url": "",
-        "chunk_embedding_api_key": ""
+        "chunk_embedding_api_key": "",
+        "webscrape_crawl_enabled": true,
+        "webscrape_crawl_depth": 2,
+        "webscrape_crawl_max_pages": 20
       }
     }
   ],

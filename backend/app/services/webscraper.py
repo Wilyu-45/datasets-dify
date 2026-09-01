@@ -476,8 +476,27 @@ class _LinkExtractor(HTMLParser):
             self.links.append(u)
 
 
+# ★ 附件 URL 兜底提取正则：匹配引号字符串里以 / 开头的站内路径或完整
+# http(s) URL、且扩展名是附件类型（供 JS 变量里挂附件的政府 CMS 站使用）。
+# 例：var wordDocPath = '/group2/M00/54/C3/wKg...doc';
+_ATTACH_URL_RE = re.compile(
+    r"[\"']((?:https?://[^\"'\s]+)?"
+    r"/[A-Za-z0-9_\-./%~]+\.(?:pdf|docx?|xlsx?|pptx?|csv|txt|md|rtf|wps|et|dps"
+    r"|zip|rar|7z|tar|gz|eml|msg))[\"']",
+    re.I,
+)
+
+
 def extract_page_links(html_text: str, base_url: str) -> List[str]:
-    """提取页面内可跟随的绝对链接（规范化 + 去重，保持出现顺序）。"""
+    """提取页面内可跟随的绝对链接（规范化 + 去重，保持出现顺序）。
+
+    两个来源：
+        1. <a href> 标签（常规）
+        2. ★ 引号字符串里的附件路径兜底：政府站 CMS 常把附件 URL 写在 JS
+           变量里（如 var wordDocPath = '/group2/.../xx.doc'），<a> 是
+           JS 动态生成的 —— httpx 静态 HTML 里没有 <a>，只有变量
+           （ja.gov.cn 抓取丢附件的原因之三）
+    """
     ex = _LinkExtractor(base_url)
     try:
         ex.feed(html_text)
@@ -491,6 +510,14 @@ def extract_page_links(html_text: str, base_url: str) -> List[str]:
         if nu and nu not in seen:
             seen.add(nu)
             out.append(nu)
+    # 附件路径兜底：以 / 开头的站内路径或完整 http(s) URL，扩展名为附件类型
+    for m in _ATTACH_URL_RE.finditer(html_text):
+        raw = m.group(1)
+        absu = raw if raw.startswith(("http://", "https://")) else _abs_url(raw, base_url)
+        nu = _normalize_url(absu)
+        if nu and nu not in seen and is_attachment_url(nu):
+            seen.add(nu)
+            out.append(nu)
     return out
 
 
@@ -498,8 +525,12 @@ def _site_scope_ok(link: str, seed: str) -> bool:
     """递归范围：仅跟随与种子 URL 同站的链接。
 
     - www 前缀视为同站（www.example.com == example.com）
-    - 种子带栏目路径（如 http://a.gov.cn/zcwjk/）时，限定只抓该栏目子目录，
-      防止从首页递归窜到整站
+    - ★ 附件链接（.pdf/.docx 等扩展名）不受栏目前缀限制：政府站附件常放在
+      /group2/ 之类静态资源目录，与页面路径无关，必须放行
+    - 栏目前缀限制仅在种子是显式目录（路径以 / 结尾，如 http://a.gov.cn/zcwjk/）
+      时生效；具体页面做种子（如 /public/xxx/123.html）时同站链接均可跟随。
+      ★ 2026-08-31 修复：此前把种子整条路径一律当栏目前缀，文章页做种子时
+      连页面里挂的附件都被拦掉（ja.gov.cn 抓取丢附件的原因）
     """
     try:
         l, s = urlparse(link), urlparse(seed)
@@ -509,9 +540,12 @@ def _site_scope_ok(link: str, seed: str) -> bool:
         return False
     if l.netloc.lower().removeprefix("www.") != s.netloc.lower().removeprefix("www."):
         return False
-    prefix = (s.path or "/").rstrip("/")
-    if prefix and not (l.path or "/").startswith(prefix + "/"):
-        return False
+    if is_attachment_url(link):
+        return True
+    if (s.path or "/").endswith("/"):
+        prefix = s.path.rstrip("/")
+        if prefix and not (l.path or "/").startswith(prefix + "/"):
+            return False
     return True
 
 
@@ -877,7 +911,12 @@ def create_task(
                 )
                 # ★ 递归扩展：从本页提取同站链接，未超深度即入队
                 #   （网页/附件在出队时按 URL 分类处理，附件下载后不再扩展）
+                #   ★ 附件插队首：页面挂的关联文件（正文附件）比栏目导航更接近
+                #     用户要的内容 —— 政府站附件链接常排在页尾导航之后，
+                #     按普通顺序排队会因页数上限被挤掉（ja.gov.cn 丢附件的原因之二）
                 if crawl["enabled"] and depth < crawl["depth"]:
+                    sub_pages: List[Tuple[str, int, str, bool]] = []
+                    sub_atts: List[Tuple[str, int, str, bool]] = []
                     for link in extract_page_links(html_text, final_url):
                         if link in enqueued:
                             continue
@@ -886,7 +925,10 @@ def create_task(
                         if not _site_scope_ok(link, seed):
                             continue
                         enqueued.add(link)
-                        queue.append((link, depth + 1, seed, False))
+                        entry = (link, depth + 1, seed, False)
+                        (sub_atts if is_attachment_url(link) else sub_pages).append(entry)
+                    queue.extendleft(reversed(sub_atts))
+                    queue.extend(sub_pages)
         except (httpx.HTTPError, ValueError, OSError) as e:
             item["error"] = str(e)
             log.warning("webscrape 抓取失败: url=%s err=%s", url, e,

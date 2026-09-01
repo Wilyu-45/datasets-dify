@@ -35,6 +35,8 @@ data/manual_fix/*
 data/logs/*
 !data/logs/.gitkeep
 data/manifest.xlsx
+data/webscrape/*
+data/configs/*
 
 # 环境
 backend/.env
