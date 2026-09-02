@@ -1,20 +1,26 @@
 /**
- * 网站抓取页面（2026-08 新增：知识库内容外延，两步式确认）。
+ * 网站抓取页面（2026-08 新增：知识库内容外延，三步式确认）。
  *
  * 流程：
  *   ① 选择「网站抓取配置」（其「抓取网站 URL 列表」webscrape_urls 即抓取来源）
  *   ② 确认抓取来源并开始抓取：网页正文转 Markdown、附件文件下载，
  *      生成「待确认任务」（此阶段不入库）
- *   ③ 预览内容（正文渲染 / 附件信息）→ 行上「入库」按钮 →
- *      再次选择配置 + 目标知识库 → 走 parse(MinerU) → 切分 → Dify 入库
+ *   ③ 行上「确认下载」→ 再次选择配置 + 目标知识库 → 只把该项落地到 pending/
+ *      （网页正文 → 渲染 PDF、附件 → 原文件），不触发流水线
+ *   ④ 下载完成后自动打开「文件预览」：直接预览下载到的真实文件
+ *      （PDF/HTML/图片/txt/md 直接看；Word/Excel/PPT/CSV 在线预览；
+ *       旧版 Office/压缩包给文件信息 + 下载自查）→ 预览处点「确定并解析入库」
+ *      → 仅对当前这一项走 parse(MinerU) → 切分 → Dify 入库
  *
  * ★ 2026-08-31 两套配置：URL 来自配置本身（不再手动输入）；
  *   只有「网站抓取配置」能在此页用于抓取；
- *   网站抓取配置不含知识库 ID：确认入库时每次选择目标知识库（可入不同库），
+ *   网站抓取配置不含知识库 ID：确认下载时每次选择目标知识库（可入不同库），
  *   同一抓取任务可分多批确认，分别入到不同知识库。
+ * ★ 2026-09-02 「确认下载 → 文件预览 → 确定入库」两段式：下载后的真实文件可
+ *   先预览核对（参考网页版 Office 的在线预览），预览处点确定才解析入库。
  *
  * 布局：顶部配置选择；左侧配置信息；右侧任务表格 + 预览抽屉；
- *       底部历史任务列表。
+ *       底部历史任务列表 + 入库台账。
  */
 import {
   Alert,
@@ -47,9 +53,7 @@ import {
   previewWebScrapeItem,
   runWebScrape,
   type ConfigProfile,
-  type DifyActionRecord,
   type DifyDatasetItem,
-  type PipelineReport,
   type WebScrapeItem,
   type WebScrapePreviewResponse,
   type WebScrapeRecordItem,
@@ -57,6 +61,7 @@ import {
   type WebScrapeTaskListItem,
 } from "../api/client";
 import MarkdownPreview from "../components/MarkdownPreview";
+import WebScrapeFilePreview from "../components/WebScrapeFilePreview";
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -70,6 +75,13 @@ const STATUS_COLOR: Record<string, string> = {
   confirmed: "green",
   done: "green",
   cancelled: "default",
+};
+
+/** 逐项入库状态展示（downloaded=已下载待预览确认 / ok=已入库 / error=失败） */
+const INGEST_STATUS_META: Record<string, { color: string; label: string }> = {
+  downloaded: { color: "blue", label: "已下载" },
+  ok: { color: "green", label: "已入库" },
+  error: { color: "red", label: "入库失败" },
 };
 
 export default function WebScrapePage({ onOpenConfig }: Props) {
@@ -89,7 +101,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   const [previewIdx, setPreviewIdx] = useState<number>(-1);
   const [preview, setPreview] = useState<WebScrapePreviewResponse | null>(null);
 
-  // ---- 确认入库 ----
+  // ---- 确认下载（第 1 步）----
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmProfileId, setConfirmProfileId] = useState<string>();
   // ★ 2026-08-31 目标知识库：每次确认时选择（网站抓取配置不含知识库 ID，可入不同库）
@@ -98,10 +110,10 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   const [datasetsLoading, setDatasetsLoading] = useState(false);
   const [datasetsError, setDatasetsError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [confirmResult, setConfirmResult] = useState<{
-    pipeline: PipelineReport | null;
-    error: string | null;
-  } | null>(null);
+
+  // ---- 下载后文件预览（第 2 步：预览处点「确定」→ 逐项入库）----
+  const [fileOpen, setFileOpen] = useState(false);
+  const [fileIdx, setFileIdx] = useState<number>(-1);
 
   // ---- 历史任务 ----
   const [historyTasks, setHistoryTasks] = useState<WebScrapeTaskListItem[]>([]);
@@ -146,7 +158,6 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   const crawlMaxPages =
     Number(selectedProfile?.config.webscrape_crawl_max_pages ?? 20) || 20;
   const crawlPageLimit = Math.max(crawlMaxPages, profileUrls.length);
-  const selectedSiteLabel = selectedProfile ? selectedProfile.name : "";
 
   const profileOptions = profiles.map((p) => {
     const urls = Array.isArray(p.config.webscrape_urls)
@@ -158,7 +169,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
     };
   });
 
-  // 加载 Dify 知识库列表（确认入库时选择目标知识库用）
+  // 加载 Dify 知识库列表（确认下载时选择目标知识库用）
   const loadDatasets = () => {
     setDatasetsLoading(true);
     setDatasetsError(null);
@@ -188,8 +199,8 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
   const handleRun = async () => {
     if (!selectedProfileId) return;
     setRunning(true);
-    setConfirmResult(null);
     setSelectedUrls([]);
+    setFileOpen(false);
     try {
       const r = await runWebScrape(selectedProfileId);
       if (r.error) {
@@ -205,7 +216,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
     }
   };
 
-  // ---- 预览 ----
+  // ---- 预览（确认下载前的抓取内容预览：正文 Markdown / 附件元信息）----
   const handlePreview = async (index: number) => {
     if (!task) return;
     setPreviewIdx(index);
@@ -226,18 +237,19 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
     }
   };
 
-  // ---- 单行入库（★ 按钮直接放行上，逐项决定是否入库）----
-  const handleRowIngest = (url: string) => {
+  // ---- 单行确认下载（★ 第 1 步：确认并落地，不触发流水线）----
+  const handleRowConfirm = (url: string, index: number) => {
     setSelectedUrls([url]);
     setConfirmProfileId(selectedProfileId);
-    setConfirmDatasetId(undefined); // 每次入库重新选目标知识库，避免误入上个库
-    setConfirmResult(null);
+    setConfirmDatasetId(undefined); // 每次确认重新选目标知识库，避免误入上个库
+    setFileOpen(false);
+    setFileIdx(index);
     // 打开弹窗即重拉知识库列表：页面加载时后端若在重启会导致下拉为空，这里自愈
     loadDatasets();
     setConfirmOpen(true);
   };
 
-  // ---- 确认入库 ----
+  // ---- 确认下载提交（成功后自动打开该文件的「文件预览」抽屉）----
   const handleConfirmSubmit = async () => {
     if (!task || !confirmProfileId || !confirmDatasetId || selectedUrls.length === 0) return;
     setConfirming(true);
@@ -248,19 +260,36 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         confirmProfileId,
         confirmDatasetId
       );
-      setConfirmResult({ pipeline: r.pipeline, error: r.error });
       setTask(r.task);
-      setSelectedUrls([]); // 行级入库：完成后清空，避免残留到下次弹窗
+      setSelectedUrls([]); // 行级确认：完成后清空，避免残留到下次弹窗
       setConfirmOpen(false);
       refreshHistory();
       refreshRecords();
+      const landedOk = r.landed.some((l) => l.ok);
+      if (r.error) {
+        Modal.warning({ title: "部分内容下载未完成", content: r.error });
+      }
+      if (landedOk && fileIdx >= 0) {
+        // 下载成功后进入第 2 步：打开该文件的预览，点「确定」才入库
+        setFileOpen(true);
+      }
     } catch (e) {
-      Modal.error({ title: "确认入库失败", content: String(e) });
+      Modal.error({ title: "确认下载失败", content: String(e) });
       setConfirmOpen(false);
     } finally {
       setConfirming(false);
     }
   };
+
+  /** 打开「文件预览」抽屉（confirm 下载后 / 查看已入库文件的落地文件） */
+  const openFilePreview = (index: number) => {
+    setFileIdx(index);
+    setFileOpen(true);
+  };
+
+  // 文件预览抽屉当前条目（从最新 task 派生：入库完成后行状态会自动刷新）
+  const fileItem: WebScrapeItem | null =
+    fileIdx >= 0 && task ? (task.items[fileIdx] ?? null) : null;
 
   // ---- 表格 ----
   const columns: ColumnsType<WebScrapeItem> = [
@@ -322,15 +351,24 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
     {
       title: "状态",
       key: "status",
-      width: 100,
+      width: 120,
       render: (_, it) => {
-        if (it.confirmed)
-          return it.ingest_status === "ok" ? (
-            <Tag color="green">已入库</Tag>
-          ) : (
-            <Tag color="red">入库失败</Tag>
-          );
-        return it.ok ? <Tag>待确认</Tag> : <Tag color="red">失败</Tag>;
+        if (!it.ok) return <Tag color="red">失败</Tag>;
+        if (!it.confirmed) return <Tag>待确认下载</Tag>;
+        const meta = INGEST_STATUS_META[it.ingest_status ?? ""] ?? { color: "blue", label: "已确认" };
+        return (
+          <Tooltip
+            title={
+              it.ingest_status === "downloaded"
+                ? "文件已下载，请点「预览文件」确认内容后点确定入库"
+                : it.ingest_status === "error"
+                  ? it.ingest_error ?? "入库失败，可重新解析"
+                  : undefined
+            }
+          >
+            <Tag color={meta.color}>{meta.label}</Tag>
+          </Tooltip>
+        );
       },
     },
     {
@@ -344,7 +382,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
       },
     },
     {
-      // ★ 2026-08-31 溯源：确认入库后显示入到哪个知识库
+      // ★ 2026-08-31 溯源：确认下载后显示入到哪个知识库
       title: "入库知识库",
       key: "dataset",
       width: 120,
@@ -360,35 +398,35 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
     {
       title: "操作",
       key: "action",
-      width: 140,
+      width: 180,
       render: (_, it, idx) =>
         it.ok && (
-          <Space size={0}>
-            <Button
-              type="link"
-              size="small"
-              onClick={() => handlePreview(idx)}
-            >
-              {it.kind === "attachment" ? "详情" : "预览"}
-            </Button>
-            {/* ★ 2026-08-31 入库按钮直接放行上（不再走底部批量按钮） */}
-            {task?.status === "pending" && !it.confirmed && (
-              <Button
-                type="link"
-                size="small"
-                disabled={confirming}
-                onClick={() => handleRowIngest(it.url)}
-              >
-                入库
+          <Space size={0} wrap>
+            {it.confirmed ? (
+              // 已确认下载 → 预览下载后的真实文件（下载阶段按钮在文件预览里点确定入库）
+              <Button type="link" size="small" onClick={() => openFilePreview(idx)}>
+                预览文件
               </Button>
+            ) : (
+              <>
+                <Button type="link" size="small" onClick={() => handlePreview(idx)}>
+                  {it.kind === "attachment" ? "详情" : "预览"}
+                </Button>
+                {/* ★ 2026-09-02 第 1 步：确认下载（落地 pending/，不触发流水线） */}
+                <Button
+                  type="link"
+                  size="small"
+                  disabled={confirming}
+                  onClick={() => handleRowConfirm(it.url, idx)}
+                >
+                  确认下载
+                </Button>
+              </>
             )}
           </Space>
         ),
     },
   ];
-
-  const difyActions: DifyActionRecord[] | null =
-    confirmResult?.pipeline?.dify?.actions ?? null;
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -398,8 +436,10 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         </Title>
         <Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
           知识库内容外延：先选<strong>网站抓取配置</strong>（其「抓取网站 URL 列表」
-          即抓取来源，无需手动输入），一键抓取正文 / 下载附件 → 在预览页确认内容
-          确实是需要的 → 选择配置后确认入库，走
+          即抓取来源，无需手动输入），一键抓取正文 / 下载附件 →{" "}
+          <strong>行上「确认下载」</strong>落地到待处理区 →{" "}
+          <strong>自动打开下载文件的预览</strong>（PDF/Word/Excel/PPT 等直接在线看）→{" "}
+          <strong>预览处点「确定并解析入库」</strong>，对该项走
           <code>① MinerU 解析</code> → <code>② 切分</code> →{" "}
           <code>③ 入库</code> 流水线。
         </Paragraph>
@@ -427,10 +467,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                 style={{ minWidth: 360 }}
                 placeholder="请选择网站抓取配置"
                 value={selectedProfileId}
-                onChange={(v) => {
-                  setSelectedProfileId(v);
-                  setConfirmResult(null);
-                }}
+                onChange={(v) => setSelectedProfileId(v)}
                 options={profileOptions}
                 optionRender={(o) => (
                   <Space direction="vertical" size={0}>
@@ -506,7 +543,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                       ? `站内递归抓取已开启：沿页面链接递归 ${crawlDepth} 层，单次最多约 ${crawlPageLimit} 页`
                       : "站内递归抓取未开启：只抓取上方 URL 列表本身"
                   }
-                  description={`网页正文确认时渲染为 PDF、附件链接下载原文件，统一由 MinerU 解析后切分入库。${
+                  description={`网页正文确认下载时渲染为 PDF、附件链接下载原文件，统一由 MinerU 解析后切分入库。${
                     crawlEnabled
                       ? "递归仅跟随同站链接（同域名；URL 带栏目路径时限同栏目），发现的子页面与附件一并进入待确认列表。"
                       : "如需抓取子页面，请到配置中心开启「站内递归抓取」。"
@@ -528,15 +565,15 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
           </Card>
         </Col>
 
-        {/* ③ 任务表格：预览 + 勾选确认 */}
+        {/* ③ 任务表格：预览 → 确认下载 → 文件预览确定入库 */}
         <Col xs={24} lg={14}>
           <Card
             size="small"
-            title="③ 预览并确认内容"
+            title="③ 预览 → 确认下载 → 文件预览入库"
             extra={
               task ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  抓取成功 {task.ok_count}/{task.total}，已确认 {task.confirmed_count}
+                  抓取成功 {task.ok_count}/{task.total}，已确认下载 {task.confirmed_count}
                 </Text>
               ) : undefined
             }
@@ -547,9 +584,10 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
                 {task.status !== "pending" && (
                   <Alert
-                    type="warning"
+                    type="info"
                     showIcon
-                    message={`任务已确认（${task.confirm_profile ?? ""} @ ${task.confirm_time ?? ""}），如需补充内容请新建抓取任务`}
+                    message={`任务已确认下载（${task.confirm_profile ?? ""} @ ${task.confirm_time ?? ""}）`}
+                    description="每项内容下载后请在「预览文件」中确认文件无误，点右下角「确定并解析入库」才会真正走解析 → 切分 → Dify 入库。"
                   />
                 )}
                 <Table
@@ -560,52 +598,16 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                   pagination={task.total > 10 ? { pageSize: 10 } : false}
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  每行点「入库」把该项内容入到所选知识库；同一任务的不同行可入不同知识库
+                  每行先点「确认下载」落地文件 → 自动打开该文件的预览，确认内容后点「确定并解析入库」；
+                  同一任务的不同行可确认入到不同知识库。
                 </Text>
-
-                {/* 确认后的流水线报告 */}
-                {confirmResult && (
-                  <Alert
-                    type={confirmResult.error ? "error" : "success"}
-                    showIcon
-                    message="入库流程已执行"
-                    description={
-                      <Space direction="vertical" size={4}>
-                        {confirmResult.error && <span>流水线失败：{confirmResult.error}</span>}
-                        {confirmResult.pipeline && (
-                          <span>
-                            解析 {confirmResult.pipeline.parse?.parsed ?? confirmResult.pipeline.parse?.skipped_done ?? 0} 篇，
-                            切分 {confirmResult.pipeline.chunk?.chunked ?? 0} 篇，
-                            入库 {confirmResult.pipeline.dify?.uploaded ?? 0} 篇，
-                            状态{" "}
-                            <Tag color={confirmResult.pipeline.status === "ok" ? "green" : "orange"}>
-                              {confirmResult.pipeline.status}
-                            </Tag>
-                            （耗时 {(confirmResult.pipeline.duration_ms / 1000).toFixed(1)}s）
-                          </span>
-                        )}
-                        {difyActions && difyActions.length > 0 && (
-                          <span>
-                            {difyActions.map((a, i) => (
-                              <Text key={i} style={{ fontSize: 12, display: "block" }}>
-                                {a.stem}：{a.action === "uploaded" ? "已入库" : a.action}
-                                {a.dify_doc_id ? `（${a.dify_doc_id}）` : ""}
-                                {a.error ? ` - ${a.error}` : ""}
-                              </Text>
-                            ))}
-                          </span>
-                        )}
-                      </Space>
-                    }
-                  />
-                )}
               </Space>
             )}
           </Card>
         </Col>
       </Row>
 
-      {/* ④ 预览抽屉 */}
+      {/* ④ 预览抽屉（确认下载前的抓取内容预览） */}
       <Drawer
         title={preview ? (preview.kind === "attachment" ? `附件：${preview.filename ?? ""}` : `预览：${preview.title}`) : "预览"}
         width={720}
@@ -623,7 +625,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                 <Text copyable>{preview.url}</Text>
               </Descriptions.Item>
               <Descriptions.Item label="说明">
-                附件将在确认后下载到待处理区，由 MinerU 解析后切分入库
+                附件将在确认下载后进入待处理区，可先在线预览下载到的原文件，再点确定入库（由 MinerU 解析后切分入库）
               </Descriptions.Item>
             </Descriptions>
           )}
@@ -644,13 +646,13 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         </Spin>
       </Drawer>
 
-      {/* ⑤ 确认入库弹窗：再次选择配置 */}
+      {/* ⑤ 确认下载弹窗（第 1 步）：再次选择配置 + 目标知识库，只落地不解析 */}
       <Modal
-        title="确认入库"
+        title="确认下载（第 1 步 / 共 2 步）"
         open={confirmOpen}
         onCancel={() => setConfirmOpen(false)}
         onOk={handleConfirmSubmit}
-        okText="确认并入库"
+        okText="确认并下载"
         cancelText="取消"
         confirmLoading={confirming}
         okButtonProps={{ disabled: !confirmProfileId || !confirmDatasetId }}
@@ -659,8 +661,8 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
           <Alert
             type="info"
             showIcon
-            message={`本次将入库 ${selectedUrls.length} 项内容`}
-            description="确认后将把该项内容落地并触发流水线：网页渲染为 PDF、附件保留原文件，统一由 MinerU 解析 → 切分 → Dify 入库（此操作不可撤销）。"
+            message={`本次将确认下载 ${selectedUrls.length} 项内容`}
+            description="确认后先把文件落地到待处理区（网页正文渲染为 PDF、附件保留原文件），并自动打开该文件的预览。文件预览核对无误后，点「确定并解析入库」才执行 MinerU 解析 → 切分 → Dify 入库。"
           />
           <div>
             <Text strong>选择入库使用的配置方案（仅网站抓取配置，决定切分参数）：</Text>
@@ -705,7 +707,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                 </Button>
               </Space.Compact>
               <Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 4 }}>
-                同一抓取任务可分多批确认：每批勾选部分内容 → 选一个知识库 → 确认；
+                同一抓取任务可分多批确认：每批勾选部分内容 → 选一个知识库 → 确认下载；
                 下一批换一个知识库即可入到不同库。
               </Text>
               {datasetsError && (
@@ -721,7 +723,21 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         </Space>
       </Modal>
 
-      {/* ⑥ 历史任务 */}
+      {/* ⑥ 下载后文件预览抽屉（第 2 步：预览点确定 → 逐项解析入库） */}
+      <WebScrapeFilePreview
+        taskId={task?.id ?? ""}
+        item={fileItem}
+        index={fileIdx}
+        open={fileOpen}
+        onClose={() => setFileOpen(false)}
+        onTaskUpdated={(tk) => {
+          setTask(tk);
+          refreshHistory();
+          refreshRecords();
+        }}
+      />
+
+      {/* ⑦ 历史任务 */}
       <Card size="small" title="历史抓取任务">
         <Table
           size="small"
@@ -750,7 +766,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
             {
               title: "状态",
               dataIndex: "status",
-              width: 100,
+              width: 110,
               render: (s: string) => <Tag color={STATUS_COLOR[s] ?? "default"}>{statusLabel(s)}</Tag>,
             },
             {
@@ -759,7 +775,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
               width: 160,
               render: (_, t) => (
                 <Text style={{ fontSize: 12 }}>
-                  成功 {t.ok_count}/{t.total}，确认 {t.confirmed_count}
+                  成功 {t.ok_count}/{t.total}，确认下载 {t.confirmed_count}
                 </Text>
               ),
             },
@@ -778,7 +794,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                       .then((tk) => {
                         setTask(tk);
                         setSelectedUrls([]);
-                        setConfirmResult(null);
+                        setFileOpen(false);
                       })
                       .finally(() => setTaskLoading(false));
                   }}
@@ -791,7 +807,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         />
       </Card>
 
-      {/* ⑦ 入库台账：每条入库内容在 webscrape_records 表里的记录（独立于文档上传的 manifest） */}
+      {/* ⑧ 入库台账：每条入库内容在 webscrape_records 表里的记录（独立于文档上传的 manifest） */}
       <Card
         size="small"
         title="入库记录（webscrape_records 表）"
@@ -806,7 +822,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
           rowKey="id"
           pagination={records.length > 10 ? { pageSize: 10 } : false}
           dataSource={records}
-          locale={{ emptyText: "暂无入库记录：行上点「入库」并确认后，每条内容会在此留档" }}
+          locale={{ emptyText: "暂无入库记录：行上点「确认下载」→ 文件预览中点「确定并解析入库」后，每条内容会在此留档" }}
           columns={[
             { title: "入库时间", dataIndex: "created_at", width: 150 },
             {
@@ -862,7 +878,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
               width: 90,
               render: (s: string) => {
                 const map: Record<string, [string, string]> = {
-                  landed: ["default", "已落地"],
+                  landed: ["default", "已下载"],
                   parsed: ["gold", "已解析"],
                   ingested: ["green", "已入库"],
                   error: ["red", "失败"],
@@ -909,7 +925,7 @@ function statusLabel(s: string): string {
     case "pending":
       return "待确认";
     case "confirmed":
-      return "已确认";
+      return "已确认下载";
     case "done":
       return "已完成";
     case "cancelled":

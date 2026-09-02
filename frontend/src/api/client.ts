@@ -610,7 +610,7 @@ export interface WebScrapeItem {
   depth?: number | null;
   /** content：页面标题；attachment：文件名 stem */
   title: string;
-  /** attachment：原始文件名 */
+  /** attachment：原始文件名；confirm 下载后=落地文件名（content 为 pdf/html） */
   filename?: string | null;
   /** 相对 data/webscrape/{task_id}/ 的路径 */
   rel_path?: string | null;
@@ -620,15 +620,19 @@ export interface WebScrapeItem {
   size?: number | null;
   /** 正文是否超长截断 */
   truncated?: boolean;
-  /** 是否已确认（confirm 后回填） */
+  /** 是否已确认下载（confirm 后回填 true） */
   confirmed?: boolean;
-  /** confirm 后：ok / error */
+  /** 入库状态：downloaded=已下载待预览确认 / ok=已入库 / error=失败 */
   ingest_status?: string | null;
   ingest_error?: string | null;
   /** confirm 后：入库的目标知识库 ID（每次确认时选择，可入不同库） */
   dataset_id?: string | null;
   /** confirm 后：目标知识库名称（溯源展示用） */
   dataset_name?: string | null;
+  /** confirm 后：确认下载时选择的配置方案 ID（ingest 阶段据此执行） */
+  confirm_profile_id?: string | null;
+  /** confirm 下载后：落地文件的 stem（流水线/记录回填用） */
+  stem?: string | null;
   /** 抓取失败原因 */
   error?: string | null;
 }
@@ -644,7 +648,7 @@ export interface WebScrapeTask {
   site_url?: string | null;
   /** 抓取来源 URL 列表（由 site_url 快照解析） */
   urls?: string[];
-  /** pending=待确认 / confirmed=已确认并触发流水线 */
+  /** pending=待确认下载 / confirmed=已确认下载（逐项预览确定后入库） */
   status: string;
   confirm_time?: string | null;
   confirm_profile?: string | null;
@@ -732,19 +736,15 @@ export const previewWebScrapeItem = (taskId: string, index: number) =>
   );
 
 /**
- * 第二步：人为确认勾选内容 + 选择确认入库用的配置 + 目标知识库。
- * 后端把选中项落地（正文 → parsed/，附件 → pending/）并登记 manifest，
- * 再走 parse(MinerU) → chunk → dify 流水线（本次内容入到 datasetId 指定的知识库）。
+ * 第二步(1/2)：确认下载 —— 人为确认勾选内容 + 选择确认入库用的配置 + 目标知识库。
+ * 后端把选中项落地到 pending/（正文 → 渲染 PDF/HTML，附件 → 原文件）并登记
+ * manifest（parse 列留空）。★ 只下载不跑流水线：下载完成后前端自动打开该文件的
+ * 「文件预览」，点「确定」调 ingestWebScrapeItem 才走解析-切分-入库。
  *
  * ★ 2026-08-31：网站抓取配置不含知识库 ID；同一抓取任务可分多批确认，
  * 每批选不同目标知识库，即可把内容入到不同的知识库。
  */
-export const confirmWebScrapeTask = (
-  taskId: string,
-  urls: string[],
-  profileId: string,
-  datasetId: string
-): Promise<{
+export interface WebScrapeConfirmResponse {
   task: WebScrapeTask;
   landed: {
     url: string;
@@ -754,25 +754,91 @@ export const confirmWebScrapeTask = (
     ok: boolean;
     error?: string | null;
   }[];
-  pipeline: PipelineReport | null;
   error: string | null;
-}> =>
-  http<{
-    task: WebScrapeTask;
-    landed: {
-      url: string;
-      kind: string;
-      stem?: string | null;
-      filename?: string | null;
-      ok: boolean;
-      error?: string | null;
-    }[];
-    pipeline: PipelineReport | null;
-    error: string | null;
-  }>(`/webscrape/task/${encodeURIComponent(taskId)}/confirm`, {
+}
+
+export const confirmWebScrapeTask = (
+  taskId: string,
+  urls: string[],
+  profileId: string,
+  datasetId: string
+): Promise<WebScrapeConfirmResponse> =>
+  http<WebScrapeConfirmResponse>(`/webscrape/task/${encodeURIComponent(taskId)}/confirm`, {
     method: "POST",
     body: JSON.stringify({ urls, profile_id: profileId, dataset_id: datasetId }),
   });
+
+/** 文件预览处点「确定」后的单个 URL 入库结果。 */
+export interface WebScrapeIngestItemResult {
+  url: string;
+  stem?: string | null;
+  ok: boolean;
+  error?: string | null;
+  /** ok / error */
+  status: string;
+  parse?: string | null;
+  dify_doc_id?: string | null;
+}
+
+/** 入库响应：任务（逐项状态已刷新）+ 每项流水线产物与结果。 */
+export interface WebScrapeIngestResponse {
+  task: WebScrapeTask;
+  results: WebScrapeIngestItemResult[];
+  error: string | null;
+}
+
+/**
+ * 第二步(2/2)：在文件预览面板点「确定」→ 仅对传入 URL（当前预览项）走
+ * parse(MinerU) → chunk → dify 流水线（使用 confirm 时记录的目标知识库与配置）。
+ */
+export const ingestWebScrapeItem = (
+  taskId: string,
+  urls: string[]
+): Promise<WebScrapeIngestResponse> =>
+  http<WebScrapeIngestResponse>(`/webscrape/task/${encodeURIComponent(taskId)}/ingest`, {
+    method: "POST",
+    body: JSON.stringify({ urls }),
+  });
+
+/**
+ * 落地原文件流地址（下载后的真实文件）。
+ * 用途：PDF/HTML/图片 iframe 预览、office 原文件下载、md/txt 文本读取。
+ * 说明：该接口要求该项已完成「确认下载」（confirm 后）。
+ */
+export const webScrapeFileUrl = (taskId: string, index: number) =>
+  `${BASE}/webscrape/task/${encodeURIComponent(taskId)}/file/${index}`;
+
+/** Office（Word/Excel/PPT/CSV）在线预览 HTML 地址（后端轻量转换，iframe 展示）。 */
+export const webScrapeOfficeUrl = (taskId: string, index: number) =>
+  `${BASE}/webscrape/task/${encodeURIComponent(taskId)}/office-preview/${index}`;
+
+/** 拉取后端返回的纯文本（md/txt 预览），自动按 UTF-8 解码。 */
+export const fetchWebScrapeText = async (taskId: string, index: number): Promise<string> => {
+  const res = await fetch(webScrapeFileUrl(taskId, index));
+  if (!res.ok) throw new Error(`读取文件内容失败（HTTP ${res.status}）`);
+  return res.text();
+};
+
+/** 按文件名判定预览方式（与后端 file_preview.preview_kind 一致）。 */
+export const webScrapePreviewKind = (filename?: string | null): string => {
+  const name = filename || "";
+  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+  const image = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
+  const html = [".html", ".htm"];
+  const text = [".txt"];
+  const officeWeb = [".docx", ".xlsx", ".xlsm", ".pptx", ".csv"];
+  const legacy = [".doc", ".xls", ".ppt"];
+  const archive = [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"];
+  if (ext === ".pdf") return "pdf";
+  if (image.includes(ext)) return "image";
+  if (html.includes(ext)) return "html";
+  if (ext === ".md" || ext === ".markdown") return "markdown";
+  if (text.includes(ext)) return "text";
+  if (officeWeb.includes(ext)) return ext === ".csv" ? "csv" : "office";
+  if (legacy.includes(ext)) return "legacy";
+  if (archive.includes(ext)) return "archive";
+  return "other";
+};
 
 // ============ §3.5 人工校验相关 ============
 

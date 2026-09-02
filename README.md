@@ -78,12 +78,15 @@
 - **处理配置记录**：每次实际触发处理（单文件 / 批量上传入库、重跑入库、`/api/pipeline/run`）时，把**运行时实际生效**的配置快照（在应用配置方案的处理期间抓取，即 chunker / Dify 入库真正读到的值）写入 PostgreSQL `process_config_log` 表——包括本批目标文件清单（`target_stems`）、实际写入的知识库 ID（`dataset_id` 独立列）、实际使用的切分策略（`chunk_strategy` 独立列）、全部配置项（JSONB）、结果状态与耗时。配置方案事后修改不影响已落库的快照；API Key 类字段（`llm_api_key` / `chunk_embedding_api_key`）落库前脱敏。前端配置中心「处理配置记录」卡片可按时间倒序查看每批文件及其配置（文件数悬停可见完整清单），后端提供 `GET /api/config/run-logs?limit=50` 查询。
 
 ### 3.7 网站抓取（WebScrape，2026-08 新增）
-知识库外延：从网站抓取内容入库。**两步式流程**——先抓取待确认，确认后才入库：
+知识库外延：从网站抓取内容入库。**三步式流程**——先抓取待确认，确认下载后才逐项文件预览入库（2026-09 拆分：确认只下载，预览点确定才解析）：
 
 1. **抓取**（`POST /api/webscrape/run`）：在「网站抓取」页选择**网站抓取配置** → 按配置的「抓取网站 URL 列表」抓取：网页正文转 Markdown（HTML 解析、编码自动识别、`<title>` 取标题），附件链接（Word / Excel / PPT / PDF / 压缩包等）自动下载，统一落 `data/webscrape/{task_id}/` 临时区；不登记 manifest、不触发流水线。**单 URL 失败只影响该项**，其余照常抓取。
-2. **确认**（`POST /api/webscrape/task/{id}/confirm`）：逐项预览（网页正文全文 / 附件文件信息），勾选需要的项 + 选择入库配置 + **选择目标知识库**（网站抓取内容可入不同知识库，故每次确认单独指定 dataset_id）→ 选中项落地（正文 → `parsed/`，附件 → `pending/`）并登记 manifest → 自动走 parse(MinerU) → chunk → Dify 入库流水线；未勾选项留在任务里。
+2. **确认下载**（`POST /api/webscrape/task/{id}/confirm`）：逐项预览（网页正文全文 / 附件文件信息），勾选需要的项 + 选择入库配置 + **选择目标知识库**（网站抓取内容可入不同知识库，故每次确认单独指定 dataset_id）→ 选中项落地到 `pending/`（正文 → 浏览器渲染 PDF/HTML；附件 → 原文件），登记 manifest（parse 列留空）与入库台账 webscrape_records（status=landed）——**只下载，不触发流水线**；未勾选项留在任务里。
+3. **文件预览确定后入库**（`POST /api/webscrape/task/{id}/ingest`）：确认下载后前端自动打开该项「文件预览」抽屉，直接预览**下载到的真实文件**——PDF / HTML / 图片 / txt / md 在线直读，Word（docx）/ Excel（xlsx）/ PPT（pptx）/ CSV 由后端轻量转换为 HTML 在线预览（参考网页版 Office），旧版 Office / 压缩包展示文件信息并支持下载自查；在预览处点「确定并解析入库」→ 仅对**当前这一项**走 parse(MinerU) → chunk → Dify 入库流水线，结果回填 webscrape_records 台账。
 
 任务历史 / 详情 / 预览：`GET /api/webscrape/tasks` · `GET /api/webscrape/task/{id}` · `GET /api/webscrape/task/{id}/preview/{idx}`。
+落地文件与在线预览：`GET /api/webscrape/task/{id}/file/{idx}`（原文件流：PDF/图片/清洗后 HTML/文本内联）· `GET /api/webscrape/task/{id}/office-preview/{idx}`（Office/CSV 转 HTML）。
+预览实现：`backend/app/services/file_preview.py`——docx/pptx 用 zip+xml 提取文本与表格、xlsx/csv 用 openpyxl/csv 渲染表格、第三方 HTML 清洗 script/on* 等危险内容；均为零新增依赖。
 
 **反爬兼容（2026-08-31 浏览器引擎）**：抓取优先走 httpx（带完整浏览器指纹：`Sec-Fetch-*`、`Upgrade-Insecure-Requests`、同源 `Referer` 等，412 间隔 1s 重试 1 次）；被 WAF 拦截（**412** JS 动态令牌挑战 / **403**）或源站回源故障（**502**）时，**自动降级 Playwright Chromium 浏览器内核**重新抓取——真实浏览器自动执行 JS 挑战并渲染，静态抓取不到的政府网站（如卫健委 www.nhc.gov.cn 的瑞数类 WAF）也可正常抓取；附件下载同样支持浏览器降级。实现要点：`browser_fetch.py` 自动探测并使用**完整 Chromium 内核**（瑞数类 WAF 会识别精简 headless shell 并卡死在 412，完整内核 + 隐藏 navigator.webdriver 才能通过挑战）；若浏览器也拿不到真实页面（如源站 502 故障）给出明确错误提示「网站源站当前不可用（502）」。部署依赖：`pip install playwright` 后执行一次 `python -m playwright install chromium`（约 150MB）。
 

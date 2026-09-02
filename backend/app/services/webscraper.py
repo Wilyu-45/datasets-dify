@@ -51,8 +51,8 @@ WEBSCRAPE_MAX_CHARS = 200_000                # 单页正文截断上限
 WEBSCRAPE_STEM_MAX_CHARS = 60                # 由标题生成的 stem 最大长度
 WEBSCRAPE_CRAWL_DELAY_SECONDS = 0.5          # 递归抓取页间礼貌间隔（降低对目标站压力）
 WEBSCRAPE_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 附件下载上限 50MB
-TASK_STATUS_PENDING = "pending"              # 已抓取、待确认
-TASK_STATUS_CONFIRMED = "confirmed"          # 已确认并触发流水线
+TASK_STATUS_PENDING = "pending"              # 已抓取、待确认下载
+TASK_STATUS_CONFIRMED = "confirmed"          # 已确认下载（2026-09 起：下载后逐项预览确认，由 ingest 入库）
 TASK_STATUS_DONE = "done"                    # 流水线完成（含部分失败）
 TASK_STATUS_CANCELLED = "cancelled"
 
@@ -952,7 +952,7 @@ def create_task(
         it.setdefault("size", None)
         it.setdefault("truncated", False)
         it.setdefault("confirmed", False)
-        it.setdefault("ingest_status", None)   # confirm 后：ok / error
+        it.setdefault("ingest_status", None)   # confirm 下载后：downloaded/ok/error（待预览确认→入库）
         it.setdefault("ingest_error", None)
 
     task = {
