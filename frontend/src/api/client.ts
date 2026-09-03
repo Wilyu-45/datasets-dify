@@ -826,8 +826,8 @@ export const webScrapePreviewKind = (filename?: string | null): string => {
   const image = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"];
   const html = [".html", ".htm"];
   const text = [".txt"];
-  const officeWeb = [".docx", ".xlsx", ".xlsm", ".pptx", ".csv"];
-  const legacy = [".doc", ".xls", ".ppt"];
+  // 新版 Office 内置轻量转换；.doc/.xls/.ppt 旧版由后端经 LibreOffice 转换后同样走 /office-preview
+  const officeWeb = [".docx", ".xlsx", ".xlsm", ".pptx", ".csv", ".doc", ".xls", ".ppt"];
   const archive = [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"];
   if (ext === ".pdf") return "pdf";
   if (image.includes(ext)) return "image";
@@ -835,7 +835,6 @@ export const webScrapePreviewKind = (filename?: string | null): string => {
   if (ext === ".md" || ext === ".markdown") return "markdown";
   if (text.includes(ext)) return "text";
   if (officeWeb.includes(ext)) return ext === ".csv" ? "csv" : "office";
-  if (legacy.includes(ext)) return "legacy";
   if (archive.includes(ext)) return "archive";
   return "other";
 };

@@ -600,7 +600,7 @@ export default function ConfigPage() {
         onOk={handleSave}
         confirmLoading={saving}
         width={760}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical">
           <Form.Item

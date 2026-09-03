@@ -1,24 +1,37 @@
 """落地文件在线预览（2026-09 新增，网页抓取「下载后文件预览」使用）。
 
-设计目标：不引入新依赖，能看的格式直接看、不能看的给文件信息。
+设计目标：能看的格式直接看、不能看的给文件信息。
     - pdf            → 浏览器原生 PDF 查看器（iframe /file）
     - html/htm       → 后端清理脚本等危险内容后 iframe（/file）
     - png/jpg/...    → <img>（/file）
     - md/txt         → 后端解码为 UTF-8 文本（/file 返回 text/plain，前端渲染）
     - docx/pptx      → 基于 OOXML(zip+xml) 的轻量文本/表格/逐页提取（/office-preview 返回 HTML）
     - xlsx/csv       → 基于 openpyxl / csv 渲染为表格 HTML（/office-preview）
-    - .doc/.xls/.ppt 等旧版 Office 及压缩包/邮件等 → 文件信息页（可下载自查）
+    - .doc/.xls/.ppt 旧版 Office → 经本机 LibreOffice 无头转换为新格式后按上两类预览
+      （自动探测 soffice；未安装/转换失败时退回信息页，可下载自查）
+    - 压缩包/邮件等无法转换的二进制 → 文件信息页（可下载自查）
 """
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import html as html_mod
 import io
+import logging
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+log = logging.getLogger("ragsystem.file_preview")
 
 # ---- 类型判定 ----
 
@@ -26,10 +39,13 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _HTML_EXTS = {".html", ".htm"}
 _TEXT_EXTS = {".txt", ".md", ".markdown"}
 _ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"}
-# 可以生成 HTML 预览的 Office/表格（office-preview 接口）
-_OFFICE_WEB_EXTS = {".docx", ".xlsx", ".xlsm", ".pptx", ".csv"}
-# 旧版二进制 Office（无本地解析库 → 仅信息页 + 下载自查）
-_OFFICE_LEGACY_EXTS = {".doc", ".xls", ".ppt"}
+# 旧版二进制 Office：无纯 Python 解析方案，先经 LibreOffice 无头转换为新格式
+_LEGACY_TARGET_EXT = {".doc": "docx", ".xls": "xlsx", ".ppt": "pptx"}
+_LEGACY_TARGET_LABEL = {
+    ".doc": "Word 97-2003 (.doc)",
+    ".xls": "Excel 97-2003 (.xls)",
+    ".ppt": "PowerPoint 97-2003 (.ppt)",
+}
 
 
 def preview_kind(filename: str) -> str:
@@ -377,6 +393,201 @@ def csv_to_html(data: bytes) -> str:
     )
 
 
+# ---------- 旧版 Office（.doc/.xls/.ppt）：LibreOffice 无头转换 ----------
+
+
+def _configured_soffice() -> str:
+    """配置指定/禁用：RAG_OFFICE_SOFFICE_PATH（支持 backend/.env 与环境变量）。"""
+    try:
+        from app.config import settings  # 惰性：保持本模块可独立自测
+
+        raw = (settings.office_soffice_path or "").strip()
+    except Exception:  # noqa: BLE001 独立运行/自测环境无项目配置时退回环境变量
+        raw = ""
+    if not raw:
+        raw = os.environ.get("RAG_OFFICE_SOFFICE_PATH", "").strip()
+    return raw
+
+
+_detected_soffice: str | None = None  # None=未探测；''=确认未安装；否则为可执行文件路径
+
+
+def _normalize_soffice(p: Path) -> str:
+    """Windows 下 soffice.exe/.com 是启动壳，部分环境会挂起/误判；
+    同目录存在真正的引擎 soffice.bin 时优先用它（无头转换更稳）。"""
+    if not p.is_file():
+        return ""
+    if os.name == "nt" and p.name.lower() in ("soffice.exe", "soffice.com"):
+        sibling = p.parent / "soffice.bin"
+        if sibling.is_file():
+            return str(sibling)
+    return str(p)
+
+
+def _detect_soffice() -> str:
+    """探测可用的 soffice：配置 → PATH → 常见安装目录。结果进程内缓存。"""
+    global _detected_soffice
+    if _detected_soffice is not None:
+        return _detected_soffice
+    result = ""
+    cfg = _configured_soffice()
+    if cfg.lower() not in ("none", "off", "0"):
+        if cfg:
+            result = _normalize_soffice(Path(cfg))
+        if not result:
+            for name in ("soffice", "soffice.exe", "soffice.bin"):
+                hit = shutil.which(name)
+                if hit:
+                    result = _normalize_soffice(Path(hit))
+                    break
+        if not result:
+            cands: list[Path] = []
+            if os.name == "nt":
+                local = os.environ.get("LOCALAPPDATA")
+                cands = [
+                    Path(r"C:\Program Files\LibreOffice\program\soffice.exe"),
+                    Path(r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"),
+                ]
+                if local:
+                    cands.append(Path(local) / "Programs" / "LibreOffice" / "program" / "soffice.exe")
+            elif sys.platform == "darwin":
+                cands = [Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")]
+            else:
+                cands = [Path("/usr/bin/soffice"), Path("/usr/lib/libreoffice/program/soffice")]
+            for c in cands:
+                result = _normalize_soffice(c)
+                if result:
+                    break
+    if result:
+        log.info("网页抓取旧版 Office 预览使用 LibreOffice: %s", result)
+    _detected_soffice = result
+    return result
+
+
+_SOFFICE_LOCK = threading.Lock()  # LibreOffice 单实例安全：串行执行转换
+
+
+@contextlib.contextmanager
+def _soffice_outdir(src: Path, target_ext: str):
+    """执行 LibreOffice 无头转换（doc/xls/ppt → docx/xlsx/pptx）。
+
+    yield 临时目录（转换产物位于 {tmp}/{src.stem}.{target_ext}），退出时清理；
+    转换不可用时 yield None。
+    注意：Windows 上 soffice.bin 使用 -env:UserInstallation 临时 profile 反而会
+    启动失败（rc=81），因此不设置，改用全局锁 _SOFFICE_LOCK 串行执行，避免与
+    其它并发转换争用同一用户 profile。
+    """
+    soffice = _detect_soffice()
+    if not soffice:
+        yield None
+        return
+    work = Path(tempfile.mkdtemp(prefix="rag_office_pv_"))
+    try:
+        cmd = [
+            soffice,
+            "--headless",
+            "--norestore",
+            "--nolockcheck",
+            "--convert-to",
+            target_ext,
+            "--outdir",
+            str(work),
+            str(src),
+        ]
+        # LibreOffice 内部带 Python 运行时：必须清除继承的 PYTHON*/VIRTUAL_ENV，
+        # 否则（如 IDE 注入的 PYTHONPATH）会导致 soffice 启动即失败/卡死。
+        clean_env = {
+            k: v for k, v in os.environ.items()
+            if not k.startswith("PYTHON") and k != "VIRTUAL_ENV"
+        }
+        try:
+            with _SOFFICE_LOCK:
+                proc = subprocess.run(cmd, capture_output=True, timeout=240, env=clean_env)
+        except Exception as e:  # noqa: BLE001
+            log.warning("LibreOffice 转换调用异常: file=%s err=%s", src.name, e)
+            yield None
+            return
+        if proc.returncode != 0:
+            tail = (proc.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+            log.warning("LibreOffice 转换失败: file=%s rc=%s err=%s", src.name, proc.returncode, tail)
+            yield None
+            return
+        yield work
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _legacy_office_html(filename: str, path: Path) -> str:
+    """旧版 Office → LibreOffice 转 docx/xlsx/pptx → 复用新格式 HTML 预览。"""
+    ext = Path(filename or "").suffix.lower()
+    target_ext = _LEGACY_TARGET_EXT.get(ext)
+    label = _LEGACY_TARGET_LABEL.get(ext, "旧版 Office 文档")
+    if not target_ext:
+        return _info_page_html(label, "暂不支持该格式在线预览，请下载原文件用本地软件查看。")
+    if not _detect_soffice():
+        return _info_page_html(
+            label,
+            "本机未检测到 LibreOffice，旧版 Office 暂无法在线预览。"
+            "可先「下载原文件」用本地 Office/WPS 查看；"
+            "如需在线预览，请在服务器安装 LibreOffice 后重启服务。",
+        )
+    with _soffice_outdir(path, target_ext) as work:
+        if work is None:
+            return _info_page_html(
+                label,
+                "LibreOffice 转换失败，旧版 Office 暂无法在线预览；"
+                "可先「下载原文件」用本地 Office/WPS 查看。",
+            )
+        out = work / f"{path.stem}.{target_ext}"
+        if not out.is_file():
+            return _info_page_html(label, "LibreOffice 未产出转换结果，暂无法在线预览。")
+        try:
+            if target_ext == "xlsx":
+                return xlsx_to_html(out)
+            data = out.read_bytes()
+            return docx_to_html(data) if target_ext == "docx" else pptx_to_html(data)
+        except Exception as e:  # noqa: BLE001
+            log.exception("旧版 Office 转换后预览失败: file=%s", path.name)
+            return _info_page_html(label, f"转换后预览生成失败：{e}；可先下载原文件查看。")
+
+
+# ---------- 预览结果缓存（旧版转换耗时，同一文件重复预览直接命中） ----------
+
+_PREVIEW_CACHE: "OrderedDict[tuple, str]" = OrderedDict()
+_PREVIEW_CACHE_LOCK = threading.Lock()
+_PREVIEW_CACHE_MAX = 24
+
+
+def _preview_cache_key(filename: str, path: Path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (filename, str(path.resolve()), st.st_size, st.st_mtime_ns)
+
+
+def _preview_cache_get(filename: str, path: Path) -> str | None:
+    key = _preview_cache_key(filename, path)
+    if key is None:
+        return None
+    with _PREVIEW_CACHE_LOCK:
+        html = _PREVIEW_CACHE.get(key)
+        if html is not None:
+            _PREVIEW_CACHE.move_to_end(key)
+        return html
+
+
+def _preview_cache_put(filename: str, path: Path, html: str) -> None:
+    key = _preview_cache_key(filename, path)
+    if key is None:
+        return
+    with _PREVIEW_CACHE_LOCK:
+        _PREVIEW_CACHE[key] = html
+        _PREVIEW_CACHE.move_to_end(key)
+        while len(_PREVIEW_CACHE) > _PREVIEW_CACHE_MAX:
+            _PREVIEW_CACHE.popitem(last=False)
+
+
 # ---------- 汇总入口 + 通用 HTML 外壳 ----------
 
 
@@ -417,35 +628,41 @@ def render_office_preview(filename: str, path: Path) -> str:
     """office-preview 接口入口：按扩展名生成可 iframe 的 HTML 预览页。
 
     .docx/.pptx 走 XML 提取，.xlsx/.csv 走表格渲染；
-    旧版 Office 与未知二进制格式返回信息页（前端提供「下载原文件」自查）。
+    .doc/.xls/.ppt 旧版 Office 先经 LibreOffice 无头转换为新格式再按上两类预览
+    （找不到 soffice / 转换失败退回信息页）；其余二进制返回信息页。
+    结果按文件内容状态缓存（旧版转换耗时数秒，避免同一文件重复转换）。
     """
     kind = preview_kind(filename)
     ext = Path(filename or "").suffix.lower()
+    cached = _preview_cache_get(filename, path)
+    if cached is not None:
+        return cached
     if kind == "docx":
         try:
-            return docx_to_html(path.read_bytes())
+            html = docx_to_html(path.read_bytes())
         except Exception:  # noqa: BLE001
-            return _info_page_html("Word 文档", "读取文件失败，无法在线预览。")
-    if kind == "pptx":
+            html = _info_page_html("Word 文档", "读取文件失败，无法在线预览。")
+    elif kind == "pptx":
         try:
-            return pptx_to_html(path.read_bytes())
+            html = pptx_to_html(path.read_bytes())
         except Exception:  # noqa: BLE001
-            return _info_page_html("PPT 演示文稿", "读取文件失败，无法在线预览。")
-    if kind == "xlsx":
-        return xlsx_to_html(path)
-    if kind == "csv":
+            html = _info_page_html("PPT 演示文稿", "读取文件失败，无法在线预览。")
+    elif kind == "xlsx":
+        html = xlsx_to_html(path)
+    elif kind == "csv":
         try:
-            return csv_to_html(path.read_bytes())
+            html = csv_to_html(path.read_bytes())
         except Exception:  # noqa: BLE001
-            return _info_page_html("CSV 文件", "读取文件失败，无法在线预览。")
-    # 旧版 Office / 压缩包 / 其他二进制
-    friendly = {
-        ".doc": "Word 97-2003 (.doc)",
-        ".xls": "Excel 97-2003 (.xls)",
-        ".ppt": "PowerPoint 97-2003 (.ppt)",
-    }.get(ext, f".{ext.lstrip('.')} 格式")
-    return _info_page_html(
-        friendly,
-        "旧版 Office / 二进制格式暂不支持在浏览器中直接预览，"
-        "点击下方「下载原文件」在本地打开查看。",
-    )
+            html = _info_page_html("CSV 文件", "读取文件失败，无法在线预览。")
+    elif kind in ("doc", "xls", "ppt"):
+        html = _legacy_office_html(filename, path)
+    else:
+        # 压缩包等无法在线预览的二进制 → 文件信息页（抽屉另提供「下载原文件」按钮）
+        friendly = _LEGACY_TARGET_LABEL.get(ext, f".{ext.lstrip('.')} 格式")
+        html = _info_page_html(
+            friendly,
+            "该二进制格式暂不支持在浏览器中直接预览，"
+            "点击下方「下载原文件」在本地打开查看。",
+        )
+    _preview_cache_put(filename, path, html)
+    return html

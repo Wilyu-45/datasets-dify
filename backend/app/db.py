@@ -17,17 +17,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-import psycopg
+from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+# pyright: reportImplicitRelativeImport=false
+# 后端进程始终以 backend/ 为运行根，`from app.config import settings` 是标准绝对导入；
+# 类型检查器按 backend.app.db 嵌套包解析时才会误报为隐式相对导入。
 from app.config import settings
 
 log = logging.getLogger("ragsystem.db")
 
-_pool: Optional[ConnectionPool] = None
+_pool: ConnectionPool | None = None
 
 # ============ 表结构（幂等 DDL） ============
 
@@ -172,7 +174,7 @@ def get_pool() -> ConnectionPool:
     """获取全局连接池（惰性创建）。"""
     global _pool
     if _pool is None:
-        dsn = psycopg.conninfo.make_conninfo(
+        dsn = make_conninfo(
             host=settings.pg_host,
             port=settings.pg_port,
             dbname=settings.pg_dbname,
@@ -194,15 +196,18 @@ def get_pool() -> ConnectionPool:
     return _pool
 
 
-def get_conn() -> psycopg.Connection:
-    """从连接池获取一个连接（配合 with 使用，退出时归还连接）。"""
+def get_conn():
+    """从连接池获取一个连接（配合 with 使用，退出时归还连接）。
+
+    返回 psycopg_pool 的 PoolConnection（上下文管理器，with 退出归还连接）。
+    """
     return get_pool().connection()
 
 
 def init_db() -> None:
     """幂等创建所有表。应用启动时调用。"""
     with get_conn() as conn:
-        conn.execute(INIT_SQL)
+        _ = conn.execute(INIT_SQL)  # 建表结果通过 commit/日志反馈，返回值无需使用
         conn.commit()
     log.info("数据库表结构已就绪（manifest / doc_metadata / process_config_log）")
 

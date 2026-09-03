@@ -241,8 +241,7 @@ class Settings(BaseSettings):
     # 单次任务最多抓取的页面/附件总数（含 URL 列表本身），防止大站把任务拖垮
     webscrape_crawl_max_pages: int = 20
     # HTTP 超时（秒）
-    dify_timeout: int = 60
-    # 等待文档 indexing_status=completed 的最长秒数
+    dify_timeout: int = 60    # 等待文档 indexing_status=completed 的最长秒数
     dify_indexing_wait_timeout: int = 120
     # 轮询间隔（秒）
     dify_indexing_poll_interval: float = 2.0
@@ -298,6 +297,13 @@ class Settings(BaseSettings):
     #   会拉取并作为 attachment 内部存储，content 里的 URL 仅作为显示标识）。
     #   即使 Dify 拉图失败，content 里的 OSS URL 仍是永久的，召回时前端能直接拉。
     dify_skip_file_upload: bool = False
+
+    # ---- 旧版 Office 在线预览（2026-09：.doc/.xls/.ppt）----
+    # 新版 Office（docx/xlsx/pptx/csv）用内置轻量转换即可；旧版二进制 Office
+    # 无纯 Python 解析方案，需借助 LibreOffice 无头转换后再预览。
+    # 留空 = 自动探测（PATH + 常见安装目录）；填 soffice.exe 绝对路径可指定；
+    # 设为 none/off 禁用转换（旧版 Office 退回“文件信息 + 下载自查”）。
+    office_soffice_path: str = ""
 
     # ---- 文档元数据（PostgreSQL doc_metadata 表 → Dify Metadata）----
     # 元数据现存储于 PostgreSQL doc_metadata 表（见 app.db），

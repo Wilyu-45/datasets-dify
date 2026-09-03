@@ -16,7 +16,8 @@
     4. POST /api/webscrape/task/{id}/ingest   — ②在文件预览处点「确定」后调用：仅对该预览项
        （单 URL）走 parse(MinerU) → chunk → dify 流水线。
     5. GET  /api/webscrape/task/{id}/file/{idx}         — 落地原文件流（PDF/HTML/图片/文本等）
-       GET  /api/webscrape/task/{id}/office-preview/{idx} — Office（Word/Excel/PPT/CSV）转 HTML 预览
+       GET  /api/webscrape/task/{id}/office-preview/{idx} — Word/Excel/PPT/CSV 轻量转 HTML；
+       .doc/.xls/.ppt 旧版 Office 先经本机 LibreOffice 无头转换后再预览（未装则给信息+下载）
 
 ★ 2026-08-31 两套配置：抓取 URL 来自配置本身，页面不再输入。
 ★ 2026-09-02 「先确认再入库」细化为：确认下载 → 文件预览（点确定）→ 逐项入库；
@@ -676,7 +677,9 @@ def webscrape_landed_file(task_id: str, index: int):
 @router.get("/webscrape/task/{task_id}/office-preview/{index}")
 def webscrape_office_preview(task_id: str, index: int):
     """Word/Excel/PPT/CSV 在线预览：后端轻量转换（docx/pptx 提取文本与表格、
-    xlsx/csv 渲染表格，旧版 Office 给信息页），返回可 iframe 的 HTML。"""
+    xlsx/csv 渲染表格）返回可 iframe 的 HTML；
+    .doc/.xls/.ppt 旧版 Office 先经 LibreOffice 无头转成新格式再预览
+    （未安装/转换失败时给信息页，前端提供「下载原文件」自查）。"""
     task = _load_task_or_404(task_id)
     it = _index_item_or_404(task, index)
     path = _landed_file_or_404(it)

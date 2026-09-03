@@ -2,8 +2,9 @@
  * 网页抓取「下载后的文件预览」抽屉（2026-09 新增）。
  *
  * 用途：confirm（确认下载）落地到 pending/ 后，在这里直接预览下载到的真实文件
- * （PDF/HTML/图片/txt/md 直接看，Word/Excel/PPT/CSV 由后端轻量转换后在线看，
- * 旧版 Office/压缩包给文件信息 + 下载自查），预览处点「确定并解析入库」才对该项
+ * （PDF/HTML/图片/txt/md 直接看；Word/Excel/PPT/CSV 由后端轻量转换后在线看，
+ * .doc/.xls/.ppt 旧版 Office 由后端经 LibreOffice 转换后同样在线看；压缩包等
+ * 无法转换的二进制给文件信息 + 下载自查），预览处点「确定并解析入库」才对该项
  * 走解析 → 切分 → Dify 入库（仅当前这一项）。
  */
 import {
@@ -303,28 +304,38 @@ export default function WebScrapeFilePreview({
       );
     }
     if (kind === "office" || kind === "csv") {
+      const isLegacyOffice = /\.(doc|xls|ppt)$/i.test(filename);
       return (
-        <iframe
-          key={`office-${filename}`}
-          src={officeUrl}
-          title={filename}
-          style={{
-            width: "100%",
-            height: "calc(100vh - 300px)",
-            border: "1px solid #e5e7eb",
-            borderRadius: 6,
-            background: "#fff",
-          }}
-        />
+        <>
+          {isLegacyOffice && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="旧版 Office 正在经 LibreOffice 在线转换预览"
+              description=".doc/.xls/.ppt 由服务器端 LibreOffice 转换后在线查看；首次打开需等待几秒，若一直空白或转换失败，可点右下角「下载原文件」查看。"
+            />
+          )}
+          <iframe
+            key={`office-${filename}`}
+            src={officeUrl}
+            title={filename}
+            style={{
+              width: "100%",
+              height: "calc(100vh - 300px)",
+              border: "1px solid #e5e7eb",
+              borderRadius: 6,
+              background: "#fff",
+            }}
+          />
+        </>
       );
     }
-    // legacy / archive / other：文件信息 + 下载自查
+    // archive / other 等后端无法转换的二进制：文件信息 + 下载自查
     const note =
-      kind === "legacy"
-        ? "旧版 Office（.doc/.xls/.ppt）暂不支持在浏览器中直接预览，请下载原文件用本地 Office/WPS 查看。"
-        : kind === "archive"
-          ? "压缩包无法在线预览，请下载后用本地解压工具查看其中文件。"
-          : "该格式暂不支持在线预览，请下载原文件查看。";
+      kind === "archive"
+        ? "压缩包无法在线预览，请下载后用本地解压工具查看其中文件。"
+        : "该格式暂不支持在线预览，请下载原文件查看。";
     return (
       <Result
         status="info"
@@ -367,7 +378,7 @@ export default function WebScrapeFilePreview({
       width={960}
       open={open}
       onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <Button href={fileUrl} target="_blank" rel="noreferrer" disabled={!filename}>

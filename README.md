@@ -82,11 +82,11 @@
 
 1. **抓取**（`POST /api/webscrape/run`）：在「网站抓取」页选择**网站抓取配置** → 按配置的「抓取网站 URL 列表」抓取：网页正文转 Markdown（HTML 解析、编码自动识别、`<title>` 取标题），附件链接（Word / Excel / PPT / PDF / 压缩包等）自动下载，统一落 `data/webscrape/{task_id}/` 临时区；不登记 manifest、不触发流水线。**单 URL 失败只影响该项**，其余照常抓取。
 2. **确认下载**（`POST /api/webscrape/task/{id}/confirm`）：逐项预览（网页正文全文 / 附件文件信息），勾选需要的项 + 选择入库配置 + **选择目标知识库**（网站抓取内容可入不同知识库，故每次确认单独指定 dataset_id）→ 选中项落地到 `pending/`（正文 → 浏览器渲染 PDF/HTML；附件 → 原文件），登记 manifest（parse 列留空）与入库台账 webscrape_records（status=landed）——**只下载，不触发流水线**；未勾选项留在任务里。
-3. **文件预览确定后入库**（`POST /api/webscrape/task/{id}/ingest`）：确认下载后前端自动打开该项「文件预览」抽屉，直接预览**下载到的真实文件**——PDF / HTML / 图片 / txt / md 在线直读，Word（docx）/ Excel（xlsx）/ PPT（pptx）/ CSV 由后端轻量转换为 HTML 在线预览（参考网页版 Office），旧版 Office / 压缩包展示文件信息并支持下载自查；在预览处点「确定并解析入库」→ 仅对**当前这一项**走 parse(MinerU) → chunk → Dify 入库流水线，结果回填 webscrape_records 台账。
+3. **文件预览确定后入库**（`POST /api/webscrape/task/{id}/ingest`）：确认下载后前端自动打开该项「文件预览」抽屉，直接预览**下载到的真实文件**——PDF / HTML / 图片 / txt / md 在线直读，Word（docx）/ Excel（xlsx）/ PPT（pptx）/ CSV 由后端轻量转换为 HTML 在线预览（参考网页版 Office）；**.doc/.xls/.ppt 旧版 Office 同样在线预览**——后端自动探测本机 LibreOffice（soffice）无头转成新格式再预览（未安装/转换失败退回“文件信息 + 下载自查”，可在 `.env` 用 `RAG_OFFICE_SOFFICE_PATH` 指定 soffice 路径或 `none` 禁用）；压缩包等无法转换的二进制给文件信息并支持下载自查；在预览处点「确定并解析入库」→ 仅对**当前这一项**走 parse(MinerU) → chunk → Dify 入库流水线，结果回填 webscrape_records 台账。
 
 任务历史 / 详情 / 预览：`GET /api/webscrape/tasks` · `GET /api/webscrape/task/{id}` · `GET /api/webscrape/task/{id}/preview/{idx}`。
 落地文件与在线预览：`GET /api/webscrape/task/{id}/file/{idx}`（原文件流：PDF/图片/清洗后 HTML/文本内联）· `GET /api/webscrape/task/{id}/office-preview/{idx}`（Office/CSV 转 HTML）。
-预览实现：`backend/app/services/file_preview.py`——docx/pptx 用 zip+xml 提取文本与表格、xlsx/csv 用 openpyxl/csv 渲染表格、第三方 HTML 清洗 script/on* 等危险内容；均为零新增依赖。
+预览实现：`backend/app/services/file_preview.py`——docx/pptx 用 zip+xml 提取文本与表格、xlsx/csv 用 openpyxl/csv 渲染表格、第三方 HTML 清洗 script/on* 等危险内容；**.doc/.xls/.ppt 旧版 Office 经本机 LibreOffice 无头转换后复用上述渲染**（`python` 依赖零新增，但需服务器装有 LibreOffice，未装时退回文件信息+下载）。
 
 **反爬兼容（2026-08-31 浏览器引擎）**：抓取优先走 httpx（带完整浏览器指纹：`Sec-Fetch-*`、`Upgrade-Insecure-Requests`、同源 `Referer` 等，412 间隔 1s 重试 1 次）；被 WAF 拦截（**412** JS 动态令牌挑战 / **403**）或源站回源故障（**502**）时，**自动降级 Playwright Chromium 浏览器内核**重新抓取——真实浏览器自动执行 JS 挑战并渲染，静态抓取不到的政府网站（如卫健委 www.nhc.gov.cn 的瑞数类 WAF）也可正常抓取；附件下载同样支持浏览器降级。实现要点：`browser_fetch.py` 自动探测并使用**完整 Chromium 内核**（瑞数类 WAF 会识别精简 headless shell 并卡死在 412，完整内核 + 隐藏 navigator.webdriver 才能通过挑战）；若浏览器也拿不到真实页面（如源站 502 故障）给出明确错误提示「网站源站当前不可用（502）」。部署依赖：`pip install playwright` 后执行一次 `python -m playwright install chromium`（约 150MB）。
 
