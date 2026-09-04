@@ -128,6 +128,12 @@ def _abs_url(url: str, base: str) -> str:
 
 # ============ HTML → Markdown ============
 
+# HTML 自闭合元素（无结束标签，不参与元素配对）
+_VOID_ELEMENTS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
 
 class HTMLToMarkdown(HTMLParser):
     """把网页 HTML 转为近似 Markdown（面向知识库正文，非完全保真）。
@@ -135,8 +141,11 @@ class HTMLToMarkdown(HTMLParser):
     支持的标签子集：
         h1-h6 / p / br / a / strong / b / em / i / ul / ol / li
         code / pre / blockquote / table / tr / td / th / img / hr / div / section
-    忽略的区域：script / style / nav / footer / aside / form / iframe / noscript
-    （这些标签内部不输出；span 等行内标签的文本保留）
+    忽略的区域：script / style / nav / footer / aside / form / iframe / noscript /
+    template / textarea（这些标签内部不输出；span 等行内标签的文本保留）。
+    ★ 2026-09 广告/弹窗/蒙层容器（浮层广告、AI 助手弹窗、底部蒙层等，按
+    id/class 特征词 + display:none/fixed 内联样式识别）整块跳过——此类浮层
+    常内嵌未渲染的 Vue/模板文本或推广卡片，混入正文会严重污染知识库。
 
     行为约定：
         - 块级标签开始/结束处保证换行，行内标签只追加文本
@@ -149,13 +158,23 @@ class HTMLToMarkdown(HTMLParser):
     SKIP_TAGS = {
         "script", "style", "nav", "footer", "aside", "form",
         "iframe", "noscript", "head", "svg", "canvas",
+        "template", "textarea",   # 未渲染的组件模板 / 输入区，非页面正文
     }
+    # 页面浮层（广告/弹窗/蒙层）通常以这些容器承载
+    _NOISE_TAG_NAMES = frozenset(
+        {"div", "section", "main", "ul", "ol", "table", "nav", "header", "footer", "dl"}
+    )
+    _NOISE_KEYWORDS = frozenset({
+        "modal", "popup", "dialog", "toast", "mask", "overlay", "drawer",
+        "nav", "ad", "ads", "adv", "adsbygoogle", "qrcode", "layer",
+    })
 
     def __init__(self, base_url: str = "") -> None:
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
         self.out: List[str] = []                 # 输出行列表
-        self.skip_depth = 0                      # >0 时不输出（SKIP_TAGS 内部）
+        self._elem_stack: List[str] = []         # 已开始未结束的元素栈（负责配对）
+        self._block_pos: List[int] = []          # 跳过容器在元素栈中的下标（script/弹窗等）
         self.list_stack: List[str] = []          # 列表类型栈（ul/ol）
         self.in_pre = False                      # pre 内文本原样保留
         self.pre_buf: List[str] = []
@@ -163,9 +182,59 @@ class HTMLToMarkdown(HTMLParser):
         self._in_table = False
         self._cur_row: Optional[List[str]] = None     # 当前行单元格列表
         self._cur_cell: Optional[List[str]] = None    # 当前单元格文本片段
-        self._href_stack: List[str] = []
+        self._href_stack: List[Optional[str]] = []
         self.title_text: Optional[str] = None    # <title> 文本（页面标题候选）
         self._in_title = False
+
+    # ---- 元素配对 / 跳过区控制 ----
+
+    def _in_block(self) -> bool:
+        """当前是否处于 script/弹窗等跳过区内部。"""
+        return bool(self._block_pos)
+
+    def _push_block(self, tag: str) -> None:
+        self._elem_stack.append(tag)
+        self._block_pos.append(len(self._elem_stack) - 1)
+
+    def _close_tag(self, tag: str) -> None:
+        """弹出元素栈到最近一次 tag 配对（含该 tag），同步维护跳过区标记。"""
+        while self._elem_stack:
+            idx = len(self._elem_stack) - 1
+            top = self._elem_stack.pop()
+            if self._block_pos and self._block_pos[-1] == idx:
+                self._block_pos.pop()
+            if top == tag:
+                return
+
+    @staticmethod
+    def _class_tokens(attr_map: Dict[str, str]) -> frozenset:
+        """把 id/class 拆成单词（支持 adv-modal / aiModal / maskBox 等写法）。"""
+        tokens: set = set()
+        for key in ("id", "class"):
+            val = attr_map.get(key, "")
+            if not val:
+                continue
+            val = re.sub(r"[_-]+", " ", val)
+            val = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", val)
+            tokens.update(t.lower() for t in val.split() if t)
+        return frozenset(tokens)
+
+    def _is_noise_container(self, tag: str, attr_map: Dict[str, str]) -> bool:
+        """广告/弹窗/蒙层等浮层容器识别。
+
+        条件（命中其一即跳过整块）：
+          - 容器元素（div/section/列表等）id/class 含 modal/popup/dialog/mask/
+            overlay/ad/adv 等特征词；body/html 等顶层不参与，避免 modal-open 类
+            状态名误杀整页。
+          - 内联 style 为 display:none / visibility:hidden（页面不可见内容，
+            常用来藏组件模板）或 position:fixed（悬浮元素）。
+        """
+        if tag not in self._NOISE_TAG_NAMES:
+            return False
+        style = (attr_map.get("style", "") or "").lower().replace(" ", "").replace(";", ";")
+        if any(k in style for k in ("display:none", "visibility:hidden", "position:fixed")):
+            return True
+        return bool(self._NOISE_KEYWORDS & self._class_tokens(attr_map))
 
     # ---- 输出控制 ----
 
@@ -186,23 +255,48 @@ class HTMLToMarkdown(HTMLParser):
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:  # noqa: C901
         attr_map = {k.lower(): (v or "") for k, v in attrs}
 
-        if tag in self.SKIP_TAGS:
-            self.skip_depth += 1
-            return
-
+        # <title> 在 <head>（跳过区）内，需在跳过判断前单独采集
         if tag == "title":
             self._in_title = True
+            self._elem_stack.append("title")
             return
+
+        # 已处于 script/style/弹窗等跳过区：内部不再输出，仅入栈配对
+        if self._in_block():
+            self._elem_stack.append(tag)
+            return
+
+        if tag in self.SKIP_TAGS:
+            self._push_block(tag)
+            return
+
+        # 自闭合元素（br/hr/img 等）无结束标签，不参与配对
+        if tag in _VOID_ELEMENTS:
+            if self._is_noise_container(tag, attr_map):
+                return  # 弹层里的装饰图/关闭按钮等直接忽略
+            if tag == "br":
+                self._ensure_newline()
+            elif tag == "hr":
+                self._ensure_newline()
+                self.out.append("---")
+                self._ensure_newline()
+            elif tag == "img":
+                src = attr_map.get("src", "")
+                alt = attr_map.get("alt", "").strip()
+                if src and not src.startswith(("data:", "javascript:")):
+                    self._append_to_out(f"![{alt}]({_abs_url(src, self.base_url)})")
+            return
+
+        # 广告/弹窗/蒙层等浮层容器 → 整块跳过
+        if self._is_noise_container(tag, attr_map):
+            self._push_block(tag)
+            return
+
+        self._elem_stack.append(tag)
 
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._ensure_newline()
             self.out.append("#" * int(tag[1]) + " ")
-        elif tag == "br":
-            self._ensure_newline()
-        elif tag == "hr":
-            self._ensure_newline()
-            self.out.append("---")
-            self._ensure_newline()
         elif tag in ("ul", "ol"):
             self._ensure_newline()
             self.list_stack.append(tag)
@@ -233,13 +327,13 @@ class HTMLToMarkdown(HTMLParser):
         elif tag in ("td", "th"):
             self._cur_cell = []
         elif tag == "a":
-            self._append_to_out("[")
-            self._href_stack.append(attr_map.get("href", ""))
-        elif tag == "img":
-            src = attr_map.get("src", "")
-            alt = attr_map.get("alt", "")
-            if src and not src.startswith(("data:", "javascript:")):
-                self._append_to_out(f"![{alt}]({_abs_url(src, self.base_url)})")
+            # 无可跳转地址的链接（javascript:/#/空）不渲染成 [x](href)
+            href = attr_map.get("href", "").strip()
+            if href and not href.lower().startswith("javascript:") and href != "#":
+                self._append_to_out("[")
+                self._href_stack.append(href)
+            else:
+                self._href_stack.append(None)
         elif tag in ("strong", "b"):
             self._append_to_out("**")
         elif tag in ("em", "i"):
@@ -253,13 +347,15 @@ class HTMLToMarkdown(HTMLParser):
             self.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:  # noqa: C901
-        if tag in self.SKIP_TAGS:
-            self.skip_depth = max(0, self.skip_depth - 1)
-            return
-
+        # 先做元素配对/跳过区收尾
         if tag == "title":
             self._in_title = False
+            self._close_tag(tag)
             return
+        was_in_block = self._in_block()
+        self._close_tag(tag)
+        if was_in_block:
+            return  # 刚结束的是弹窗/script 等跳过区或其内部元素，不参与输出
 
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "p"):
             self._ensure_newline()
@@ -291,10 +387,9 @@ class HTMLToMarkdown(HTMLParser):
                     self._cur_row.append("".join(self._cur_cell).strip())
                 self._cur_cell = None
         elif tag == "a":
-            self._append_to_out("]")
-            href = self._href_stack.pop() if self._href_stack else ""
-            if href:
-                self._append_to_out(f"({href})")
+            href = self._href_stack.pop() if self._href_stack else None
+            if href is not None:
+                self._append_to_out(f"]({href})")
         elif tag in ("strong", "b"):
             self._append_to_out("**")
         elif tag in ("em", "i"):
@@ -302,10 +397,10 @@ class HTMLToMarkdown(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._in_title:
-            # <title> 在 <head> 内（skip 区），必须在 skip_depth 检查之前采集
+            # <title> 在 <head> 内（skip 区），必须在跳过判断之前采集
             self.title_text = (self.title_text or "") + data
             return
-        if self.skip_depth > 0:
+        if self._in_block():
             return
         if self.in_pre:
             self.pre_buf.append(data)
@@ -521,16 +616,21 @@ def extract_page_links(html_text: str, base_url: str) -> List[str]:
     return out
 
 
-def _site_scope_ok(link: str, seed: str) -> bool:
-    """递归范围：仅跟随与种子 URL 同站的链接。
+def _site_scope_ok(link: str, seed: str, scope: str = "column") -> bool:
+    """递归范围：决定页面链接是否值得继续跟。
 
     - www 前缀视为同站（www.example.com == example.com）
-    - ★ 附件链接（.pdf/.docx 等扩展名）不受栏目前缀限制：政府站附件常放在
-      /group2/ 之类静态资源目录，与页面路径无关，必须放行
-    - 栏目前缀限制仅在种子是显式目录（路径以 / 结尾，如 http://a.gov.cn/zcwjk/）
-      时生效；具体页面做种子（如 /public/xxx/123.html）时同站链接均可跟随。
-      ★ 2026-08-31 修复：此前把种子整条路径一律当栏目前缀，文章页做种子时
-      连页面里挂的附件都被拦掉（ja.gov.cn 抓取丢附件的原因）
+    - ★ 附件链接（.pdf/.docx 等扩展名）任何模式下都放行：政府站附件常放在
+      /group2/ 之类静态资源目录，与页面路径无关，必须允许
+    - host（整个网站）：同域名内链接全部跟随（旧行为）。
+      仅当种子是显式目录（路径以 / 结尾）时仍收窄到该目录子树，保证附件外的
+      页面不跳到站内其它栏目——与 2026-08-31 的既有行为一致。
+    - column（仅本栏目，默认）：从种子 URL 出发，只沿种子的路径子树递归：
+        ① 分页/自身      path == 种子 path（仅 query 不同）
+        ② 详情/子页      以 种子 path + '/' 开头
+        ③ 同 token 详情   以 种子 path + '_' 开头（SIFIC 类站点：
+           列表 /cn/web/index/37719_3457632 → 详情 /cn/web/index/37719_3457632_155421_）
+      首页、欢迎辞、AI 助手等兄弟栏目不在种子的路径子树内，不会被抓进来。
     """
     try:
         l, s = urlparse(link), urlparse(seed)
@@ -542,11 +642,31 @@ def _site_scope_ok(link: str, seed: str) -> bool:
         return False
     if is_attachment_url(link):
         return True
-    if (s.path or "/").endswith("/"):
-        prefix = s.path.rstrip("/")
-        if prefix and not (l.path or "/").startswith(prefix + "/"):
-            return False
-    return True
+    lpath = l.path or "/"
+    spath = s.path or "/"
+    if scope != "column":
+        # 整站模式：同域名放行；仅显式目录种子收窄到目录子树（旧行为）
+        if spath.endswith("/"):
+            prefix = spath.rstrip("/")
+            if prefix and not lpath.startswith(prefix + "/"):
+                return False
+        return True
+    return _seed_subtree_ok(lpath, spath)
+
+
+def _seed_subtree_ok(child_path: str, seed_path: str) -> bool:
+    """column 模式：child_path 是否落在 seed_path 的栏目子树内。"""
+    root = seed_path.rstrip("/")
+    if not root:
+        return True  # 站点根路径做种子 → 整站可跟
+    p = child_path.rstrip("/")
+    if p == root:
+        return True  # 同一页面（如分页 ?page=2，query 不影响 path）
+    if p.startswith(root + "/"):
+        return True  # 子目录/详情页
+    if p.startswith(root + "_"):
+        return True  # 同 token 续段详情（SIFIC: 37719_3457632 → 37719_3457632_155421_）
+    return False
 
 
 def profile_crawl_settings(profile: Dict[str, Any]) -> Dict[str, Any]:
@@ -561,10 +681,14 @@ def profile_crawl_settings(profile: Dict[str, Any]) -> Dict[str, Any]:
         return max(lo, min(hi, v))
 
     enabled = config.get("webscrape_crawl_enabled")
+    scope = str(config.get("webscrape_crawl_scope") or "column")
     return {
         "enabled": bool(enabled) if enabled is not None else True,
         "depth": _clamp_int("webscrape_crawl_depth", 2, 0, 5),
         "max_pages": _clamp_int("webscrape_crawl_max_pages", 20, 1, 200),
+        # 递归范围：column=仅种子栏目子树（默认，不抓首页/欢迎辞等兄弟栏目）；
+        # host=同域名全放行（旧行为）
+        "scope": scope if scope in ("column", "host") else "column",
     }
 
 
@@ -701,11 +825,109 @@ def download_attachment(
     return out
 
 
+# ============ 内容指纹 / 页面更新时间（2026-09 更新检测用） ============
+
+# 优先认作「页面更新时间」的 meta 键（modified/lastmod 家族），其次才是发布时间家族
+_PAGE_TIME_UPDATE_KEYS = {
+    "article:modified_time", "datemodified", "lastmod", "last-modified",
+    "modified", "updated_time", "updated", "dc.date.modified",
+}
+_PAGE_TIME_PUBLISH_KEYS = {
+    "article:published_time", "datepublished", "pubdate", "publishdate",
+    "datecreated", "date", "dc.date", "dc:date", "dc.date.issued",
+    "og:release_date", "og:updated_time", "release_date",
+}
+_DATETIME_RE = re.compile(
+    r"(?:19|20)\d{2}\s*[-/年.]\s*\d{1,2}\s*[-/月.]\s*\d{1,2}"
+    r"(?:日)?(?:[\sT](\d{1,2})[:：](\d{1,2})(?::(\d{1,2}))?)?"
+)
+
+
+def _normalize_datetime_in(text: str) -> Optional[str]:
+    """从一段文本中提取首个完整日期（YYYY-MM-DD，含时间则带 HH:MM），无则 None。"""
+    m = _DATETIME_RE.search(text or "")
+    if not m:
+        return None
+    raw = m.group(0).replace("年", "-").replace("月", "-").replace("日", " ").replace("　", " ")
+    parts = [p for p in re.split(r"[-/.年月日\sT:：]+", raw) if p]
+    try:
+        y, mo, d = int(parts[0]), int(parts[1]), int(parts[2])
+        if not (1 <= mo <= 12 and 1 <= d <= 31):
+            return None
+        out = f"{y:04d}-{mo:02d}-{d:02d}"
+        if len(parts) >= 5:
+            hh, mm = int(parts[3]), int(parts[4])
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                out += f" {hh:02d}:{mm:02d}"
+        return out
+    except (ValueError, IndexError):
+        return None
+
+
+class _PageTimeParser(HTMLParser):
+    """收集页面声明的发布时间/更新时间（<meta> 的 property/name/itemprop 与 <time datetime>）。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.updated: List[str] = []     # modified/lastmod 家族
+        self.published: List[str] = []   # published/date 家族
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        a = dict(attrs or [])
+        if tag == "meta":
+            key = (a.get("property") or a.get("name") or a.get("itemprop") or "").strip().lower()
+            val = (a.get("content") or "").strip()
+            if not key or not val:
+                return
+            if key in _PAGE_TIME_UPDATE_KEYS:
+                self.updated.append(val)
+            elif key in _PAGE_TIME_PUBLISH_KEYS:
+                self.published.append(val)
+        elif tag == "time":
+            val = (a.get("datetime") or "").strip()
+            if val:
+                self.published.append(val)
+
+
+def _extract_page_time(html_text: str, markdown: str, scan_chars: int = 3000) -> Optional[str]:
+    """提取「内容在网站上的更新时间」文本并规范化。
+
+    顺序：<meta>/<time> 的 modified 家族 → published 家族 → 正文开头日期。
+    页面常把时间放 <meta> 或正文首部（如“发布时间：2026-08-31 10:00”）；
+    两处都拿不到返回 None（不影响入库，更新判定以内容指纹为准）。
+    """
+    parser = _PageTimeParser()
+    try:
+        parser.feed(html_text or "")
+        parser.close()
+    except Exception:  # noqa: BLE001 页面时间只是附加信息，解析失败不阻断
+        pass
+    for text in parser.updated + parser.published:
+        d = _normalize_datetime_in(text)
+        if d:
+            return d
+    return _normalize_datetime_in((markdown or "")[:scan_chars])
+
+
+def _file_md5(path: Path) -> str:
+    """流式计算文件 MD5（附件可能数十 MB，避免整体读入内存）。"""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 # ============ 站点白名单校验 ============
 
 
-def profile_webscrape_urls(profile: Dict[str, Any]) -> List[str]:
-    """取配置方案中的抓取 URL 列表（兼容旧字段 webscrape_site_url 单值）。"""
+def _profile_webscrape_raw(profile: Dict[str, Any]) -> List[str]:
+    """取配置方案中的抓取 URL 原始行（兼容旧字段 webscrape_site_url 单值）。
+
+    每行原始内容可能是「URL」或「URL<TAB>标题」——自定义标题用于网页 <title>
+    雷同的场景（如 SIFIC 往届回顾：21 个详情页共用大会总标题，逐条显示、
+    落文件名都需要区分），解析拆分在 profile_webscrape_urls/entries 中完成。
+    """
     config = profile.get("config") or {}
     urls = config.get("webscrape_urls") or []
     if isinstance(urls, str):
@@ -724,6 +946,35 @@ def profile_webscrape_urls(profile: Dict[str, Any]) -> List[str]:
         legacy = str(config.get("webscrape_site_url") or "").strip()
         if legacy:
             out = [legacy]
+    return out
+
+
+def profile_webscrape_urls(profile: Dict[str, Any]) -> List[str]:
+    """取配置方案中的抓取 URL 列表（去掉每行可选的 <TAB>标题 后缀）。"""
+    out = []
+    for line in _profile_webscrape_raw(profile):
+        url = line.split("\t", 1)[0].strip()
+        if url:
+            out.append(url)
+    return out
+
+
+def profile_webscrape_entries(profile: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """抓取条目列表：[(url, 自定义标题或 "")]。
+
+    URL 行支持「URL<TAB>标题」：制表符前为抓取地址，后为条目自定义标题
+    （为空时沿用页面 <title>）。递归发现的子页面没有标题注解，仍用页面标题。
+    """
+    out: List[Tuple[str, str]] = []
+    for line in _profile_webscrape_raw(profile):
+        if not line:
+            continue
+        parts = line.split("\t", 1)
+        url = parts[0].strip()
+        if not url:
+            continue
+        label = parts[1].strip() if len(parts) > 1 else ""
+        out.append((url, label))
     return out
 
 
@@ -820,6 +1071,7 @@ def create_task(
     from app.services import manifest_store  # 仅用于 stem 冲突检查
 
     urls = profile_webscrape_urls(profile)
+    entries = profile_webscrape_entries(profile)
     crawl = profile_crawl_settings(profile)
     task_id = uuid.uuid4().hex
     task_dir = task_temp_dir(task_id)
@@ -827,12 +1079,14 @@ def create_task(
     items: List[Dict[str, Any]] = []
     manifest = manifest_store.load()  # 1 次快照，供整批 stem 去重
 
-    # ---- 队列初始化：种子 URL 全部入队（保持配置顺序）----
-    # 元素：(url, depth, seed_url, is_seed) — seed_url 用于递归范围判定
+    # ---- 队列初始化：抓取条目全部入队（保持配置顺序）----
+    # 条目支持「URL<TAB>标题」自定义标题；元素：(url, depth, seed_url, is_seed)
     queue: "deque[Tuple[str, int, str, bool]]" = deque()
     enqueued: set = set()  # 规范化 URL 去重（防重复抓取与环）
-    for raw in urls:
-        url = (raw or "").strip()
+    # 种子自定义标题（按规范化 URL 索引；递归子页面无注解，回退页面 <title>）
+    seed_labels = {(_normalize_url(u) or u): lb for (u, lb) in entries if lb}
+    for url_raw, _label in entries:
+        url = (url_raw or "").strip()
         item: Dict[str, Any] = {"url": url, "ok": False, "depth": 0}
         if not url:
             item["error"] = "URL 为空"
@@ -858,6 +1112,7 @@ def create_task(
 
     while queue:
         url, depth, seed, is_seed = queue.popleft()
+        label = seed_labels.get(_normalize_url(url) or url, "") if is_seed else ""
         if not is_seed and len(items) >= max_items:
             log.info("webscrape 递归达到页数上限 %d，停止扩展", max_items,
                      extra={"step": "webscrape", "status": "crawl_capped"})
@@ -880,6 +1135,9 @@ def create_task(
                     rel_path=dl["rel_path"],
                     size=dl.get("size"),
                 )
+                # ★ 2026-09 附件无页面时间可言；更新检测用文件字节指纹
+                item["page_time"] = None
+                item["content_hash"] = _file_md5(task_dir / dl["rel_path"])
             else:
                 html_text, final_url = fetch_page_html(url, timeout=timeout)
                 title, markdown = _parse_html(html_text, final_url)
@@ -888,7 +1146,10 @@ def create_task(
                 truncated = len(markdown) > WEBSCRAPE_MAX_CHARS
                 if truncated:
                     markdown = markdown[:WEBSCRAPE_MAX_CHARS]
-                stem = _safe_stem(title, url)
+                # 展示标题优先用条目注解（URL<TAB>标题），否则用页面 <title>。
+                # SIFIC 等站点 21 个详情页共用站级 <title>，不加注解会全部雷同。
+                disp_title = label or title
+                stem = _safe_stem(disp_title or url, url)
                 # 同批去重（与 manifest 的冲突留在确认阶段再解决）
                 used = {it.get("stem_base") for it in items if it.get("ok")}
                 if stem in used:
@@ -897,18 +1158,25 @@ def create_task(
                 (task_dir / rel).write_text(markdown, encoding="utf-8")
                 # ★ 原始 HTML 一并保存：确认入库时渲染 PDF 失败的降级源
                 #   （file:// 打印或直接入 pending 走本地解析）
+                # ★ 2026-09 落盘前移除弹窗/浮层广告容器（原站模板静态写入的
+                #   advModal/maskBox 等会原样带进落地 HTML，需在此清掉）
                 html_rel = f"{seq:03d}_{stem}.html"
-                (task_dir / html_rel).write_text(html_text, encoding="utf-8", errors="replace")
+                (task_dir / html_rel).write_text(
+                    strip_popup_ads(html_text), encoding="utf-8", errors="replace"
+                )
                 item.update(
                     ok=True,
                     kind="content",
-                    title=title or stem,
+                    title=disp_title or stem,
                     stem_base=stem,
                     rel_path=rel,
                     html_rel_path=html_rel,
                     char_count=len(markdown),
                     truncated=truncated,
                 )
+                # ★ 2026-09 内容指纹（=将入库正文）与页面声明/正文中的更新时间
+                item["page_time"] = _extract_page_time(html_text, markdown)
+                item["content_hash"] = hashlib.md5(markdown.encode("utf-8")).hexdigest()
                 # ★ 递归扩展：从本页提取同站链接，未超深度即入队
                 #   （网页/附件在出队时按 URL 分类处理，附件下载后不再扩展）
                 #   ★ 附件插队首：页面挂的关联文件（正文附件）比栏目导航更接近
@@ -922,10 +1190,15 @@ def create_task(
                             continue
                         if url_allowed_check(link, urls) is not None:
                             continue
-                        if not _site_scope_ok(link, seed):
+                        if not _site_scope_ok(link, seed, crawl["scope"]):
                             continue
+                        # ★ column 模式下列表分页链接与列表本身同路径（仅 query 不同），
+                        #   不消耗递归深度 —— 分 3 页的列表用默认深度 2 也能抓到全部详情
+                        child_depth = depth + 1
+                        if crawl["scope"] == "column" and urlparse(link).path.rstrip("/") == urlparse(url).path.rstrip("/"):
+                            child_depth = depth
                         enqueued.add(link)
-                        entry = (link, depth + 1, seed, False)
+                        entry = (link, child_depth, seed, False)
                         (sub_atts if is_attachment_url(link) else sub_pages).append(entry)
                     queue.extendleft(reversed(sub_atts))
                     queue.extend(sub_pages)
@@ -954,6 +1227,31 @@ def create_task(
         it.setdefault("confirmed", False)
         it.setdefault("ingest_status", None)   # confirm 下载后：downloaded/ok/error（待预览确认→入库）
         it.setdefault("ingest_error", None)
+        it.setdefault("page_time", None)       # 2026-09 抓取内容在网站的更新时间
+        it.setdefault("content_hash", None)    # 2026-09 内容指纹（仅后端入库台账用，不回传前端）
+        it.setdefault("unchanged", False)      # 2026-09 与上次成功入库完全一致（网站未更新）
+        it.setdefault("prev_ingested_at", None)
+        it.setdefault("prev_dataset_name", None)
+
+    # ★ 2026-09 更新检测：抓取完成后与「上次成功入库」的同一 URL 比对内容指纹。
+    #   指纹完全一致 → unchanged=True（网站未更新，前端提示无需再次入库）。
+    #   DB 异常/从未入库过 → 不标记，按首次处理（对比失败只降级不阻断抓取）。
+    ok_items = [it for it in items if it.get("ok")]
+    if ok_items:
+        try:
+            from app.services import webscrape_store
+
+            prev_map = webscrape_store.fetch_latest_ingested_by_url([it["url"] for it in ok_items])
+            for it in ok_items:
+                old = prev_map.get(it["url"])
+                if not old:
+                    continue
+                it["prev_ingested_at"] = old.get("created_at")
+                it["prev_dataset_name"] = old.get("dataset_name")
+                cur_h, old_h = it.get("content_hash"), old.get("content_hash")
+                it["unchanged"] = bool(cur_h and old_h and cur_h == old_h)
+        except Exception:  # noqa: BLE001 更新检测只是提示，失败不应影响抓取主流程
+            log.warning("webscrape 更新检测查询失败（跳过本次比对）: task=%s", task_id)
 
     task = {
         "id": task_id,
@@ -1005,6 +1303,131 @@ def _unique_pending_name(desired: str, url: str) -> str:
     stem, dot_ext = Path(desired).stem, Path(desired).suffix
     suffix = hashlib.sha1(url.encode("utf-8")).hexdigest()[:6]
     return f"{stem[:40]}_{suffix}{dot_ext}"
+
+
+# ============ HTML 弹窗/浮层广告清理（落地 HTML 用，不引入新依赖） ============
+# ★ 2026-09：网页模板常把推广弹窗（advModal/maskBox 等）静态写在 HTML 里，若下载落地为
+#   .html 时不清理，用户/解析会看到弹窗盖在正文上。这里的判定与浏览器打印 PDF 前的
+#   隐藏逻辑同源，但刻意不含 nav/header/footer 等版面词 —— 落地 HTML 需保留正常导航。
+
+_POPUP_KW = {
+    "modal", "popup", "dialog", "toast", "mask", "overlay", "drawer",
+    "ad", "ads", "adv", "adsbygoogle", "qrcode", "layer",
+}
+_POPUP_CONTAINERS = {"div", "section", "main", "ul", "ol", "table", "nav", "header", "footer", "dl"}
+_HTML_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+def _popup_tokens(*values: Optional[str]) -> set:
+    """id/class 拆词：支持 advModal / adv-modal / maskBox 等写法 → {adv, modal}。"""
+    out = set()
+    for s in values:
+        if not s:
+            continue
+        s = s.replace("-", " ").replace("_", " ")
+        s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s).lower()
+        out.update(w for w in s.split() if w)
+    return out
+
+
+def _is_popup_container(attrs) -> bool:
+    d = {k.lower(): v for k, v in attrs}
+    if _popup_tokens(d.get("id"), d.get("class")) & _POPUP_KW:
+        return True
+    st = re.sub(r"\s+", "", (d.get("style") or "").lower())
+    return "position:fixed" in st
+
+
+class _PopupStripHTMLParser(HTMLParser):
+    """标准库 HTMLParser 顺序重写 HTML，跳过「弹窗/浮层广告」容器子树，其余原样保留。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._parts: List[str] = []
+        self._stack: List[dict] = []
+        self._drop = 0  # 当前正被跳过的子树嵌套容器数
+
+    def _emit(self, s: str) -> None:
+        if self._drop == 0:
+            self._parts.append(s)
+
+    def _pop(self, tag: str) -> Optional[dict]:
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i]["tag"] == tag:
+                return self._stack.pop(i)
+        return None
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _HTML_VOID_TAGS:
+            self._emit(self.get_starttag_text())
+            return
+        if self._drop > 0:
+            self._stack.append({"tag": tag, "drop": False})
+            return
+        drop = tag in _POPUP_CONTAINERS and _is_popup_container(attrs)
+        self._stack.append({"tag": tag, "drop": drop})
+        if drop:
+            self._drop += 1
+        else:
+            self._emit(self.get_starttag_text())
+
+    def handle_startendtag(self, tag, attrs):
+        if self._drop == 0:
+            self._emit(self.get_starttag_text())
+
+    def handle_endtag(self, tag):
+        if tag in _HTML_VOID_TAGS:
+            return
+        f = self._pop(tag)
+        if f is None:
+            if self._drop == 0:
+                self._emit(f"</{tag}>")
+            return
+        inside_drop = self._drop > 0
+        if f["drop"]:
+            self._drop -= 1
+        if not inside_drop and not f["drop"]:
+            self._emit(f"</{tag}>")
+
+    def handle_data(self, data):  # noqa: N802
+        self._emit(data)
+
+    def handle_entityref(self, name):  # noqa: N802
+        self._emit(f"&{name};")
+
+    def handle_charref(self, name):  # noqa: N802
+        self._emit(f"&#{name};")
+
+    def handle_comment(self, data):  # noqa: N802
+        self._emit(f"<!--{data}-->")
+
+    def handle_decl(self, decl):  # noqa: N802
+        self._emit(f"<!{decl}>")
+
+    def handle_pi(self, data):  # noqa: N802
+        self._emit(f"<?{data}>")
+
+
+def strip_popup_ads(html_text: str) -> str:
+    """移除 HTML 里的弹窗/浮层广告容器（advModal/maskBox 等），其余原样保留。
+
+    未发现弹窗特征或解析异常时返回原文 —— 无副作用，可安全用于保存/落盘前的 HTML。
+    """
+    if not html_text:
+        return html_text
+    low = html_text.lower()
+    if not any(k in low for k in _POPUP_KW):  # 快速预检，避免无弹窗页面做整页重写
+        return html_text
+    p = _PopupStripHTMLParser()
+    try:
+        p.feed(html_text)
+        p.close()
+    except Exception:  # noqa: BLE001
+        return html_text
+    return "".join(p._parts)
 
 
 def land_confirmed_items(task: Dict[str, Any], confirmed_urls: List[str]) -> List[Dict[str, Any]]:
@@ -1098,7 +1521,15 @@ def _land_content_as_document(it: Dict[str, Any], stem: str, url: str, task_dir:
         if _try_render(lambda: browser_print_local_html_pdf(html_src, settings.pending_dir / pdf_name)):
             return pdf_name
         # ③ 浏览器打印彻底失败 → 原始 HTML 直接入 pending/（解析阶段本地解析）
+        # ★ 2026-09 移入 pending 前再清理一次（兼容修复前已抓取的旧 HTML 也可能带弹窗）
         html_name = _unique_pending_name(f"{stem}.html", url)
+        try:
+            raw = html_src.read_text(encoding="utf-8", errors="replace")
+            cleaned = strip_popup_ads(raw)
+            if cleaned != raw:
+                html_src.write_text(cleaned, encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001  清理失败不阻断落地（保留原始 HTML）
+            log.warning("webscrape 落地 HTML 清理失败，按原始文件落地: url=%s", url)
         html_src.replace(settings.pending_dir / html_name)
         return html_name
 

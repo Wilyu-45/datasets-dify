@@ -94,6 +94,16 @@ function FieldControl({
       />
     );
   }
+  if (field.type === "select") {
+    return (
+      <Select
+        style={{ width: "100%" }}
+        value={value as string}
+        onChange={(v) => onChange(v)}
+        options={field.options ?? []}
+      />
+    );
+  }
   if (field.type === "urls") {
     // 抓取网站 URL 列表：可增删的多行输入
     const list = Array.isArray(value) ? (value as string[]) : [];

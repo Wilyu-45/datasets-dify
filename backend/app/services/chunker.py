@@ -1176,6 +1176,8 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 # ★ 2026-08-04：HTML 标签剥离（仅用于 _blocks_chars 估算表格字符数）
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+# ★ 2026-09：Markdown 图片引用 ![](xxx)（写盘前兜底补全复制清单）
+_IMG_REF_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 _HTML_ENTITIES = {
     "&nbsp;": " ",
     "&amp;": "&",
@@ -1458,7 +1460,7 @@ def _truncate_overlap_to_safe(
     return truncated
 
 
-def _split_by_sentence(blocks: List[Block], target: int) -> List[List[Block]]:
+def _split_by_sentence(blocks: List[Block], target: int, max_images: int = 0) -> List[List[Block]]:
     """规则 3.4 情况二：按句号（。）/分号（；）切分。
 
     每个子块累计字符数 ≈ target；相邻子块有 overlap 字符（重复上段末尾）。
@@ -1469,6 +1471,11 @@ def _split_by_sentence(blocks: List[Block], target: int) -> List[List[Block]]:
       - 不可分割段（Markdown 表格 / LaTeX 公式）必须整体落入单个 chunk
       - 即使不可分割段超过 target 字符（1500），也不切分（业务约束）
       - 仅对普通段按句末符号切分
+
+    ★ 2026-09 修复（图片上限未生效）：
+      - 新增 max_images 参数（默认 0 表示不限制，兼容旧行为）
+      - 遇到 image block 时检查累计图片数，超限则先 flush 再开新 chunk
+      - 单张图就超限（不可能发生，图片 block 只有 1 张图）：原样保留
     """
     if not blocks:
         return []
@@ -1477,10 +1484,11 @@ def _split_by_sentence(blocks: List[Block], target: int) -> List[List[Block]]:
     out: List[List[Block]] = []
     cur: List[Block] = []
     cur_chars = 0
+    cur_imgs = 0
     overlap_buffer: List[str] = []  # 上一个段落末尾的若干字符
 
     def flush() -> None:
-        nonlocal cur, cur_chars, overlap_buffer
+        nonlocal cur, cur_chars, cur_imgs, overlap_buffer
         if not cur:
             return
         out.append(cur)
@@ -1499,6 +1507,7 @@ def _split_by_sentence(blocks: List[Block], target: int) -> List[List[Block]]:
             overlap_buffer = []
         cur = []
         cur_chars = 0
+        cur_imgs = 0
 
     def _flush_and_start_overlap() -> None:
         """flush 当前 chunk 并在新 chunk 起始加 overlap。"""
@@ -1609,8 +1618,19 @@ def _split_by_sentence(blocks: List[Block], target: int) -> List[List[Block]]:
                 else:
                     append_regular_text(seg_text, b.page_num)
         else:
-            # title / image / table：跟随当前子块（★ table 块本身就不参与 _split_by_sentence）
+            # title / image / table：跟随当前子块
+            # ★ 2026-09：image block 需要检查图片上限，超限则先 flush
+            if (
+                max_images > 0
+                and b.block_type == "image"
+                and b.image_path
+                and cur
+                and cur_imgs >= max_images
+            ):
+                flush()
             cur.append(b)
+            if b.block_type == "image" and b.image_path:
+                cur_imgs += 1
 
     flush()
     return out
@@ -2114,7 +2134,7 @@ def chunk_body(region: Region) -> List[Chunk]:
                     )
             else:
                 # 按句号切
-                sub_chunks_blocks = _split_by_sentence(l2_blocks_sub, settings.chunk_split_target)
+                sub_chunks_blocks = _split_by_sentence(l2_blocks_sub, settings.chunk_split_target, max_images=settings.chunk_max_images_per_segment)
                 for i, sub_blocks in enumerate(sub_chunks_blocks, start=1):
                     suffix = f" (part {i})" if len(sub_chunks_blocks) > 1 else ""
                     tp = (
@@ -2122,7 +2142,9 @@ def chunk_body(region: Region) -> List[Chunk]:
                         if l1_title
                         else f"{l2_merged_title}{suffix}"
                     )
-                    body, _ = _render_chunk_body(tp, sub_blocks, is_split=len(sub_chunks_blocks) > 1)
+                    # ★ 2026-09 修复：之前这里丢弃 refs（body, _ =），句号切出的段落
+                    # 图片只进 body、不记录 image_refs → 复制图片时漏拷、入库报「图片找不到」
+                    body, sub_refs = _render_chunk_body(tp, sub_blocks, is_split=len(sub_chunks_blocks) > 1)
                     chunks.append(
                         Chunk(
                             chunk_id="",
@@ -2132,6 +2154,7 @@ def chunk_body(region: Region) -> List[Chunk]:
                             char_count=_blocks_chars(sub_blocks),
                             is_split=len(sub_chunks_blocks) > 1,
                             body=body,
+                            image_refs=sub_refs,
                             _level1=l1_title,
                             _level2=l2_merged_title,
                         )
@@ -2149,7 +2172,10 @@ def chunk_simple(region: Region) -> List[Chunk]:
     title = region.title_path
     tp = title
     total = _blocks_chars(blocks)
-    if total <= settings.chunk_target_chars:
+    img_count = _blocks_image_count(blocks)
+    max_images = settings.chunk_max_images_per_segment
+    # ★ 2026-09：字符数不超但图片数超限也需要进入句号切分（避免单段 10+ 图）
+    if total <= settings.chunk_target_chars and img_count <= max_images:
         body, refs = _render_chunk_body(tp, blocks)
         return [
             Chunk(
@@ -2163,7 +2189,7 @@ def chunk_simple(region: Region) -> List[Chunk]:
             )
         ]
     # 超长 → 句号切
-    sub_blocks_list = _split_by_sentence(blocks, settings.chunk_split_target)
+    sub_blocks_list = _split_by_sentence(blocks, settings.chunk_split_target, max_images=settings.chunk_max_images_per_segment)
     out: List[Chunk] = []
     for i, sub in enumerate(sub_blocks_list, start=1):
         sub_tp = f"{title} (part {i})" if len(sub_blocks_list) > 1 else title
@@ -2336,7 +2362,7 @@ def chunk_appendix(region: Region) -> List[Chunk]:
                     )
             else:
                 # 无子标题——按句号切（兜底）
-                sub_list = _split_by_sentence(sub, settings.chunk_split_target)
+                sub_list = _split_by_sentence(sub, settings.chunk_split_target, max_images=max_images)
                 for i, s in enumerate(sub_list, start=1):
                     sub_tp = f"{tp} (part {i})" if len(sub_list) > 1 else tp
                     body, refs = _render_chunk_body(sub_tp, s, is_split=len(sub_list) > 1)
@@ -2354,6 +2380,28 @@ def chunk_appendix(region: Region) -> List[Chunk]:
 # ============================================================
 # 写盘
 # ============================================================
+
+
+def _extract_md_image_refs(content: str) -> List[str]:
+    """从 chunk markdown 文本中提取本地图片引用（保序去重）。
+
+    ★ 2026-09 兜底：复制图片时以 body 里实际出现的引用为准，防止个别切分分支
+    漏收集 image_refs 导致图片没被复制（后续入库报「图片找不到，跳过」）。
+    """
+    out: List[str] = []
+    seen = set()
+    for m in _IMG_REF_RE.finditer(content):
+        ref = m.group(1).strip()
+        if not ref or ref.startswith(("http://", "https://", "data:")):
+            continue
+        ref = ref.replace("\\", "/")
+        if not Path(ref).name:  # 跳过无文件名的残缺引用（如 images/）
+            continue
+        if ref in seen:
+            continue
+        seen.add(ref)
+        out.append(ref)
+    return out
 
 
 def _copy_referenced_images(
@@ -2426,6 +2474,9 @@ def write_chunks(
         c.file_name = f"{c.chunk_id}_{slug}.md"
         (chunks_dir / c.file_name).write_text(c.body, encoding="utf-8")
         total_refs.extend(c.image_refs)
+        # ★ 2026-09 兜底：以 body 里实际出现的图片引用为准，防止个别分支漏记
+        # image_refs 导致图片没被复制（入库时报「图片找不到」）
+        total_refs.extend(_extract_md_image_refs(c.body))
     copied = _copy_referenced_images(images_src, chunks_dir, total_refs)
     return chunks, len(total_refs), copied
 
@@ -2484,6 +2535,62 @@ class ChunkResult:
     total_chars: int
 
 
+def _md_fallback_blocks(md_text: str) -> List[Block]:
+    """无 v2 时的纯 md 兜底：把 md 按「段落 + 图片行」拆成多个 block。
+
+    ★ 2026-09 修复（HTML 本地解析入库丢图）：
+        此前把整篇 md 当作一个超长 paragraph 交给句子切分，md 中的
+        `![](images/xxx)` 图片行可能在切分/重叠边界被整行丢弃
+        （实测 11 张图丢 1 张）。这里先按空行分段落，图片语法行强制独立成块，
+        让每个块短小完整——切分时图片引用不再落入会被截断的位置。
+
+    ★ 2026-09 修复（图片上限未生效）：
+        此前图片语法被推入 paragraph block，_blocks_image_count() 只统计
+        block_type=="image" 的块，导致贪心合并和句子切分时完全看不到这些图片，
+        单段可能超过 10 张图触发 Dify 400。现在图片语法创建独立的 image block，
+        image_path 填入括号内路径，与 v2 路径一致。
+    """
+    out: List[Block] = []
+    text = (md_text or "").replace("\r\n", "\n")
+
+    def _push(seg: str) -> None:
+        seg = seg.strip()
+        if seg:
+            out.append(Block(page_num=1, block_type="paragraph", text=seg))
+
+    def _push_image(md_img_syntax: str) -> None:
+        """从 ![alt](path) 提取 path，创建 image block。"""
+        m = re.match(r"!\[([^\]]*)\]\(([^)\s]+)\)", md_img_syntax)
+        if m:
+            alt, path = m.group(1), m.group(2)
+            out.append(Block(
+                page_num=1,
+                block_type="image",
+                image_path=path,
+                image_caption=alt.strip() or None,
+            ))
+        else:
+            # 解析失败，退化为 paragraph（不丢内容）
+            _push(md_img_syntax)
+
+    for para in re.split(r"\n\s*\n", text):
+        if not para.strip():
+            continue
+        # 图片语法行从段落中抽出独立成块（图片引用不能跨块/被句子截断）
+        parts = re.split(r"(\!\[[^\]]*\]\([^)\s]+\))", para)
+        cur = ""
+        for part in parts:
+            if part.startswith("![") and part.endswith(")"):
+                if cur.strip():
+                    _push(cur)
+                    cur = ""
+                _push_image(part)
+            else:
+                cur += part
+        _push(cur)
+    return out
+
+
 def chunk_document(
     parsed_dir: Path,
     chunks_dir: Path,
@@ -2505,14 +2612,13 @@ def chunk_document(
     if v2_path is not None:
         blocks = load_v2_blocks(v2_path)
     else:
-        # 极端兜底：没有 v2，只把 md 按整段作为单个 paragraph
-        blocks = [
-            Block(
-                page_num=1,
-                block_type="paragraph",
-                text=(md_path.read_text(encoding="utf-8") if md_path else "").strip(),
-            )
-        ]
+        # 极端兜底：没有 v2，按段落/图片行拆成多块（2026-09：避免图片行被整段句子切分吞掉）
+        md_text = md_path.read_text(encoding="utf-8") if md_path else ""
+        blocks = _md_fallback_blocks(md_text)
+        if not blocks:
+            blocks = [
+                Block(page_num=1, block_type="paragraph", text=md_text.strip())
+            ]
 
     regions = classify_regions(blocks)
 
@@ -2595,17 +2701,27 @@ def _is_chunks_dir_valid(chunks_dir: Path) -> bool:
 
 
 def _strip_parse_qualifier_suffix(stem: str) -> str:
-    """去掉 PyMuPDF fallback 在 stem 上追加的诊断后缀。
+    """去掉解析链路在 stem 上追加的方括号诊断/标识后缀。
 
     示例：
       "济宁...办法(1) [vlm-image-fallback 修复]" → "济宁...办法(1)"
       "name [pymupdf-fallback 修复]"             → "name"
+      "SIFIC 2019...__0ac29b [本地解析]"         → "SIFIC 2019...__0ac29b"
+      "name [本地解析]"                           → "name"
       "name(v2)"                                  → "name"
       "name"                                      → "name"   (无变化)
+
+    ★ 2026-09 修复（网页 HTML 入库"没入到设置好的知识库"）：
+        本地解析（.html/.xlsx）在 manifest.parse 里记录
+        "{parsed_dir} [本地解析]"，此前这里只剥 fallback/修复 后缀，
+        "[本地解析]" 剥不掉 → _resolve_parsed_dir 只能走末尾"前缀模糊匹配"，
+        在同名 PDF/HTML 目录并存（HTML stem 带 __hash 后缀去重）时会误命中
+        同名 PDF 目录 → 切错对象 → dify 按 hash stem 找不到 chunk 目录，
+        scanned=0，什么都没入库。
+        补齐"解析"类后缀剥离后，能精确匹配到真实目录，杜绝模糊串扰。
     """
-    # 顺序：先剥 fallback 后缀（最右的 [...]），再剥末尾的 "(N)" 数字编号
-    s = re.sub(r"\s*\[[^\]]*fallback[^\]]*\]\s*$", "", stem).strip()
-    s = re.sub(r"\s*\[[^\]]*修复\]\s*$", "", s).strip()
+    # 顺序：先剥最右的 [...] 诊断/标识后缀，再剥末尾的 "(N)" 数字编号
+    s = re.sub(r"\s*\[[^\]]*(?:fallback|修复|解析)[^\]]*\]\s*$", "", stem).strip()
     return s
 
 

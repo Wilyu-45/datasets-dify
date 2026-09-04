@@ -361,7 +361,13 @@ export default function WebScrapeFilePreview({
     <Drawer
       title={
         <Space size={8}>
-          <span>文件预览{ingesting ? " · 解析入库中" : ""}</span>
+          {/* 与确认下载弹窗「第 1 步 / 共 2 步」对应：确认下载后进入本抽屉即为第 2 步
+              （预览核对文件 → 点「确定并解析入库」），入库完成后不再标注步骤 */}
+          <span>
+            文件预览
+            {item?.confirmed && item.ingest_status !== "ok" ? "（第 2 步 / 共 2 步）" : ""}
+            {ingesting ? " · 解析入库中" : ""}
+          </span>
           {item?.confirmed && (
             <Tag color={statusColor[item.ingest_status ?? ""] ?? "default"}>
               {item.ingest_status === "downloaded"
@@ -420,7 +426,7 @@ export default function WebScrapeFilePreview({
           <Alert
             type="info"
             showIcon
-            message="下载完成，请确认文件内容"
+            message="第 2 步 · 下载完成，请确认文件内容"
             description="确认这里预览的文件正是要入库的内容后，点右下角「确定并解析入库」，将仅对当前这一项走 解析 → 切分 → Dify 入库。"
           />
         )}

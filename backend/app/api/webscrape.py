@@ -67,6 +67,11 @@ class WebScrapeItem(BaseModel):
     ok: bool
     kind: str = "content"              # content=网页正文 / attachment=附件文件
     depth: Optional[int] = None        # 递归层级：0=URL 列表本身，1..N=递归发现的页面
+    # ★ 2026-09 更新检测：抓取内容在网站上的更新时间 + 是否与上次成功入库完全一致
+    page_time: Optional[str] = None    # 从页面 meta/正文提取的时间（附件/未识别为 None）
+    unchanged: bool = False            # 内容指纹与上次成功入库相同 → 网站未更新，无需再次入库
+    prev_ingested_at: Optional[str] = None     # 上次成功入库时间（供提示与溯源）
+    prev_dataset_name: Optional[str] = None    # 上次入库到的知识库
     title: str = ""                    # content：页面标题；attachment：文件名 stem
     filename: Optional[str] = None     # attachment：原始文件名；confirm 下载后=落地文件名（content 为 pdf/html）
     rel_path: Optional[str] = None     # 相对 data/webscrape/{task_id}/ 的路径
@@ -185,6 +190,11 @@ def _task_to_model(task: Dict[str, Any]) -> WebScrapeTask:
             "ok": bool(it.get("ok")),
             "kind": it.get("kind") or "content",
             "depth": it.get("depth"),
+            # ★ 2026-09 更新检测信息透传（content_hash 仅后端台账用，不回传）
+            "page_time": it.get("page_time"),
+            "unchanged": bool(it.get("unchanged")),
+            "prev_ingested_at": it.get("prev_ingested_at"),
+            "prev_dataset_name": it.get("prev_dataset_name"),
             "title": it.get("title") or "",
             "filename": it.get("filename"),
             "rel_path": it.get("rel_path"),
@@ -484,6 +494,8 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
     for r in ok_landed:
         src_item = item_by_url.get(r.get("url")) or {}
         try:
+            # ★ 2026-09 入库台账同时写入抓取内容在网站的更新时间 + 内容指纹，
+            #   下次抓到同一 URL 时用于“网站有没有更新”判断
             webscrape_store.upsert_record(
                 task_id,
                 r["url"],
@@ -496,6 +508,8 @@ def confirm_webscrape_task(task_id: str, req: WebScrapeConfirmRequest) -> WebScr
                 dataset_name=dataset_name or "",
                 profile_id=str(profile.get("id") or ""),
                 profile_name=str(profile.get("name") or ""),
+                page_time=str(src_item.get("page_time") or ""),
+                content_hash=str(src_item.get("content_hash") or ""),
             )
         except Exception:  # noqa: BLE001 台账失败不阻断确认下载主流程
             log.exception("webscrape 入库台账登记失败: task=%s url=%s", task_id, r.get("url"))

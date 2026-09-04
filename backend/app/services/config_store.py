@@ -104,6 +104,24 @@ PROFILE_FIELDS: List[Dict[str, Any]] = [
         "description": "单次任务最多抓取的页面/附件总数（含 URL 列表本身；URL 列表本身始终全部处理），防止大站递归拖垮任务",
     },
     {
+        "key": "webscrape_crawl_scope",
+        "label": "递归范围",
+        "type": "select",
+        "default": "column",
+        "types": [PROFILE_TYPE_WEBSCRAPE],
+        "options": [
+            {
+                "value": "column",
+                "label": "仅本栏目（不跨到首页/欢迎辞等兄弟栏目）",
+            },
+            {
+                "value": "host",
+                "label": "整个网站（同域名链接均可跟随）",
+            },
+        ],
+        "description": "递归时把哪些页面算作「同站」：仅本栏目=从列表/栏目 URL 出发只沿其路径子树抓取（含分页、详情与附件），不会顺带抓首页、欢迎辞、AI 助手等其它栏目；整个网站=同域名内链接全部跟随（旧行为）。",
+    },
+    {
         "key": "dify_dataset_id",
         "label": "知识库 ID",
         "type": "select_dataset",

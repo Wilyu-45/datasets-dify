@@ -337,20 +337,128 @@ _PDF_HIDE_NOISE_CSS = (
     "nav,footer,aside,form,iframe,noscript,svg,canvas{display:none!important}"
 )
 
+# ★ 2026-09 打印前页面预处理（evaluate 执行的 JS）：解决「弹窗广告盖正文 / 图片不全」。
+# 1) 浮层/广告/蒙层容器：与 webscraper.HTMLToMarkdown._NOISE_KEYWORDS 同一套特征词，
+#    按 id/class 拆词（支持 aiModal / adv-modal / maskBox 等写法）命中即整块隐藏。
+#    只处理容器标签，body/html 不参与，避免 modal-open 类状态名误杀整页。
+# 2) 懒加载图片：data-src 系占位属性还原到 src、loading=lazy → eager，
+#    再模拟滚动到底部让基于视口的懒加载真正拉图，最后滚回顶部等待解码。
+_PDF_PREPARE_JS = r"""
+async () => {
+  const KW = new Set(['modal','popup','dialog','toast','mask','overlay','drawer','nav','ad','ads','adv','adsbygoogle','qrcode','layer']);
+  const TAGOK = new Set(['DIV','SECTION','MAIN','UL','OL','TABLE','NAV','HEADER','FOOTER','DL']);
+  const toks = (s) => (s || '').replace(/[-_]+/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/\s+/).filter(Boolean);
+  for (const el of document.querySelectorAll('div,section,main,ul,ol,table,nav,header,footer,dl')) {
+    if (el === document.body || el === document.documentElement) continue;
+    const words = new Set(toks(el.id).concat(toks(typeof el.className === 'string' ? el.className : '')));
+    let hit = false;
+    for (const w of words) { if (KW.has(w)) { hit = true; break; } }
+    if (!hit) {
+      const st = (el.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase();
+      if (st.includes('display:none') || st.includes('visibility:hidden') || st.includes('position:fixed')) hit = true;
+    }
+    if (hit) { try { el.style.setProperty('display', 'none', 'important'); } catch (e) {} }
+  }
+  // ---- 图片：占位属性还原 + 关闭懒加载 ----
+  const REAL_IMG = ['data-src', 'data-original', 'data-lazy-src', 'data-url', 'data-img', 'data-lazy', 'data-echo', 'data-actualsrc', 'data-normal'];
+  for (const img of document.images) {
+    img.loading = 'eager';
+    for (const a of REAL_IMG) {
+      const v = img.getAttribute(a);
+      if (v) { img.src = v; break; }
+    }
+    if (img.srcset === '' || img.srcset === undefined) {
+      for (const a of ['data-srcset', 'data-lazy-srcset', 'data-original-srcset']) {
+        const v = img.getAttribute(a);
+        if (v) { img.srcset = v; break; }
+      }
+    }
+  }
+  for (const v of document.querySelectorAll('video[data-poster]')) {
+    if (!v.poster) v.poster = v.getAttribute('data-poster');
+  }
+  for (const s of document.querySelectorAll('source')) {
+    if ((!s.srcset || s.srcset === '') && s.getAttribute('data-srcset')) s.srcset = s.getAttribute('data-srcset');
+  }
+  // ---- 滚动整页触发懒加载，再回顶 ----
+  try {
+    const step = Math.max(window.innerHeight || 800, 800);
+    const total = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    for (let y = 0; y < total + step; y += step) {
+      window.scrollTo(0, y);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    window.scrollTo(0, 0);
+  } catch (e) {}
+  // ---- 等待图片真实解码完成（网络已空闲，滚动触发的请求基本就绪）----
+  try {
+    await Promise.allSettled(Array.from(document.images).map((im) => (im.complete ? Promise.resolve() : im.decode ? im.decode().catch(() => {}) : Promise.resolve())));
+  } catch (e) {}
+  await new Promise((r) => setTimeout(r, 800));
+}
+"""
 
-def _print_page_pdf(page, dest: Path) -> None:
-    """等待渲染稳定 → 隐藏噪音 → 打印 A4 PDF（供两个入口共用）。"""
+
+def _prepare_pdf_page(page) -> None:
+    """打印前页面预处理：隐藏浮层/广告/蒙层 + 触发懒加载图片（失败不阻塞打印）。"""
     try:
         page.add_style_tag(content=_PDF_HIDE_NOISE_CSS)
-    except Exception:  # noqa: BLE001 样式注入失败不影响打印
+    except Exception:  # noqa: BLE001  样式注入失败不影响打印
         pass
+    try:
+        page.evaluate(_PDF_PREPARE_JS)
+    except Exception as e:  # noqa: BLE001  预处理失败只告警，仍按原样打印
+        log.warning("browser pdf prepare skipped: err=%s", e)
+    try:
+        page.evaluate("window.scrollTo(0,0)")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ★ 2026-09 打印纸宽自适应：网页大多按桌面屏幕宽度（约 1200~1366px）设计，
+# 若硬套 A4（可用排版宽仅约 734px），固定宽度的轮播大图/版块会超出纸面被横向裁掉
+# （表现为 PDF 里图片"被截断/显示不全"）。打印前测量页面设计宽度，据此决定纸宽。
+_DESIGN_WIDTH_JS = r"""
+() => {
+  const root = document.documentElement;
+  const body = document.body;
+  let maxW = Math.max(
+    root ? root.scrollWidth : 0, root ? root.clientWidth : 0,
+    body ? body.scrollWidth : 0, body ? body.clientWidth : 0,
+  );
+  try {
+    for (const el of body ? body.querySelectorAll('*') : []) {
+      const w = el.getBoundingClientRect().width;
+      if (w > maxW) maxW = w;
+    }
+  } catch (e) {}
+  // 页面普遍为桌面流式布局（body 宽=视口宽），下限取屏幕设计宽；上限防御异常超大元素
+  const w = Math.max(1200, Math.min(2000, Math.round(maxW)));
+  return w;
+}
+"""
+
+
+def _print_page_pdf(page, dest: Path) -> None:
+    """等待渲染稳定 → 隐藏噪音/浮层 → 懒加载图片 → 按页面宽度打印 PDF（供两个入口共用）。
+
+    纸宽 = 页面实际设计宽度（默认桌面屏 1366px），保证固定宽度图片/版块不被 A4 窄纸横向裁切；
+    测量失败时退回 A4。
+    """
+    _prepare_pdf_page(page)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    page.pdf(
-        path=str(dest),
-        format="A4",
+    common = dict(
         print_background=True,
         margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"},
     )
+    try:
+        width_css = int(page.evaluate(_DESIGN_WIDTH_JS) or 0)
+    except Exception:  # noqa: BLE001
+        width_css = 0
+    if 794 < width_css <= 2000:
+        page.pdf(path=str(dest), width=f"{width_css}px", **common)
+    else:
+        page.pdf(path=str(dest), format="A4", **common)
 
 
 def browser_print_pdf(url: str, dest: Path, timeout: int = 60) -> bool:

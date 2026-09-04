@@ -131,6 +131,9 @@ ALTER TABLE process_config_log ADD COLUMN IF NOT EXISTS chunk_strategy TEXT;
 # 目标知识库 / 所用配置；流水线（解析→切分→入库）完成后回填产物与状态。
 # 注：manifest 表仍会登记同名行（流水线以 manifest 为工作队列，机制需要），
 # 本表才是网站抓取入库的业务台账；按 (task_id, url) 幂等。
+# ★ 2026-09 新增：page_time=抓取内容本身在网站上的更新时间（从页面 meta/正文提取，
+#   附件无可识别时间则留空）；content_hash=本次抓取内容的指纹（网页=正文 MD5，
+#   附件=文件字节 MD5）。下次抓取到同一 URL 时比对指纹即可判断「网站有没有更新」。
 WEBSCRAPE_RECORD_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS webscrape_records (
     id            BIGSERIAL PRIMARY KEY,
@@ -150,11 +153,20 @@ CREATE TABLE IF NOT EXISTS webscrape_records (
     chunks        TEXT,
     dify_doc_id   TEXT,
     error_msg     TEXT,
+    page_time     TEXT,
+    content_hash  TEXT,
     created_at    TEXT,
     updated_at    TEXT,
     UNIQUE (task_id, url)
 );
 CREATE INDEX IF NOT EXISTS idx_webscrape_records_time ON webscrape_records (created_at);
+CREATE INDEX IF NOT EXISTS idx_webscrape_records_url ON webscrape_records (url);
+"""
+
+# webscrape_records 旧表补列（★ 2026-09：页面更新时间 + 内容指纹；幂等）
+WEBSCRAPE_RECORD_ALTER_SQL = """
+ALTER TABLE webscrape_records ADD COLUMN IF NOT EXISTS page_time TEXT;
+ALTER TABLE webscrape_records ADD COLUMN IF NOT EXISTS content_hash TEXT;
 """
 
 INIT_SQL = (
@@ -167,6 +179,8 @@ INIT_SQL = (
     + WEBSCRAPE_TASK_TABLE_SQL
     + "\n"
     + WEBSCRAPE_RECORD_TABLE_SQL
+    + "\n"
+    + WEBSCRAPE_RECORD_ALTER_SQL
 )
 
 

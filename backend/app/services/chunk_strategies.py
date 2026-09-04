@@ -301,17 +301,22 @@ def _chunk_body_fixed(region: Region) -> List[Chunk]:
     atoms = _flatten_atoms(non_tables)
     size = max(50, settings.chunk_fixed_size_chars)
     overlap = max(0, settings.chunk_fixed_overlap_chars)
+    max_images = settings.chunk_max_images_per_segment
 
     groups: List[List[_Atom]] = []
     cur: List[_Atom] = []
     cur_chars = 0
+    cur_imgs = 0
     for a in atoms:
         a_len = len(a.text)
-        if cur and cur_chars + a_len > size:
+        a_img = 1 if (a.block and a.block.block_type == "image" and a.block.image_path) else 0
+        # ★ 2026-09：图片超限也触发分组（与字符数阈值并列）
+        if cur and (cur_chars + a_len > size or (max_images > 0 and cur_imgs + a_img > max_images)):
             groups.append(cur)
-            cur, cur_chars = [], 0
+            cur, cur_chars, cur_imgs = [], 0, 0
         cur.append(a)
         cur_chars += a_len
+        cur_imgs += a_img
     if cur:
         groups.append(cur)
 
@@ -339,7 +344,7 @@ def _chunk_body_fixed(region: Region) -> List[Chunk]:
 def _chunk_body_sentence(region: Region) -> List[Chunk]:
     """句子级切分：按句末标点切分，保留最自然的语义边界。"""
     non_tables, table_chunks = _extract_table_chunks(region)
-    groups = _split_by_sentence(non_tables, settings.chunk_split_target)
+    groups = _split_by_sentence(non_tables, settings.chunk_split_target, max_images=settings.chunk_max_images_per_segment)
     chunks = [_make_plain_chunk(region.title_path, g, "body") for g in groups]
     return table_chunks + chunks
 
@@ -358,7 +363,7 @@ def _chunk_body_recursive(region: Region) -> List[Chunk]:
     for _, sub in merged:
         if _blocks_chars(sub) > settings.chunk_hard_limit:
             # 超长：进入更小一级分隔符（句子）
-            for g in _split_by_sentence(sub, settings.chunk_split_target):
+            for g in _split_by_sentence(sub, settings.chunk_split_target, max_images=settings.chunk_max_images_per_segment):
                 chunks.append(_make_plain_chunk(region.title_path, g, "body", is_split=True))
         else:
             chunks.append(_make_plain_chunk(region.title_path, sub, "body"))
@@ -450,25 +455,32 @@ def _group_atoms_with_breakpoints(
     atoms: Sequence[_Atom],
     breakpoints: set,
     target: int,
+    max_images: int = 0,
 ) -> List[List[_Atom]]:
     """按断裂点 + 目标字符数把原子序列分组。
 
     - 标题原子强制作为新组的起点
     - breakpoints 是原子索引，表示"该原子之前应切分"
     - 累计字符超过 target 也切分（保证块大小合理）
+    - ★ 2026-09：累计图片超过 max_images 也切分（避免单段 10+ 图）
     """
     groups: List[List[_Atom]] = []
     cur: List[_Atom] = []
     cur_chars = 0
+    cur_imgs = 0
     for i, a in enumerate(atoms):
+        a_img = 1 if (a.block and a.block.block_type == "image" and a.block.image_path) else 0
         force_new = a.is_heading or (i in breakpoints) or (
             cur and cur_chars + len(a.text) > target
+        ) or (
+            max_images > 0 and cur and cur_imgs + a_img > max_images
         )
         if cur and force_new:
             groups.append(cur)
-            cur, cur_chars = [], 0
+            cur, cur_chars, cur_imgs = [], 0, 0
         cur.append(a)
         cur_chars += len(a.text)
+        cur_imgs += a_img
     if cur:
         groups.append(cur)
     return groups or [list(atoms)]
@@ -506,7 +518,7 @@ def _chunk_body_semantic(region: Region) -> List[Chunk]:
             # 断裂点位于第 k+1 个普通句子的原子索引处
             breakpoints.add(plain_idx[k + 1])
 
-    groups = _group_atoms_with_breakpoints(atoms, breakpoints, settings.chunk_target_chars)
+    groups = _group_atoms_with_breakpoints(atoms, breakpoints, settings.chunk_target_chars, max_images=settings.chunk_max_images_per_segment)
     chunks = [_render_atom_chunk(region.title_path, g, "body") for g in groups]
     return table_chunks + chunks
 
@@ -536,7 +548,7 @@ def _chunk_body_parent_child(region: Region) -> List[Chunk]:
         # 父块（上下文）
         chunks.append(_make_plain_chunk(region.title_path, p_blocks, "parent"))
         # 子块（检索单元）：父块内按句子切分到子块大小
-        for cg in _split_by_sentence(p_blocks, child_size):
+        for cg in _split_by_sentence(p_blocks, child_size, max_images=settings.chunk_max_images_per_segment):
             chunks.append(
                 _make_plain_chunk(region.title_path, cg, "body", parent_id=parent_id)
             )
@@ -581,7 +593,7 @@ def _chunk_body_late_chunking(region: Region) -> List[Chunk]:
         if _cosine(emb, doc_vec) < threshold:
             breakpoints.add(plain_idx[k])
 
-    groups = _group_atoms_with_breakpoints(atoms, breakpoints, settings.chunk_target_chars)
+    groups = _group_atoms_with_breakpoints(atoms, breakpoints, settings.chunk_target_chars, max_images=settings.chunk_max_images_per_segment)
     chunks = [_render_atom_chunk(region.title_path, g, "body") for g in groups]
     return table_chunks + chunks
 

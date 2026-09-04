@@ -241,7 +241,13 @@ def _extract_xlsx_text(src: Path) -> str:
 class _HTMLToMarkdownParser(HTMLParser):
     """标准库实现：HTML → 简单 markdown（标题/段落/列表/表格/链接/图片 alt）。"""
 
-    _SKIP_TAGS = {"script", "style", "noscript", "head", "title", "meta", "link"}
+    # 需要「配对闭合」的跳过容器（有文本内容，必须精确进出）
+    _SKIP_TAGS = {"script", "style", "noscript", "head", "title"}
+    # 无文本内容、通常不自闭合的自闭合标签：只忽略自身、不计入跳过深度。
+    # ★ 2026-09：meta/link 若也按配对标签 +1 深度，XHTML 风格页面（如 SIFIC）
+    #   里它们往往没有 </meta>、</link>，会让 _skip_depth 越叠越高减不回来，
+    #   结果整个 <body> 的正文都被当作「跳过区域」→ 本地解析报没有可提取文本。
+    _VOID_SKIP_TAGS = {"meta", "link"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -250,6 +256,8 @@ class _HTMLToMarkdownParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list) -> None:  # noqa: D102
         t = tag.lower()
+        if t in self._VOID_SKIP_TAGS:
+            return
         if t in self._SKIP_TAGS:
             self._skip_depth += 1
         if self._skip_depth:
@@ -273,12 +281,22 @@ class _HTMLToMarkdownParser(HTMLParser):
         elif t == "a":
             self._out.append("[")
         elif t == "img":
-            alt = next((v for k, v in attrs if k == "alt"), "") or ""
-            if alt:
+            # ★ 2026-09 HTML 入库不丢图：输出 markdown 图片语法并保留 src，
+            #   解析后由 _download_html_images 下载到 images/ 并改写为本地引用。
+            #   空 alt 兜底 "image"（markdown 语法与 Dify 附件上传都要求非空 alt）。
+            a = {k.lower(): (v or "") for k, v in attrs}
+            src = (a.get("src") or "").strip()
+            alt = (a.get("alt") or "").strip()
+            if src.startswith(("http://", "https://")):
+                self._out.append(f"\n\n![{alt or 'image'}]({src})")
+            elif alt:
+                # 无 src 或相对地址（相对地址需 base_url，无法离线解析）：保留 alt 语义
                 self._out.append(f"[图片: {alt}]")
 
     def handle_endtag(self, tag: str) -> None:  # noqa: D102
         t = tag.lower()
+        if t in self._VOID_SKIP_TAGS:
+            return
         if t in self._SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
         if self._skip_depth:
@@ -311,17 +329,134 @@ def _extract_html_text(src: Path) -> str:
     return text
 
 
+def _download_html_images(md_text: str, images_dir: Path) -> str:
+    """把 HTML 本地解析出的 md 中 `![alt](https://…)` 图片下载到 images_dir。
+
+    ★ 2026-09 HTML 入库不丢图：
+        此前 HTML 走本地解析只有文本、图片全部丢失（image_count=0）。
+        本函数把远程图片下载为 parsed/{stem}/images/img_NNN_xxx.jpg，
+        并把 md 引用改写为 images/xxx —— 与 MinerU 产物一致，chunker 会把
+        images/ 复制进 chunk、dify 上传，整条既有图片链路即可复用。
+
+    失败兜底：下载失败/非图片 → 退化为 `[图片: alt]` 占位文本（保留 alt 语义，
+    绝不因网络问题让整页解析失败）。返回改写后的 markdown。
+    """
+    from urllib.parse import urlsplit
+
+    # 只处理 HTML 解析阶段保留的远程图引用；无图页面直接原样返回
+    if "![" not in md_text:
+        return md_text
+
+    seen_url: Dict[str, str] = {}  # url → "images/xxx"
+    failed_url: set = set()
+    downloaded = 0
+
+    def _sub(m: "re.Match[str]") -> str:
+        nonlocal downloaded
+        alt = m.group(1).strip()
+        url = m.group(2).strip()
+        if url in seen_url:
+            return f"![{alt or 'image'}]({seen_url[url]})"
+        if url in failed_url:
+            return f"[图片: {alt}]" if alt else "[图片]"
+        data = _fetch_html_image(url)
+        if data is None:
+            failed_url.add(url)
+            log.info(
+                "HTML 图片下载失败，保留占位: %s",
+                url,
+                extra={"step": "parse", "status": "img_failed"},
+            )
+            return f"[图片: {alt}]" if alt else "[图片]"
+        ext = _image_ext(data, url)
+        # slug 取 URL 文件名的 stem（去掉扩展与 !xxx 变体后缀），避免出现 xxx.jpg.jpg
+        base = urlsplit(url).path.rsplit("/", 1)[-1].split("!", 1)[0]
+        slug = re.sub(r"[^\w.\-]+", "_", Path(base).stem)[:60].strip("._") or "img"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        name = f"img_{downloaded + 1:03d}_{slug}{ext}"
+        (images_dir / name).write_bytes(data)
+        seen_url[url] = f"images/{name}"
+        downloaded += 1
+        return f"![{alt or 'image'}]({seen_url[url]})"
+
+    text = _HTML_MD_IMG_RE.sub(_sub, md_text)
+    if downloaded:
+        log.info(
+            "HTML 本地解析下载图片 %d 张到 %s",
+            downloaded, images_dir,
+            extra={"step": "parse", "status": "img_ok"},
+        )
+    return text
+
+
+_HTML_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_HTML_IMG_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+_HTML_IMG_TIMEOUT = (8, 25)  # (connect, read) 秒
+_HTML_IMG_MAX_BYTES = 15 * 1024 * 1024
+
+
+def _fetch_html_image(url: str) -> Optional[bytes]:
+    """下载单张网页图片；失败/超时/超大/非图片一律返回 None（静默，不影响解析）。"""
+    import httpx
+
+    try:
+        with httpx.Client(
+            headers={"User-Agent": _HTML_IMG_UA},
+            timeout=_HTML_IMG_TIMEOUT,
+            follow_redirects=True,
+        ) as client:
+            with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                ct = (resp.headers.get("content-type") or "").lower().split(";")[0].strip()
+                if ct and not ct.startswith("image/"):
+                    return None  # 源站返回的是错误页 / JSON / 压缩包等
+                data = bytearray()
+                for chunk in resp.iter_bytes(64 * 1024):
+                    data += chunk
+                    if len(data) > _HTML_IMG_MAX_BYTES:
+                        return None
+                return bytes(data)
+    except Exception:  # noqa: BLE001  下载失败静默，整页文本解析不受影响
+        return None
+
+
+def _image_ext(data: bytes, url: str) -> str:
+    """按内容 magic（优于 Content-Type / URL 扩展名）判断图片扩展名。"""
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"BM"):
+        return ".bmp"
+    if data[4:8] == b"ftyp" and b"avif" in data[8:16]:
+        return ".avif"
+    # 兜底：URL 自带扩展名（去掉 !xxx 变体后缀，如 xxx.jpg!1920）
+    base = (url.rsplit("?", 1)[0].rsplit("/", 1)[-1] or "").split("!", 1)[0]
+    ext = Path(base).suffix.lower()
+    return ext if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"} else ".jpg"
+
+
 def _parse_local_document(src: Path, parsed_dir: Path) -> Path:
     """本地解析 MinerU 不支持的文档类型（.html / .htm）。
 
     也支持 .xlsx（openpyxl 提取表格），用作 MinerU 调用失败时的本地兜底。
-    提取文本 → 生成 parsed/{stem}/{stem}.md，返回 md 路径。
+    提取文本 → 生成 parsed/{stem}/{stem}.md（HTML 另把页面图片下载到
+    parsed/{stem}/images/，md 用 `![alt](images/xxx)` 引用），返回 md 路径。
     """
     parsed_dir.mkdir(parents=True, exist_ok=True)
     if src.suffix.lower() == ".xlsx":
         text = _extract_xlsx_text(src)
     else:  # .html / .htm
         text = _extract_html_text(src)
+        # 图片入库：远程图 → parsed/{stem}/images/，md 引用改写为本地相对路径
+        text = _download_html_images(text, parsed_dir / "images")
     md_path = parsed_dir / f"{_safe_stem(src.name)}.md"
     md_path.write_text(text, encoding="utf-8")
     return md_path

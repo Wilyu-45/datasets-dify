@@ -332,6 +332,31 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
       ),
     },
     {
+      // ★ 2026-09 页面更新时间 + 与上次入库比对（网站未更新检测）
+      title: "更新时间 / 更新检测",
+      key: "update",
+      width: 150,
+      render: (_, it) => {
+        if (!it.ok) return <Text type="secondary">-</Text>;
+        return (
+          <Space direction="vertical" size={2}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {it.kind === "content" ? it.page_time ?? "页面未标注时间" : "附件文件"}
+            </Text>
+            {it.unchanged && (
+              <Tooltip
+                title={`内容与上次成功入库完全一致（上次 ${it.prev_ingested_at ?? "-"} 入库${it.prev_dataset_name ? `到「${it.prev_dataset_name}」` : ""}）`}
+              >
+                <Tag color="success" style={{ marginInlineEnd: 0 }}>
+                  与上次一致 · 未更新
+                </Tag>
+              </Tooltip>
+            )}
+          </Space>
+        );
+      },
+    },
+    {
       title: "规模",
       key: "size",
       width: 90,
@@ -427,6 +452,9 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
         ),
     },
   ];
+
+  // ★ 2026-09 更新检测汇总：待确认任务中与上次成功入库完全一致（未更新）的项数
+  const unchangedCount = task?.items.filter((i) => i.ok && i.unchanged).length ?? 0;
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -582,6 +610,14 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
               <Empty description="尚无抓取任务：选择网站抓取配置后点击「开始抓取」" />
             ) : (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                {task.status === "pending" && unchangedCount > 0 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`检测到 ${unchangedCount} 项与上次成功入库的内容完全一致（网站未更新）`}
+                    description="已逐条比对内容指纹：这些 URL 上次入库后网站没有变化，无需再次入库，可略过行上「确认下载」；若仍需重新整理（如换知识库），照常操作即可。"
+                  />
+                )}
                 {task.status !== "pending" && (
                   <Alert
                     type="info"
@@ -595,6 +631,7 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
                   rowKey={(it, i) => String(i)}
                   columns={columns}
                   dataSource={task.items}
+                  scroll={{ x: 1100 }}
                   pagination={task.total > 10 ? { pageSize: 10 } : false}
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>
@@ -825,6 +862,20 @@ export default function WebScrapePage({ onOpenConfig }: Props) {
           locale={{ emptyText: "暂无入库记录：行上点「确认下载」→ 文件预览中点「确定并解析入库」后，每条内容会在此留档" }}
           columns={[
             { title: "入库时间", dataIndex: "created_at", width: 150 },
+            {
+              // ★ 2026-09 抓取内容本身在网站上的更新时间（下次抓取比对“是否更新”用）
+              title: "页面更新时间",
+              key: "page_time",
+              width: 110,
+              render: (_, r) =>
+                r.page_time ? (
+                  <Tooltip title={`内容指纹：${(r.content_hash ?? "").slice(0, 12)}${r.content_hash ? "…" : "（旧记录无指纹，无法比对）"}`}>
+                    <Text style={{ fontSize: 12 }}>{r.page_time}</Text>
+                  </Tooltip>
+                ) : (
+                  <Text type="secondary">-</Text>
+                ),
+            },
             {
               title: "标题 / URL",
               key: "title",

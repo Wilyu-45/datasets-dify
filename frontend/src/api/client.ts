@@ -60,10 +60,15 @@ export interface HealthInfo {
 // ============ 配置中心（2026-08 新增）============
 
 /** 可配置字段定义（后端 config_store.PROFILE_FIELDS 动态下发，前端据此渲染表单）。 */
+export interface ConfigFieldOption {
+  value: string;
+  label: string;
+}
+
 export interface ConfigFieldDef {
   key: string;
   label: string;
-  type: "int" | "float" | "bool" | "str" | "urls" | "select_dataset" | "select_strategy";
+  type: "int" | "float" | "bool" | "str" | "urls" | "select" | "select_dataset" | "select_strategy";
   default: number | boolean | string | string[];
   description?: string;
   min?: number;
@@ -73,6 +78,8 @@ export interface ConfigFieldDef {
   types?: string[];
   /** 该字段生效的切分策略列表；不填/空数组表示所有策略通用。 */
   strategies?: string[];
+  /** type="select" 时的候选项。 */
+  options?: ConfigFieldOption[];
 }
 
 /** 一个配置方案 = 知识库 ID + 切分策略 + 全部切分参数；type 区分两套配置。 */
@@ -608,6 +615,14 @@ export interface WebScrapeItem {
   kind: string;
   /** 递归层级：0=URL 列表本身，1..N=递归发现的页面 */
   depth?: number | null;
+  /** ★ 2026-09 抓取内容在网站上的更新时间（从页面 meta/正文提取；附件/未识别为 null） */
+  page_time?: string | null;
+  /** ★ 2026-09 内容指纹与上次成功入库相同 → 网站未更新，无需再次入库 */
+  unchanged?: boolean;
+  /** 上次成功入库时间（更新检测提示用） */
+  prev_ingested_at?: string | null;
+  /** 上次入库到的知识库 */
+  prev_dataset_name?: string | null;
   /** content：页面标题；attachment：文件名 stem */
   title: string;
   /** attachment：原始文件名；confirm 下载后=落地文件名（content 为 pdf/html） */
@@ -715,6 +730,10 @@ export interface WebScrapeRecordItem {
   chunks?: string | null;
   dify_doc_id?: string | null;
   error_msg?: string | null;
+  /** ★ 2026-09 抓取内容在网站上的更新时间（页面 meta/正文提取；附件留空） */
+  page_time?: string | null;
+  /** ★ 2026-09 内容指纹（正文/文件字节 MD5，前端仅溯源展示用） */
+  content_hash?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
