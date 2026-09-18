@@ -1,13 +1,20 @@
 # ═══════════════════════════════════════════
 # Docker Compose 编排文件（生产环境）
 # 
+# ★ 生产定位（2026-09 起）：
+#   - 数据库：MySQL 8.0（方言适配层自动建表/upsert，无需手工建库建表）
+#   - MinerU：官方网页端 API（mineru.net，异步任务制；本地部署改用 RAG_MINERU_PROVIDER=local）
+#   - 存储清理：定时任务默认开启（保留源文件 + 解析产物，清理中间产物）
+# 
 # 用法：
 #   docker compose -f deploy/docker-compose.yml up -d --build    # 启动
 #   docker compose -f deploy/docker-compose.yml down              # 停止
 #   docker compose -f deploy/docker-compose.yml logs -f          # 查看日志
+# 
+# 可选：兼容模式（改用容器内 PostgreSQL，默认 MySQL 不启动）：
+#   DB_TYPE=postgres docker compose -f deploy/docker-compose.yml --profile postgres up -d
+#   （PowerShell: $env:DB_TYPE="postgres"; docker compose -f deploy/docker-compose.yml --profile postgres up -d）
 # ═══════════════════════════════════════════
-
-version: '3.8'
 
 services:
   # ──── 后端服务（FastAPI）─────────────────────
@@ -34,19 +41,33 @@ services:
       - ../backend/.env
     
     # 环境变量（覆盖 env_file 中的值 —— 容器网络下 127.0.0.1 指向容器自身，
-    # 必须改用 compose 服务名 postgres；MinerU 若在宿主机，用 host.docker.internal）
+    # 数据库主机必须改用 compose 服务名 mysql）
     environment:
       - RAG_DATA_ROOT=/opt/ragsystem/data
       - RAG_LOG_LEVEL=${RAG_LOG_LEVEL:-info}
-      # ★ 关键：数据库主机指向 compose 内的 postgres 服务，而非 backend/.env 里的 127.0.0.1
+      
+      # ★ 数据库：生产默认 MySQL（RAG_DB_TYPE=mysql 时后端自动按 MySQL 方言建表/upsert）
+      #   主机指向 compose 内的 mysql 服务，而非 backend/.env 里的 127.0.0.1
+      - RAG_DB_TYPE=${DB_TYPE:-mysql}
+      - RAG_MYSQL_HOST=${MYSQL_SERVICE_HOST:-mysql}
+      - RAG_MYSQL_PORT=${MYSQL_PORT:-3306}
+      - RAG_MYSQL_DBNAME=${MYSQL_DBNAME:-ragsystem_production}
+      - RAG_MYSQL_USER=${MYSQL_USER:-ragsystem_app}
+      - RAG_MYSQL_PASSWORD=${MYSQL_PASSWORD:-ragsystem_password}
+      
+      # ★ MinerU：生产默认官方网页端 API（mineru.net）
+      #   RAG_MINERU_NET_TOKEN 等详细参数由 backend/.env 注入；
+      #   此处仅兜底 provider 默认值（可改 deploy/.env 或宿主机环境变量覆盖回 local）
+      - RAG_MINERU_PROVIDER=${MINERU_PROVIDER:-mineru_net}
+      
+      # ★ 存储清理：定时任务由 RAG_CLEANUP_* 控制（默认开启，24h 周期），
+      #   参数由 backend/.env 注入，如需覆盖取消下行注释
+      # - RAG_CLEANUP_SCHEDULE_HOURS=24
+      
+      # ★ 兼容模式（--profile postgres）下指向 postgres 服务；默认 MySQL 模式下该值不被读取
       - RAG_PG_HOST=${PG_SERVICE_HOST:-postgres}
-      - RAG_PG_DBNAME=${PG_DBNAME:-ragsystem_production}
-      - RAG_PG_USER=${PG_USER:-ragsystem_app}
-      - RAG_PG_PASSWORD=${PG_PASSWORD:-ragsystem_password}
-      # ★ MinerU：若部署在宿主机（非容器），改用 host.docker.internal:7860
-      # - RAG_MINERU_API_URL=http://host.docker.internal:7860
     
-    # Linux 下允许容器访问宿主机服务（MinerU 等）
+    # Linux 下允许容器访问宿主机服务（本地 MinerU / 兼容模式等）
     extra_hosts:
       - "host.docker.internal:host-gateway"
     
@@ -75,7 +96,7 @@ services:
     
     # ★ 依赖数据库就绪后再启动（避免建表失败）
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
     
     networks:
@@ -113,8 +134,60 @@ services:
     networks:
       - ragsystem-network
 
-  # ──── PostgreSQL 数据库─────────────────────────
+  # ──── MySQL 数据库（生产默认，8.0）──────────────
+  mysql:
+    image: mysql:8.0
+    container_name: ragsystem-mysql
+    restart: unless-stopped
+    
+    # 数据库初始化（仅首次启动创建；应用启动时幂等建表，无需手工建表）
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DBNAME:-ragsystem_production}
+      MYSQL_USER: ${MYSQL_USER:-ragsystem_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ragsystem_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ragsystem_root_password}
+    
+    # 数据持久化
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 挂载自定义 init 脚本（可选）
+      # - ./init-scripts:/docker-entrypoint-initdb.d
+      # 自定义 my.cnf（可选）
+      # - ./my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    
+    # 字符集 + 性能调优（容器环境）
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=${MYSQL_MAX_CONNECTIONS:-200}
+      --innodb_buffer_pool_size=${MYSQL_INNODB_BUFFER_POOL_SIZE:-512M}
+    
+    # 健康检查（mysqladmin ping 返回成功即视为就绪）
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    networks:
+      - ragsystem-network
+
+  # ──── PostgreSQL 数据库（可选兼容模式，默认不启动）────────
+  # 仅在使用 --profile postgres 时启动（同时需 DB_TYPE=postgres）；
+  # 本地开发/兼容场景使用，生产默认走 MySQL。
   postgres:
+    profiles: ["postgres"]
     image: postgres:15-alpine
     container_name: ragsystem-postgres
     restart: unless-stopped
@@ -207,6 +280,10 @@ networks:
 
 # ──── 数据卷─────────────────────────────────────
 volumes:
+  mysql_data:
+    driver: local
+    name: ragsystem_mysql_data
+  
   pg_data:
     driver: local
     name: ragsystem_pg_data

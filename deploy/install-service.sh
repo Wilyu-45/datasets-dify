@@ -30,7 +30,9 @@ case "$1" in
         cat > "$SYSTEMD_SERVICE" <<EOF
 [Unit]
 Description=RAG Batch Ingestion System Backend
-After=network.target postgresql.service
+# 数据库就绪排序：生产 MySQL（mysql.service）/ 本地开发 PostgreSQL（postgresql.service）；
+# After= 为软依赖，不存在的 unit 会被 systemd 忽略，不影响启动。
+After=network.target mysql.service postgresql.service
 
 [Service]
 Type=simple

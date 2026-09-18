@@ -34,7 +34,7 @@ vim backend/.env  # 按【环境配置】章节修改
 
 # 3. 构建前端（可选，独立部署需要）
 cd frontend
-npm ci --production
+npm ci              # ★ 不能用 --production：tsc/vite 在 devDependencies
 npm run build
 cd ..
 
@@ -86,16 +86,17 @@ Docker Compose 自动编排以下服务：
 |------|------|------|------|
 | `backend` | ragsystem-backend:latest | 8000 | FastAPI 后端 |
 | `frontend` | ragsystem-frontend:latest | 80 (Nginx) | React 前端 |
-| `postgres` | postgres:15-alpine | 5432 | PostgreSQL 数据库 |
+| `mysql` | mysql:8.0 | 3306 | MySQL 数据库（生产默认） |
+| `postgres` | postgres:15-alpine | 5432 | PostgreSQL（可选兼容模式，`--profile postgres`） |
 | `nginx` | nginx:alpine | 80/443 | 反向代理（可选） |
 
 ### 自定义配置
 
-编辑 `deploy/.env.docker` 覆盖默认环境变量：
+编辑 `deploy/.env`（compose 自动读取 compose 文件同目录的 `.env`）覆盖默认环境变量：
 
 ```bash
-cp deploy/.env.docker.example deploy/.env.docker
-vim deploy/.env.docker
+cp deploy/.env.docker.example deploy/.env
+vim deploy/.env  # 数据库密码、MinerU provider、端口等
 ```
 
 或直接修改 `docker-compose.yml` 中的变量。
@@ -106,16 +107,17 @@ Docker volumes 自动管理：
 
 ```yaml
 volumes:
-  pg_data:           # PostgreSQL 数据目录
-  ragsystem_data:    # 解析文件、chunks 等
+  mysql_data:        # MySQL 数据目录（生产默认）
+  pg_data:           # PostgreSQL 数据目录（仅兼容模式）
+  ragsystem_data:    # 解析文件、chunks 等（input/parsed 永久保留）
   ragsystem_logs:    # 应用日志
 ```
 
-数据恢复：
+数据备份与恢复：
 
 ```bash
-# 备份 PostgreSQL
-docker exec ragsystem-postgres pg_dump -U ragsystem_app ragsystem_production > backup.sql
+# 备份 MySQL（含 manifest / doc_metadata 等全量业务数据）
+docker exec ragsystem-mysql mysqldump -u ragsystem_app -p ragsystem_production > backup.sql
 
 # 备份数据卷
 docker run --rm -v ragsystem_data:/data -v $(pwd):/backup \
@@ -215,7 +217,7 @@ docker compose ps
 docker compose logs -f backend
 
 # 查看数据库日志
-docker compose logs -f postgres
+docker compose logs -f mysql
 
 # 健康检查
 curl http://localhost:8000/api/health
@@ -275,7 +277,7 @@ docker compose -f deploy/docker-compose.yml build --no-cache backend
 
 # 重置所有数据（⚠️ 备份后再执行）
 docker compose -f deploy/docker-compose.yml down -v
-docker volume create ragsystem_pg_data
+docker volume create ragsystem_mysql_data
 docker volume create ragsystem_data
 ```
 
@@ -314,7 +316,7 @@ chmod 600 deploy/ssl/privkey.pem
 
 ```bash
 # 实时监控资源使用
-docker stats ragsystem-backend ragsystem-postgres
+docker stats ragsystem-backend ragsystem-mysql
 
 # 查看容器元数据
 docker inspect ragsystem-backend
@@ -384,15 +386,15 @@ jobs:
 |------|----------|------|
 | Python | 3.10+ | 后端运行时 |
 | Node.js | 16.x+ | 前端构建 |
-| PostgreSQL | 12+ | 数据库（manifest / doc_metadata） |
+| MySQL | 8.0（5.7 兼容） | 数据库（manifest / doc_metadata 持久化） |
 | Nginx | 1.18+ | 反向代理（可选） |
-| MinerU | 最新稳定版 | PDF/DOCX 解析引擎 |
+| MinerU | 官方网页端 API（默认）/ 本地部署 | PDF/DOCX 解析引擎 |
 | Dify | 自托管实例 | 知识库索引与嵌入 |
 | 阿里云 OSS | - | 图片永久外链托管 |
 
 ### 网络要求
 
-- **出方向**：Dify API (HTTPS:443), MinerU API (内网), OSS API (HTTPS:443)
+- **出方向**：Dify API (HTTPS:443), MinerU（mineru.net HTTPS:443 或本地内网）, OSS API (HTTPS:443)
 - **入方向**：HTTP (80), HTTPS (443), SSH (22)
 
 ---
@@ -472,7 +474,7 @@ VITE_API_BASE_URL=https://api.rag.example.com/api
 ```bash
 # 构建前端
 cd frontend
-npm ci --production
+npm ci              # ★ 不能用 --production：tsc/vite 在 devDependencies
 npm run build
 # 产物在 frontend/dist/ 目录
 ```
@@ -575,7 +577,8 @@ vim backend/.env
 
 | 配置项 | 说明 | 示例值 |
 |--------|------|--------|
-| `RAG_PG_PASSWORD` | PostgreSQL 数据库密码 | 使用强密码生成器 |
+| `RAG_MYSQL_PASSWORD` | MySQL 数据库密码 | 使用强密码生成器 |
+| `RAG_MINERU_NET_TOKEN` | mineru.net 官方 API Key | mineru.net 个人中心申请 |
 | `RAG_OSS_ACCESS_KEY_SECRET` | 阿里云 OSS 密钥 | RAM 子账号密钥 |
 | `RAG_DIFY_API_KEY` | Dify 数据集 API Key | `dataset-xxxxx` |
 | `RAG_DIFY_APP_API_KEY` | Dify App API Key | `app-xxxxx` |
@@ -588,22 +591,41 @@ vim backend/.env
 | `RAG_CORS_ORIGINS` | 允许的跨域域名列表 | ✅ |
 | `RAG_PUBLIC_BASE_URL` | 图片公网访问基础 URL | ✅（OSS 模式） |
 
-#### 🗄️ 数据库配置
+#### 🗄️ 数据库配置（生产：MySQL）
 
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `RAG_PG_HOST` | 数据库主机 | `127.0.0.1` |
-| `RAG_PG_PORT` | 数据库端口 | `5432` |
-| `RAG_PG_DBNAME` | 数据库名 | `ragsystem` |
-| `RAG_PG_POOL_MAX` | 连接池最大值 | `10`（生产建议 20） |
+| `RAG_DB_TYPE` | 数据库方言（`mysql` / `postgres`） | 生产 .env 显式设 `mysql` |
+| `RAG_MYSQL_HOST` | 数据库主机（容器内由 compose 覆盖为服务名 `mysql`） | `127.0.0.1` |
+| `RAG_MYSQL_PORT` | 数据库端口 | `3306` |
+| `RAG_MYSQL_DBNAME` | 数据库名 | `ragsystem` |
+| `RAG_MYSQL_POOL_MAX` | 连接池最大值 | `10`（生产建议 20） |
+
+> 兼容模式（`DB_TYPE=postgres` + `--profile postgres`）改用 `RAG_PG_*` 系列配置。
 
 #### 📄 解析服务配置
 
 | 配置项 | 说明 | 注意 |
 |--------|------|------|
-| `RAG_MINERU_API_URL` | MinerU 服务地址 | 内网地址即可 |
+| `RAG_MINERU_PROVIDER` | MinerU 通道 | 生产用 `mineru_net`（官方网页端 API） |
+| `RAG_MINERU_NET_TOKEN` | mineru.net API Key | `mineru_net` / `auto` 时必填 |
+| `RAG_MINERU_API_URL` | 本地 MinerU 服务地址 | `local` 模式时填入（内网地址即可） |
 | `RAG_DIFY_API_URL` | Dify 服务地址 | 必须 HTTPS |
 | `RAG_CHUNK_STRATEGY` | 切分策略 | `structure`（默认） |
+
+#### 🧹 存储清理配置
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `RAG_CLEANUP_ENABLED` | 定时清理总开关 | `true` |
+| `RAG_CLEANUP_SCHEDULE_HOURS` | 清理周期（小时；0=仅手动触发） | `24` |
+| `RAG_CLEANUP_CHUNKS_RETENTION_DAYS` | chunks 保留期（天） | `7` |
+| `RAG_CLEANUP_OUTPUT_RETENTION_DAYS` | output 保留期（天） | `7` |
+| `RAG_CLEANUP_ERROR_RETENTION_DAYS` | error 保留期（天） | `30` |
+| `RAG_CLEANUP_WEBSCRAPE_RETENTION_DAYS` | webscrape 保留期（天） | `7` |
+
+> 永久保留 `input/`（源文件）与 `parsed/`（MinerU 解析产物），不清理。
+> 手动触发：前端「运维」页，或 `POST /api/cleanup`（body `{"dry_run": true}` 可先试运行）。
 
 ### 3. 文件权限设置
 
@@ -752,58 +774,63 @@ openssl s_client -connect rag.example.com:443 -servername rag.example.com
 
 ## 🗄️ 数据库初始化
 
-### 1. 创建数据库用户
+> 生产使用 MySQL 8.0（容器化部署时 compose 已自动创建库和用户，可跳过本节）；
+> 表结构由应用启动时按方言幂等创建，无需手工建表。
+
+### 1. 创建数据库用户（MySQL）
 
 ```sql
--- 使用 postgres 超级用户登录
-psql -U postgres
+-- 使用 root 登录
+mysql -u root -p
 
--- 创建应用用户（不建议用 postgres 超级用户）
-CREATE USER ragsystem_app WITH PASSWORD 'your-strong-password';
+-- 创建数据库（utf8mb4）
+CREATE DATABASE ragsystem_production CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- 创建数据库
-CREATE DATABASE ragsystem_production OWNER ragsystem_app;
+-- 创建应用用户（不建议用 root 超级用户）
+CREATE USER 'ragsystem_app'@'%' IDENTIFIED BY 'your-strong-password';
 
 -- 授予权限
-GRANT ALL PRIVILEGES ON DATABASE ragsystem_production TO ragsystem_app;
+GRANT ALL PRIVILEGES ON ragsystem_production.* TO 'ragsystem_app'@'%';
+FLUSH PRIVILEGES;
 ```
 
 ### 2. 自动建表
 
-应用启动时会自动执行幂等建表操作，无需手动创建 `manifest` 和 `doc_metadata` 表。
+应用启动时会自动执行幂等建表操作（MySQL 方言：经 information_schema 探测补索引/补列），
+无需手动创建 `manifest` / `doc_metadata` / `process_config_log` / `webscrape_*` 等表。
 
 ### 3. 验证连接
 
 ```bash
-# 测试连接
-PGPASSWORD=your-password psql -h 127.0.0.1 -p 5432 -U ragsystem_app -d ragsystem_production -c "SELECT 1;"
+# 测试连接（MySQL）
+mysql -h 127.0.0.1 -P 3306 -u ragsystem_app -p ragsystem_production -e "SELECT 1;"
 ```
 
 ---
 
 ## 💾 备份与恢复
 
-### PostgreSQL 备份
+### MySQL 备份
 
 ```bash
 # 全量备份
-pg_dump -U ragsystem_app -h 127.0.0.1 ragsystem_production > backup_ragsystem_$(date +%Y%m%d).sql
+mysqldump -u ragsystem_app -p -h 127.0.0.1 ragsystem_production > backup_ragsystem_$(date +%Y%m%d).sql
 
 # 压缩备份
-pg_dump -U ragsystem_app -h 127.0.0.1 ragsystem_production | gzip > backup_ragsystem_$(date +%Y%m%d).sql.gz
+mysqldump -u ragsystem_app -p -h 127.0.0.1 ragsystem_production | gzip > backup_ragsystem_$(date +%Y%m%d).sql.gz
 
-# 定时备份（crontab）
-0 2 * * * pg_dump -U ragsystem_app ragsystem_production | gzip > /backup/ragsystem_$(date +\%Y\%m\%d).sql.gz
+# 定时备份（crontab；-p 后的密码需紧贴无空格）
+0 2 * * * mysqldump -u ragsystem_app -p'your-password' ragsystem_production | gzip > /backup/ragsystem_$(date +\%Y\%m\%d).sql.gz
 ```
 
-### PostgreSQL 恢复
+### MySQL 恢复
 
 ```bash
 # 从压缩备份恢复
-gunzip < backup_ragsystem_20260918.sql.gz | psql -U ragsystem_app -d ragsystem_production
+gunzip < backup_ragsystem_20260918.sql.gz | mysql -u ragsystem_app -p ragsystem_production
 
 # 从明文备份恢复
-psql -U ragsystem_app -d ragsystem_production < backup_ragsystem_20260918.sql
+mysql -u ragsystem_app -p ragsystem_production < backup_ragsystem_20260918.sql
 ```
 
 ### 数据目录备份
@@ -819,7 +846,7 @@ rsync -avz /opt/ragsystem/data/ /backup/ragsystem-data/
 
 ```bash
 # 1. 恢复数据库
-psql -U ragsystem_app -d ragsystem_production < backup_ragsystem_latest.sql
+mysql -u ragsystem_app -p ragsystem_production < backup_ragsystem_latest.sql
 
 # 2. 恢复数据文件
 rsync -avz /backup/ragsystem-data/ /opt/ragsystem/data/
@@ -850,7 +877,8 @@ cat backend/.env | grep -v '^#' | grep '='
 
 **常见错误**：
 - `address already in use` → 端口被占用，杀死旧进程或更换端口
-- `database "ragsystem_production" does not exist` → 未创建数据库
+- `Unknown database 'ragsystem_production'`（MySQL）/ `database ... does not exist`（PG）→ 未创建数据库
+- `Access denied for user ...` → 数据库用户名/密码或授权有误
 - `invalid JSON in RAG_CORS_ORIGINS` → CORS 格式错误，检查引号
 
 ### 2. 前端无法访问
@@ -925,7 +953,7 @@ VITE_API_BASE_URL=https://api.rag.example.com/api
 EOF
 
 # 构建
-npm ci --production
+npm ci
 npm run build
 ```
 
@@ -983,7 +1011,7 @@ curl http://localhost:8000/openapi.json | jq '.paths | keys'
 | 频率 | 任务 |
 |------|------|
 | 每日 | 检查日志错误率，监控磁盘空间 |
-| 每周 | 清理过期 parsed 文件，备份数据库 |
+| 每周 | 备份数据库；查看存储清理执行日志（自动清理参数 RAG_CLEANUP_*） |
 | 每月 | 更新依赖包（Python/Node），检查安全补丁 |
 | 每季度 | 审查访问日志，优化性能瓶颈 |
 
@@ -1004,12 +1032,13 @@ curl http://localhost:8000/openapi.json | jq '.paths | keys'
 □ 后端能正常启动（systemctl status 显示 active）
 □ 前端页面能正常加载（无 404 错误）
 □ API 文档页可访问（/docs）
-□ 数据库连接成功（查询 manifest 表有数据）
+□ 数据库连接成功（MySQL：查询 manifest 表有数据）
 □ CORS 跨域生效（前端能调用后端 API）
 □ Nginx 日志正常写入
 □ SSL 证书有效（https 访问正常）
 □ 文件上传功能正常（上传测试 PDF）
-□ MinerU 解析成功（查看解析结果）
+□ MinerU 解析成功（本地或 mineru.net：查看解析结果）
+□ 存储清理定时任务已启动（后端启动日志含 "cleanup 定时任务已启动"）
 □ Dify 索引成功（查看 Dify 控制台）
 □ OSS 图片可访问（打开 chunk 中的图片链接）
 ```

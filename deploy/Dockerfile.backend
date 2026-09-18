@@ -42,13 +42,17 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # 复制应用代码
 COPY backend/app ./app
-COPY backend/__pycache__ __pycache__/  # 可选：预编译字节码
-
-# 创建数据目录
-RUN mkdir -p /opt/ragsystem/data/{chunks,parsed,logs,input,error}
 
 # 非 root 用户运行（安全加固）
 RUN useradd --create-home ragsystemuser
+
+# 创建数据/日志目录（与 config.py ensure_dirs 对齐），属主交给非 root 运行用户。
+# ★ 命名卷首次挂载会继承镜像内目录的属主/权限；若属主为 root，运行用户
+#   将无法在其中创建子目录（ensure_dirs 失败），必须提前 chown。
+RUN mkdir -p /opt/ragsystem/data/{chunks,parsed,logs,input,pending,output,error,manual_fix,webscrape,single_uploads} \
+    && mkdir -p /opt/ragsystem/backend/logs \
+    && chown -R ragsystemuser:ragsystemuser /opt/ragsystem/data /opt/ragsystem/backend/logs
+
 USER ragsystemuser
 
 # 暴露端口

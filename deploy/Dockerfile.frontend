@@ -16,15 +16,16 @@ WORKDIR /build
 # 复制 package.json 和 package-lock.json（缓存优化）
 COPY frontend/package*.json ./
 
-# 安装依赖（生产模式，不安装 devDependencies）
-RUN npm ci --production --no-optional
+# 安装依赖（★ 构建阶段必须安装 devDependencies：tsc / vite / @vitejs/plugin-react，
+# 因此不能用 --production；产物阶段是纯静态文件，devDependencies 不会进最终镜像）
+RUN npm ci
 
-# 复制源码
+# 复制源码（tsconfig.node.json 是 tsc -b 的 project references 依赖，必须复制）
 COPY frontend/src ./src
-COPY frontend/public ./public
 COPY frontend/index.html ./index.html
 COPY frontend/vite.config.ts ./vite.config.ts
 COPY frontend/tsconfig.json ./tsconfig.json
+COPY frontend/tsconfig.node.json ./tsconfig.node.json
 
 # 设置环境变量（可选，支持自定义 API 地址）
 ARG VITE_API_BASE_URL

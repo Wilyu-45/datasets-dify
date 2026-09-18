@@ -6,7 +6,10 @@
 [CmdletBinding()]
 param(
     [int]$Port = 8000,
-    [string]$Host = "0.0.0.0",
+    # ★ $Host 为 PowerShell 内置只读常量变量，不可用作参数名（会报“无法覆盖变量 Host”）；
+    #   改名 $ListenHost 并保留 [Alias("Host")]，兼容 -Host 调用方式。
+    [Alias("Host")]
+    [string]$ListenHost = "0.0.0.0",
     [int]$Workers = 1,
     [ValidateSet("Production", "Development")]
     [string]$LogEnv = "Production"
@@ -62,18 +65,40 @@ if (-not $NodeExe) {
     }
 }
 
-# 检查 MinerU 地址
-$MineruUrl = $env:RAG_MINERU_API_URL ?? "http://192.168.31.165:7860"
-Write-Host "[OK] MinerU API: $MineruUrl" -ForegroundColor DarkGray
+# ★ 环境变量读取兼容 Windows PowerShell 5.1（避免使用 PS7 专属的“空合并”语法）：
+#   未设置或为空时回退到默认值；脚本已先行加载 backend/.env，此处即为生产配置值。
 
-# 检查 PostgreSQL 连接信息
-$PgHost = $env:RAG_PG_HOST ?? "127.0.0.1"
-$PgPort = $env:RAG_PG_PORT ?? "5432"
-$PgDbname = $env:RAG_PG_DBNAME ?? "ragsystem"
-Write-Host "[OK] PostgreSQL: ${PgHost}:${PgPort}/${PgDbname}" -ForegroundColor DarkGray
+# 检查 MinerU 通道（local=本地部署 / mineru_net=官方网页端 API / auto=自动降级）
+$MineruProvider = $env:RAG_MINERU_PROVIDER; if (-not $MineruProvider) { $MineruProvider = "local" }
+if ($MineruProvider -eq "mineru_net") {
+    $NetTokenState = if ([string]::IsNullOrWhiteSpace($env:RAG_MINERU_NET_TOKEN)) { "未配置（RAG_MINERU_NET_TOKEN 为空，解析将失败）" } else { "已配置" }
+    Write-Host "[OK] MinerU provider: mineru_net（官方网页端 API；Token: $NetTokenState）" -ForegroundColor DarkGray
+} else {
+    $MineruUrl = $env:RAG_MINERU_API_URL; if (-not $MineruUrl) { $MineruUrl = "http://192.168.31.165:7860" }
+    Write-Host "[OK] MinerU provider: $MineruProvider，API: $MineruUrl" -ForegroundColor DarkGray
+}
+
+# 检查数据库连接信息（按方言显示：生产 MySQL / 本地开发 PostgreSQL）
+$DbType = $env:RAG_DB_TYPE; if (-not $DbType) { $DbType = "postgres" }
+if ($DbType -eq "mysql") {
+    $MyHost = $env:RAG_MYSQL_HOST; if (-not $MyHost) { $MyHost = "127.0.0.1" }
+    $MyPort = $env:RAG_MYSQL_PORT; if (-not $MyPort) { $MyPort = "3306" }
+    $MyDbname = $env:RAG_MYSQL_DBNAME; if (-not $MyDbname) { $MyDbname = "ragsystem" }
+    Write-Host "[OK] MySQL: ${MyHost}:${MyPort}/${MyDbname}" -ForegroundColor DarkGray
+} else {
+    $PgHost = $env:RAG_PG_HOST; if (-not $PgHost) { $PgHost = "127.0.0.1" }
+    $PgPort = $env:RAG_PG_PORT; if (-not $PgPort) { $PgPort = "5432" }
+    $PgDbname = $env:RAG_PG_DBNAME; if (-not $PgDbname) { $PgDbname = "ragsystem" }
+    Write-Host "[OK] PostgreSQL: ${PgHost}:${PgPort}/${PgDbname}" -ForegroundColor DarkGray
+}
+
+# 检查存储清理（定时任务是否真正启动以运行日志为准）
+$CleanupEnabled = $env:RAG_CLEANUP_ENABLED; if (-not $CleanupEnabled) { $CleanupEnabled = "true" }
+$CleanupHours = $env:RAG_CLEANUP_SCHEDULE_HOURS; if (-not $CleanupHours) { $CleanupHours = "24" }
+Write-Host "[INFO] 存储清理: enabled=$CleanupEnabled, 周期=${CleanupHours}h（0=仅手动触发）" -ForegroundColor DarkGray
 
 # 显示 CORS 配置
-$CorsOriginsStr = $env:RAG_CORS_ORIGINS ?? '["http://localhost:5173","http://localhost:8000"]'
+$CorsOriginsStr = $env:RAG_CORS_ORIGINS; if (-not $CorsOriginsStr) { $CorsOriginsStr = '["http://localhost:5173","http://localhost:8000"]' }
 Write-Host "[INFO] CORS 来源: $CorsOriginsStr" -ForegroundColor DarkGray
 
 Write-Host ""
@@ -86,16 +111,18 @@ Write-Host ""
 $BackendDirs = @("$RepoRoot\backend\app")
 
 Write-Host "启动命令:" -ForegroundColor Cyan
-Write-Host "uvicorn app.main:app \`" -ForegroundColor Yellow
-Write-Host "  --app-dir $($BackendDirs[0]) \`" -ForegroundColor Yellow
-Write-Host "  --host $($Host)`:$Port \`" -ForegroundColor Yellow
+# ★ 末尾续行反引号需写成两个（转义后的字面量）：单反引号会转义后引号，
+#   造成字符串未闭合级联解析错误（历史遗留 bug，已修复）。
+Write-Host "uvicorn app.main:app ``" -ForegroundColor Yellow
+Write-Host "  --app-dir $($BackendDirs[0]) ``" -ForegroundColor Yellow
+Write-Host "  --host $($ListenHost):$Port ``" -ForegroundColor Yellow
 Write-Host "  --workers $($Workers)" -ForegroundColor Yellow
 Write-Host ""
 
 # 启动 uvicorn
 & $VenvPy -m uvicorn app.main:app `
     --app-dir "$RepoRoot/backend/app" `
-    --host $Host `
+    --host $ListenHost `
     --port $Port `
     --workers $Workers `
     --log-level info

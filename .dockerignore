@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════
+# Docker 构建上下文排除规则（build context = 仓库根）
+# 
+# 目的：1) 缩小上下文传输体积（venv / node_modules / 运行数据不参与构建）；
+#       2) 阻止敏感文件（.env）进入镜像构建层。
+# 
+# 注意：运行时配置由 compose 的 env_file（backend/.env）注入，不经构建上下文，
+#       排除 .env 不影响容器运行。
+# ═══════════════════════════════════════════
+
+# ── 版本控制 / IDE / Agent 工具目录 ──
+.git
+.gitattributes
+.gitignore
+.trae
+.qoder
+.vscode
+.idea
+
+# ── 敏感文件（严禁进入镜像层）──
+**/.env
+**/.env.local
+
+# ── Python 虚拟环境 / 缓存 ──
+ragsys/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+
+# ── 前端依赖与构建产物（镜像内重新 npm ci + npm run build）──
+frontend/node_modules/
+frontend/dist/
+
+# ── 运行数据 / 日志 / 临时产物（生产由命名卷挂载）──
+data/
+backend/data/
+backend/logs/
+frontend/logs/
+**/_vlm_fallback_tmp/
+**/_*.log
