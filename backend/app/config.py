@@ -87,6 +87,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_retention_days: int = 15
 
+    # ---- 文件定期清理（保障生产存储；保留 input/ 源文件 + parsed/ 解析产物）----
+    # 总开关。False 或 cleanup_schedule_hours=0 时不启动定时任务。
+    cleanup_enabled: bool = True
+    # 定时清理周期（小时）。0 = 关闭定时（仅手动 API 触发）。
+    cleanup_schedule_hours: int = 24
+    # 各类中间产物的保留期（天），超过则按 mtime 删除；input/、parsed/ 硬编码跳过。
+    cleanup_chunks_retention_days: int = 7
+    cleanup_output_retention_days: int = 7
+    cleanup_error_retention_days: int = 30
+    cleanup_webscrape_retention_days: int = 7
+
     # ---- MinerU API（plan.md §3.2）----
     # MinerU 自带 FastAPI 服务：mineru-api 3.x。
     # 同步解析接口：POST {mineru_api_url}/file_parse（multipart/form-data 上传）
@@ -149,6 +160,22 @@ class Settings(BaseSettings):
     # 是否启用 .doc 旧 OLE 格式预检测（MinerU 不支持 .doc 旧格式；开启后客户端会
     # 读取文件 magic bytes 提前拒绝，给用户更友好错误，而不是让 MinerU 返回 400）
     mineru_reject_legacy_doc: bool = True
+
+    # ---- MinerU provider 选择（本地部署 vs 官方 mineru.net API vs 自动降级）----
+    # local      ：本地 mineru-api（POST {mineru_api_url}/file_parse，默认，行为不变）
+    # mineru_net ：官方网页端 API（异步任务制，需 mineru_net_token）
+    # auto       ：优先 local，local 健康检查失败时自动降级到 mineru_net
+    mineru_provider: str = "local"
+    # 官方 mineru.net API key（Bearer token），env RAG_MINERU_NET_TOKEN
+    mineru_net_token: str = ""
+    # 官方 API base url，默认官方地址
+    mineru_net_base_url: str = "https://mineru.net"
+    # 解析模型：pipeline / vlm / MinerU-HTML。HTML 文件强制 MinerU-HTML，
+    # 其余文件用此值（默认 vlm，效果优于 pipeline）。
+    mineru_net_model: str = "vlm"
+    # 异步任务轮询：间隔（秒）与总超时（秒，上限 30 分钟）
+    mineru_net_poll_interval: float = 3.0
+    mineru_net_poll_timeout: int = 1800
 
     # ---- 切分（plan.md §3.3）----
     # 主阈值：单个 chunk 的目标字符上限（参考 cutrule.md：1500 中文字符）
@@ -309,7 +336,11 @@ class Settings(BaseSettings):
     # 元数据现存储于 PostgreSQL doc_metadata 表（见 app.db），
     # 第 1 列（filename）为文件 stem（不含后缀），用于与 manifest / chunks 目录关联。
 
-    # ---- PostgreSQL（manifest / doc_metadata 持久化）----
+    # ---- 数据库方言（生产 MySQL / 本地 PostgreSQL 切换）----
+    # rag_db_type: postgres（默认，本地开发）/ mysql（生产）。切换后 db.py 按此分支。
+    rag_db_type: str = "postgres"
+
+    # ---- PostgreSQL（manifest / doc_metadata 持久化，rag_db_type=postgres 时生效）----
     # 连接信息可用 .env 或环境变量（前缀 RAG_）覆盖。
     pg_host: str = "127.0.0.1"
     pg_port: int = 5432
@@ -322,6 +353,20 @@ class Settings(BaseSettings):
     # 获取连接的超时（秒）
     pg_pool_timeout: float = 30.0
 
+    # ---- MySQL（manifest / doc_metadata 持久化，rag_db_type=mysql 时生效，生产部署）----
+    # 目标版本 8.0（JSON / information_schema / 窗口函数）。5.7 时 CREATE INDEX IF NOT EXISTS
+    # 等语句在 db.py 中已做 information_schema 探测降级。
+    mysql_host: str = "127.0.0.1"
+    mysql_port: int = 3306
+    mysql_dbname: str = "ragsystem"
+    mysql_user: str = "root"
+    mysql_password: str = ""
+    # 连接池大小（与 PG 语义对齐：min/max/timeout）
+    mysql_pool_min: int = 1
+    mysql_pool_max: int = 10
+    # 获取连接的超时（秒）
+    mysql_pool_timeout: float = 30.0
+
     # ---- Web 服务 / CORS ----
     # 允许的跨域来源（JSON 字符串数组）。默认覆盖本地开发 Vite(5173) 与自托管(8000)。
     # 通过 backend/.env 的 RAG_CORS_ORIGINS 配置，例如：
@@ -332,6 +377,13 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     )
+
+    # ---- ★ 前后端分离部署（生产方定制前端） ----
+    # 开启后（RAG_SERVE_FRONTEND=false），后端不挂载前端 dist/
+    # （分离部署时 Nginx 分别代理前端 API 和后端接口）
+    # 关闭后（RAG_SERVE_FRONTEND=true，默认）：后端自动挂载 frontend/dist/，
+    # 支持独立部署（单实例同时服务前端页面 + 后端 API）。
+    serve_frontend: bool = True
 
     # ---- 应用元数据 ----
     app_name: str = "RAG Batch Ingestion"

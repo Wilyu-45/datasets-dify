@@ -1,8 +1,13 @@
 /**
- * 后端 API 客户端 — 所有请求都走 /api/...（Vite 代理到 :8000）。
+ * 后端 API 客户端 — 所有请求默认走同源 /api（开发走 Vite 代理，生产走 Nginx 反代）。
+ *
+ * ★ 前后端分离部署：生产方定制前端时，可通过构建环境变量 VITE_API_BASE_URL
+ * 将后端指向独立域名，例如：
+ *   VITE_API_BASE_URL=https://api.example.com/api   （直连后端，需后端 CORS 放行）
+ *   或保持默认 /api                            （同源，由 Nginx 反代到后端）
  */
 
-const BASE = "/api";
+const BASE = (import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/+$/, "");
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -194,6 +199,46 @@ export interface RunConfigLogsResponse {
 /** 最近的处理配置记录（按时间倒序，默认 50 条）。 */
 export const listRunConfigLogs = (limit = 50) =>
   http<RunConfigLogsResponse>(`/config/run-logs?limit=${limit}`);
+
+// ============ §3.1 扫描登记相关 ============
+
+export type FileAction =
+  | "staged"
+  | "new"
+  | "skipped"
+  | "renamed"
+  | "missing"
+  | "failed"
+  | "dry_run";
+
+export interface FileActionRecord {
+  filename: string;
+  action: FileAction;
+  md5?: string | null;
+  from_path?: string | null;
+  to_path?: string | null;
+  error?: string | null;
+  duration_ms?: number | null;
+}
+
+export interface ScanReport {
+  dry_run: boolean;
+  scanned: number;
+  staged: number;
+  new: number;
+  skipped_done: number;
+  renamed: number;
+  missing_on_disk: number;
+  failed: number;
+  actions: FileActionRecord[];
+}
+
+/** 触发 §3.1 扫描登记：dry_run 只预览，force 强制重扫（已 staged 的会跳过，仅处理新文件）。 */
+export const triggerScan = (dryRun: boolean, force = false) =>
+  http<ScanReport>("/scan", {
+    method: "POST",
+    body: JSON.stringify({ dry_run: dryRun, force }),
+  });
 
 // ============ §3.2 解析相关 ============
 
@@ -557,6 +602,43 @@ export const triggerDifyUpload = (dryRun: boolean, force: boolean) =>
 
 /** 别名：与 ParseReport/ChunkReport 命名风格保持一致 */
 export type DifyReport = DifyUploadReport;
+
+// ============ 运维：文件定期清理（2026-09 生产部署改造） ============
+
+/** 单个目标目录的清理明细。 */
+export interface DirStat {
+  dir: string;
+  retention_days: number;
+  expired_entries: number;
+  removed_files: number;
+  removed_dirs: number;
+  freed_bytes: number;
+  errors: string[];
+}
+
+/** 一轮清理的总报告（POST /api/cleanup 返回，status 端点的 last_run 同结构）。 */
+export interface CleanupReport {
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  dry_run: boolean;
+  removed_files: number;
+  removed_dirs: number;
+  freed_bytes: number;
+  dirs: DirStat[];
+  errors: string[];
+}
+
+/** 手动触发一轮文件清理；dry_run=true 只统计「将删除什么」不实际删除（执行前预览）。 */
+export const triggerCleanup = (dryRun = false) =>
+  http<CleanupReport>("/cleanup", {
+    method: "POST",
+    body: JSON.stringify({ dry_run: dryRun }),
+  });
+
+/** 查询最近一次清理结果（定时任务与手动触发共享）；从未清理过则 last_run=null。 */
+export const getCleanupStatus = () =>
+  http<{ last_run: CleanupReport | null }>("/cleanup/status");
 
 // ============ §3.0 一键流水线 ============
 

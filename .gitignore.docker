@@ -1,0 +1,27 @@
+# ═══════════════════════════════════════════
+# Docker 部署专用 .gitignore
+# 
+# 防止敏感文件和构建产物被提交到 Git
+# ═══════════════════════════════════════════
+
+# ──── Docker 环境配置（包含敏感信息）────────────
+# compose 自动读取 deploy/.env（由 .env.docker.example 复制而来）
+deploy/.env
+deploy/.env.docker
+deploy/.env.*
+!deploy/.env.docker.example
+
+# ──── Docker 构建产物（大文件，按需重新构建）─────
+*.tar.gz
+*.tar.bz2
+
+# ──── SSL 证书（严格禁止提交）─────────────────
+deploy/ssl/*
+!deploy/ssl/.gitkeep
+
+# ──── Docker Compose 本地覆盖（可选）────────────
+docker-compose.override.yml
+
+# ──── 临时文件和日志─────────────────────────
+*.log
+docker-temp-*

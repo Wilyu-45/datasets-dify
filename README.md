@@ -9,6 +9,8 @@
 
 > 后端 `POST /api/pipeline/run` 仍保留四步独立开关（`scan` 步骤默认不再使用）、`dry_run`（纯本地预检）、`stop_on_error`（失败即停）、`target_stems`（文件白名单）。
 
+**分环节独立处理（2026-09 生产部署改造）**：工作台顶部新增「分环节处理」卡片，可**单独触发** `扫描登记 / 解析 / 切分 / 入库` 四个环节——每个按钮支持「正常执行（跳过已完成）/ 强制执行（忽略已完成标记重跑）」；「解析产物」「切分产物」页顶部也各有「重新解析 / 重新切分」按钮。上传即全流程的一键行为保持不变。存储清理的主动入口在「运维」页（详见「生产部署 → 存储清理」）。
+
 ### 3.1 文件扫描（Scan）
 扫描 `data/input` 目录，识别待处理文档，增量更新 PostgreSQL `manifest` 表（文件清单台账）。主流程已改为 **上传驱动**（见 3.0，上传时自动登记台账），`scan` 作为辅助能力保留，前端上传链路默认关闭该步骤。
 
@@ -98,9 +100,9 @@
 
 ## 技术栈
 
-- **后端**：Python 3 + FastAPI + Pydantic v2 + psycopg3（PostgreSQL）+ oss2（阿里云 OSS）+ PyMuPDF + httpx + Playwright（网站抓取反爬浏览器引擎）
+- **后端**：Python 3 + FastAPI + Pydantic v2 + psycopg3（PostgreSQL）/ pymysql（MySQL，生产）+ oss2（阿里云 OSS）+ PyMuPDF + httpx + Playwright（网站抓取反爬浏览器引擎）
 - **前端**：React 18 + TypeScript + Vite + Ant Design 5
-- **解析引擎**：MinerU（本地 FastAPI 服务，hybrid-engine / vlm-engine）
+- **解析引擎**：MinerU（本地 FastAPI 服务 hybrid-engine / vlm-engine；或官方 mineru.net 网页端 API，见「生产部署」）
 - **知识库**：Dify（Cloud API / Knowledge API）
 
 ## 目录结构
@@ -111,12 +113,12 @@ ragsystem/
 │   ├── app/
 │   │   ├── main.py             # 应用入口（注册全部路由 + 静态托管）
 │   │   ├── config.py           # 配置（RAG_ 前缀环境变量，见 .env.example）
-│   │   ├── db.py               # PostgreSQL 连接池（psycopg3）
+│   │   ├── db.py               # 数据库连接池（PostgreSQL psycopg3 / MySQL pymysql，按 RAG_DB_TYPE 分支）
 │   │   ├── logging_config.py   # 日志配置
 │   │   ├── models/schemas.py   # Pydantic 请求/响应模型
 │   │   ├── api/                # 路由：health / files / manifest / scan / parse /
 │   │   │                       #       parse_progress / chunk / config / dify /
-│   │   │                       #       doc_metadata / pipeline / upload / webscrape
+│   │   │                       #       doc_metadata / pipeline / upload / webscrape / cleanup
 │   │   └── services/           # 业务逻辑
 │   │       ├── scanner.py          # 3.1 扫描
 │   │       ├── mineru_client.py    # 3.2 MinerU API 客户端
@@ -135,16 +137,18 @@ ragsystem/
 │   │       ├── oss_uploader.py     # 3.4 阿里云 OSS 上传
 │   │       ├── hasher.py           # 文件 MD5
 │   │       ├── doc_metadata.py     # 3.4.1 文档元数据（PostgreSQL + Dify 推送）
-│   │       ├── manifest_store.py   # manifest 台账（PostgreSQL）
+│   │       ├── manifest_store.py   # manifest 台账（PostgreSQL / MySQL）
+│   │       ├── cleanup.py          # 3.8 存储清理（保留源文件 + 解析产物）
 │   │       └── pipeline.py         # 3.0 入库工作台流水线
 │   ├── requirements.txt
 │   └── .env.example            # 环境变量模板
 ├── frontend/                   # React 前端
 │   └── src/
-│       ├── App.tsx             # 布局与路由（7 个页面）
+│       ├── App.tsx             # 布局与路由（8 个页面）
 │       ├── pages/              # Pipeline(入库工作台) / Parse(解析产物) /
 │       │                       # Chunk(切分产物) / Verify(人工校验) /
-│       │                       # Metadata(文档元数据) / WebScrape(网站抓取) / Config(配置中心)
+│       │                       # Metadata(文档元数据) / WebScrape(网站抓取) /
+│       │                       # Config(配置中心) / Ops(运维·存储清理)
 │       └── components/         # ActiveConfigCard / BatchFileUpload / ChunkDetail /
 │                               # ChunksTable / DifyReportTable / ManifestTable /
 │                               # MarkdownPreview / ParsedTable
@@ -169,7 +173,7 @@ ragsystem/
 ### 1. 环境准备
 - Python 3.10+
 - Node.js 18+
-- PostgreSQL 12+（manifest 台账 / 文档元数据存储，配置见 `RAG_PG_*`）
+- PostgreSQL 12+（manifest 台账 / 文档元数据存储，配置见 `RAG_PG_*`）；生产可改用 **MySQL 8.0**（见「生产部署」）
 - 本地 MinerU API 服务（`hybrid-engine` 或 `vlm-engine`）
 - Dify 知识库（Cloud API Key）+ 可选阿里云 OSS（图片托管默认 OSS）
 - （网站抓取用）Playwright Chromium：`pip install playwright` 后执行 `python -m playwright install chromium`（首次一次性下载）
@@ -252,8 +256,93 @@ npm run dev        # 默认 http://localhost:5173
 | `RAG_PUBLIC_BASE_URL` | `""` | 公网基地址（skip_file_upload 时拼 OSS 图片 URL） |
 | `RAG_OSS_*` | - | 阿里云 OSS 图片托管配置（endpoint / bucket / AK / SK / 前缀 / 自定义域名） |
 | `RAG_PG_*` | - | PostgreSQL 连接与连接池（`RAG_PG_POOL_TIMEOUT` 默认 30s） |
+| `RAG_DB_TYPE` | `postgres` | 数据库方言：`postgres`（本地开发）/ `mysql`（生产） |
+| `RAG_MYSQL_*` | - | MySQL 连接与连接池（`RAG_MYSQL_POOL_TIMEOUT` 默认 30s；`RAG_DB_TYPE=mysql` 时生效） |
+| `RAG_MINERU_PROVIDER` | `local` | 解析 provider：`local` / `mineru_net` / `auto`（本地优先，失败降级官方） |
+| `RAG_MINERU_NET_TOKEN` | `""` | 官方 mineru.net API Key（`mineru_net` / `auto` 时需要） |
+| `RAG_MINERU_NET_MODEL` / `RAG_MINERU_NET_BASE_URL` | `vlm` / `https://mineru.net` | 官方 API 解析模型 / 地址 |
+| `RAG_MINERU_NET_POLL_INTERVAL` / `RAG_MINERU_NET_POLL_TIMEOUT` | `3.0` / `1800` | 官方异步任务轮询间隔 / 总超时（秒） |
+| `RAG_CLEANUP_ENABLED` / `RAG_CLEANUP_SCHEDULE_HOURS` | `true` / `24` | 存储清理总开关 / 定时周期（小时，0=仅手动触发） |
+| `RAG_CLEANUP_*_RETENTION_DAYS` | `7`（error 为 `30`） | chunks / output / error / webscrape 保留期（天，0=禁用该类目录） |
 
 > 切分参数既可在 `backend/.env` 配默认值，也可在前端「配置中心」创建/激活多套方案（推荐，方案优先于 `.env`）。完整配置项见 `backend/.env.example`。
+
+## 生产部署
+
+### 1. 数据库切换为 MySQL
+生产环境使用 MySQL 承载 manifest / doc_metadata / webscrape_records 等表；本地开发默认仍用 PostgreSQL。
+
+- 在 `backend/.env` 设置：
+  ```
+  RAG_DB_TYPE=mysql
+  RAG_MYSQL_HOST=...
+  RAG_MYSQL_PORT=3306
+  RAG_MYSQL_DBNAME=ragsystem
+  RAG_MYSQL_USER=...
+  RAG_MYSQL_PASSWORD=...
+  ```
+- 目标版本 **MySQL 8.0**（JSON / 窗口函数）；5.7 也能运行——`CREATE INDEX IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` 已通过 `information_schema` 探测降级。
+- **无需手工建库建表**：应用启动时按方言幂等建表（DDL 自动把 `BIGSERIAL → BIGINT AUTO_INCREMENT`、`JSONB → JSON`；upsert 的 `ON CONFLICT → ON DUPLICATE KEY UPDATE`）。
+- 连接池：`RAG_MYSQL_POOL_MIN` / `RAG_MYSQL_POOL_MAX` / `RAG_MYSQL_POOL_TIMEOUT`（默认 1 / 10 / 30s）。
+- 切换前确认已 `pip install -r backend/requirements.txt`（新增 `pymysql`）。
+- 反向切回：`RAG_DB_TYPE=postgres`（原 `RAG_PG_*` 配置不受影响）。
+
+### 2. MinerU 使用官方网页端 API（可选：本地兜底）
+生产服务器未部署本地 MinerU 时，可改用 **官方 mineru.net API**（异步任务制）。
+
+- 在 [mineru.net](https://mineru.net) 注册并申请 **API Key（Bearer token）**，写入：
+  ```
+  RAG_MINERU_PROVIDER=mineru_net
+  RAG_MINERU_NET_TOKEN=<你的 token>
+  # RAG_MINERU_NET_MODEL=vlm            # pipeline / vlm / MinerU-HTML（默认 vlm）
+  # RAG_MINERU_NET_BASE_URL=https://mineru.net
+  # RAG_MINERU_NET_POLL_INTERVAL=3.0    # 轮询间隔（秒）
+  # RAG_MINERU_NET_POLL_TIMEOUT=1800    # 总超时（秒）
+  ```
+- **双模式自动降级**（推荐）：`RAG_MINERU_PROVIDER=auto`——优先本地 `RAG_MINERU_API_URL`，本地 `/health` 不可用时自动切换到官方 API。（满足「生产某台服务器本地部署了 MinerU」的兜底诉求。）
+- provider 取值：`local`（默认，本地部署）/ `mineru_net`（官方）/ `auto`（本地优先 + 官方兜底）。
+- 官方 API 的产物会**归一化**为与本地一致的目录结构（`full.md → {stem}.md`、`layout.json → *_middle.json`、`main.html → _main.html`），下游切分逻辑无需改动；`max_retries` 语义为任务级重试（失败后重新提交任务）。
+- `GET /api/health` 返回当前实际生效的 provider，便于排查。
+
+### 3. 存储清理（保留源文件 + 解析产物）
+为保障服务器存储空间，服务定期清理中间产物；**源文件与解析产物永久保留**。
+
+| 目录 | 处理方式 |
+| :--- | :--- |
+| `data/input/`、`data/parsed/` | 永久保留（硬编码跳过，不自动删除） |
+| `data/chunks/` | 默认保留 7 天（可重切） |
+| `data/output/` | 默认保留 7 天（静态托管缓存） |
+| `data/error/` | 默认保留 30 天 |
+| `data/webscrape/` | 默认保留 7 天（临时区） |
+| `data/pending/`、`data/manual_fix/` | 不自动清理 |
+
+- 配置（`backend/.env`）：
+  ```
+  RAG_CLEANUP_ENABLED=true            # 总开关；false 或 SCHEDULE_HOURS=0 时不启动定时任务
+  RAG_CLEANUP_SCHEDULE_HOURS=24       # 定时周期（小时），0 = 仅手动触发
+  RAG_CLEANUP_CHUNKS_RETENTION_DAYS=7
+  RAG_CLEANUP_OUTPUT_RETENTION_DAYS=7
+  RAG_CLEANUP_ERROR_RETENTION_DAYS=30
+  RAG_CLEANUP_WEBSCRAPE_RETENTION_DAYS=7   # 设为 0 表示禁用该类目录的清理
+  ```
+- **自动**：FastAPI 启动时按 `RAG_CLEANUP_SCHEDULE_HOURS` 启动后台任务（首轮先等待一个周期，避免与启动期任务争抢；单轮异常不会中断定时器）。
+- **手动**：前端 **「运维」页**「立即清理」按钮（可勾选「试运行」只预览不删除），或 `POST /api/cleanup`（`{"dry_run": true}` 试运行）；`GET /api/cleanup/status` 查询最近一次结果。
+- 判期规则：先取子目录整树最新 mtime，全树超期才整树删除（避免删一半留残缺）；文件按各自 mtime 判期；`.gitkeep` 跳过；符号链接一律不碰。
+- **安全**：所有删除前校验目标路径仍在 `RAG_DATA_ROOT` 内（`resolve()` + 大小写归一 + 前缀匹配），配置误填 / 越界一律拒绝并记录错误；`logs/` 由日志轮转自身管理，清理服务不处理。
+
+### 4. 分环节独立处理（生产可控性）
+除「上传即全流程」外，生产环境可按环节单独执行，便于排查与灰度：
+
+- **入库工作台**顶部「分环节处理」卡片：`扫描登记 / 解析 / 切分 / 入库` 四个按钮，每个按钮点开可选择「正常执行（跳过已完成）」或「强制执行（忽略已完成标记重跑）」；成功后自动刷新文件清单并回填该阶段报告。
+- **解析产物**页「重新解析」、**切分产物**页「重新切分」：在这两个产物页也能独立触发对应环节（切分使用当前激活配置的切分策略）。
+- 建议执行顺序：`扫描登记 → 解析 → 切分 → 入库`。
+- 对应后端接口：`POST /api/scan` · `POST /api/parse` · `POST /api/chunk` · `POST /api/dify/upload`（请求体均含 `force` 开关）。
+
+### 5. 其他生产注意
+- 前后端分离部署：`RAG_SERVE_FRONTEND=false`，由 Nginx 分别代理前端 `dist/` 与后端 API；跨域来源用 `RAG_CORS_ORIGINS` 配置。
+- 前端构建：`cd frontend; npm install; npm run build`。
+- 图片托管建议使用阿里云 OSS 永久外链（`RAG_IMAGE_HOST_BACKEND=oss`）。
+- 启动前务必确认 `RAG_DATA_ROOT` 指向真实的运行数据目录——清理服务以它为安全边界。
 
 ## API 概览
 
@@ -279,7 +368,8 @@ npm run dev        # 默认 http://localhost:5173
 | 文件 | `GET /api/files?dir=input\|pending` | 待处理 / 待扫描文件访问 |
 | 配置中心 | `GET/POST /api/config/profiles` · `PUT/DELETE /api/config/profiles/{id}` · `POST /api/config/profiles/{id}/activate` · `GET /api/config/active?type=` · `GET /api/config/schema` | 配置方案管理（两套类型各自 CRUD / 独立激活 / schema 字段） |
 | 网站抓取 | `POST /api/webscrape/run` · `GET /api/webscrape/tasks` · `GET /api/webscrape/task/{id}` · `GET /api/webscrape/task/{id}/preview/{idx}` · `POST /api/webscrape/task/{id}/confirm` | 网站抓取两步式：抓取（正文 Markdown / 附件）→ 预览勾选 → 确认入库（parse → chunk → dify） |
-| 健康 | `GET /api/health` | 健康检查 |
+| 清理 | `POST /api/cleanup` · `GET /api/cleanup/status` | 手动触发一次文件清理（body 可选 `dry_run`）/ 查询最近一次清理结果 |
+| 健康 | `GET /api/health` | 健康检查（返回当前实际生效的 MinerU provider） |
 
 交互式文档：后端启动后访问 `http://localhost:8000/docs`。
 
@@ -294,12 +384,15 @@ data/
 ├── single_uploads/  # 上传中转区（上传文件先落这里再移入 pending/）
 ├── pending/         # 已登记待解析
 ├── parsed/          # MinerU 解析产物（每文档一文件夹）
-├── chunks/          # 切分产物（chunk 明细 + 报告）
-├── output/          # 入库输出（图片经 /static/output 静态托管）
-├── error/           # 处理失败文件（可人工修复）
-├── manual_fix/      # 人工修复产物
+├── chunks/          # 切分产物（chunk 明细 + 报告；默认保留 7 天）
+├── output/          # 入库输出（图片经 /static/output 静态托管；默认保留 7 天）
+├── error/           # 处理失败文件（默认保留 30 天）
+├── manual_fix/      # 人工修复产物（不自动清理）
 ├── configs/         # 配置方案（profiles.json）
-└── logs/            # 运行日志
-
-文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` / `webscrape_records` 等表），应用启动时自动建表，无需手工维护 Excel。
+└── logs/            # 运行日志（TimedRotatingFileHandler 自动轮转）
 ```
+
+`input/`（源文件）与 `parsed/`（解析产物）为**永久保留**，清理服务硬编码跳过；`chunks/` / `output/` / `error/` / `webscrape/` 按保留期被定期清理（见「生产部署 → 存储清理」）。
+
+```
+文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` / `webscrape_records` 等表；生产可切换 MySQL），应用启动时自动建表（按方言幂等），无需手工维护 Excel。

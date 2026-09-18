@@ -398,3 +398,10 @@ class DifyConfigUpdate(BaseModel):
     """POST /api/dify/config 入参（切换目标知识库）。"""
 
     dataset_id: Optional[str] = None
+
+
+class CleanupRequest(BaseModel):
+    """POST /api/cleanup 入参（2026-09 生产部署改造：手动触发文件清理）。"""
+
+    # dry_run=True 只统计「将删除什么」不实际删除，供执行前预览
+    dry_run: bool = False

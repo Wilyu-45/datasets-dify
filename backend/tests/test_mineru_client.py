@@ -229,7 +229,7 @@ class TestParseFileWithRouting:
         parsed_dir = tmp_path / "out"
         parsed_dir.mkdir()
 
-        with patch.object(client, "_post") as mock_post:
+        with patch.object(client._impl, "_post") as mock_post:
             mock_post.side_effect = MinerUError("test fail", attempts=1)
             try:
                 client.parse_file(pdf, parsed_dir)
@@ -247,7 +247,7 @@ class TestParseFileWithRouting:
         parsed_dir = tmp_path / "out"
         parsed_dir.mkdir()
 
-        with patch.object(client, "_post") as mock_post:
+        with patch.object(client._impl, "_post") as mock_post:
             mock_post.side_effect = MinerUError("test fail", attempts=1)
             try:
                 client.parse_file(pdf, parsed_dir)
@@ -269,7 +269,7 @@ class TestParseFileWithRouting:
         parsed_dir.mkdir()
 
         sleeps: list[float] = []
-        with patch.object(client, "_post") as mock_post, \
+        with patch.object(client._impl, "_post") as mock_post, \
              patch("app.services.mineru_client.time.sleep", side_effect=lambda s: sleeps.append(s)):
             mock_post.side_effect = _RetryableMinerUError("simulated retryable error")
             try:
@@ -372,3 +372,484 @@ class TestWriteFromZipPathCleaning:
         assert result.md_path is not None
         assert result.md_path.exists()
         assert 'middle' in str(result.md_path)
+
+
+# ============ mineru.net 官方 API provider（2026-09 生产部署改造，板块 B） ============
+
+
+def _patch_httpx_session(monkeypatch: pytest.MonkeyPatch, post=None, get=None) -> MagicMock:
+    """把 mineru_client 模块引用的 httpx.Client patch 成假 session。
+
+    post/get 传单个响应对象时走 return_value；传列表时走 side_effect（按序返回/抛出）。
+    """
+    from app.services import mineru_client as mc
+
+    session = MagicMock()
+    if post is not None:
+        if isinstance(post, list):
+            session.post.side_effect = post
+        else:
+            session.post.return_value = post
+    if get is not None:
+        if isinstance(get, list):
+            session.get.side_effect = get
+        else:
+            session.get.return_value = get
+    client_cls = MagicMock()
+    client_cls.return_value.__enter__.return_value = session
+    monkeypatch.setattr(mc.httpx, "Client", client_cls)
+    return session
+
+
+def _net_zip_bytes(stem: str = "report") -> bytes:
+    """构造带顶层目录的官方产物 ZIP（模拟 full_zip_url 下载内容）。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"{stem}/full.md", "# 标题\n正文内容")
+        zf.writestr(f"{stem}/layout.json", '{"pdf_info": []}')
+        zf.writestr(f"{stem}/{stem}_model.json", '{"model_output": true}')
+        zf.writestr(f"{stem}/{stem}_content_list.json", '[{"type": "text"}]')
+        zf.writestr(f"{stem}/images/fig1.jpg", b"\xff\xd8\xff\xe0fake")
+        zf.writestr(f"{stem}/main.html", "<html><body>x</body></html>")
+    return buf.getvalue()
+
+
+def _make_net_client(monkeypatch: pytest.MonkeyPatch, **overrides):
+    """构造 _MinerUNetClient（轮询步长/重试退避均为 0，不真等待），httpx 已被 patch。"""
+    from app.services import mineru_client as mc
+
+    session = _patch_httpx_session(monkeypatch)
+    kwargs = dict(
+        token="test-token",
+        base_url="https://mineru.net",
+        model="vlm",
+        poll_interval=0.0,       # 轮询不真等待
+        poll_timeout=30,
+        http_timeout=1.0,
+        upload_timeout=1.0,
+        max_retries=2,
+        retry_initial_wait=0.0,  # 重试退避不真等待
+        retry_backoff_factor=1.0,
+        retry_max_wait=0.0,
+    )
+    kwargs.update(overrides)
+    return mc._MinerUNetClient(**kwargs), session
+
+
+class TestMinerUNetEntryNormalization:
+    """产物文件名归一化映射（对齐本地命名约定，chunker 依赖）。"""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("full.md", "报告.md"),                                 # full.md → {stem}.md
+            ("layout.json", "报告_middle.json"),                    # layout.json → {stem}_middle.json
+            ("报告_model.json", "报告_model.json"),                  # *_model.json 幂等
+            ("xxx_model.json", "报告_model.json"),
+            ("报告_content_list.json", "报告_content_list_v2.json"),  # ★ chunker 主输入
+            ("main.html", "main.html"),                             # 原样保留
+            ("abc.docx", "abc.docx"),
+        ],
+    )
+    def test_entry_mapping(self, settings, raw, expected):
+        from app.services.mineru_client import _MinerUNetClient
+
+        out = _MinerUNetClient._normalize_entry_name(Path(raw), "报告")
+        assert out == Path(expected)
+
+    def test_images_dir_kept(self, settings):
+        from app.services.mineru_client import _MinerUNetClient
+
+        out = _MinerUNetClient._normalize_entry_name(Path("images/fig1.jpg"), "报告")
+        assert out == Path("images") / "fig1.jpg"
+
+
+class TestMinerUNetAppearanceContract:
+    """外观契约：parser 读 .api_url、pdf_fallback 读 .backend，语义须与 local 一致。"""
+
+    def test_api_url_and_backend(self, settings):
+        from app.services import mineru_client as mc
+
+        c = mc._MinerUNetClient(token="t", base_url="https://mineru.net/", model="vlm")
+        assert c.api_url == "https://mineru.net"  # rstrip("/")
+        assert c.backend == "mineru-net/vlm"
+
+    def test_filter_net_kwargs_drops_local_only(self, settings):
+        from app.services import mineru_client as mc
+
+        picked = mc._filter_net_kwargs({
+            "token": "t", "poll_interval": 1,
+            "api_url": "http://x", "backend": "vlm-engine", "effort": "high",
+        })
+        assert picked == {"token": "t", "poll_interval": 1}
+
+    def test_defaults_from_settings(self, settings):
+        from app.services import mineru_client as mc
+
+        c = mc._MinerUNetClient()
+        assert c.base_url == mc.settings.mineru_net_base_url.rstrip("/")
+        assert c.model == mc.settings.mineru_net_model
+        assert c.token == mc.settings.mineru_net_token
+
+
+class TestMinerUNetUnwrapErrorClassification:
+    """_unwrap 错误分级：token 失效熔断（不重试），业务码/非 JSON 可重试。"""
+
+    def _client(self):
+        from app.services import mineru_client as mc
+
+        return mc._MinerUNetClient(token="t")
+
+    def test_code_zero_returns_data(self, settings):
+        import httpx
+
+        resp = httpx.Response(200, json={"code": 0, "data": {"batch_id": "b1"}})
+        assert self._client()._unwrap(resp, "x") == {"batch_id": "b1"}
+
+    @pytest.mark.parametrize("code", ["A0202", "A0211"])
+    def test_token_codes_are_fatal(self, settings, code):
+        import httpx
+        from app.services import mineru_client as mc
+
+        resp = httpx.Response(200, json={"code": code, "msg": "token 无效"})
+        with pytest.raises(mc._FatalMinerUError) as ei:
+            self._client()._unwrap(resp, "file-urls/batch")
+        assert ei.value.status_code == 200
+
+    def test_http_401_is_fatal(self, settings):
+        import httpx
+        from app.services import mineru_client as mc
+
+        resp = httpx.Response(401, json={"code": -1, "msg": "unauthorized"})
+        with pytest.raises(mc._FatalMinerUError):
+            self._client()._unwrap(resp, "x")
+
+    def test_business_error_is_retryable(self, settings):
+        import httpx
+        from app.services import mineru_client as mc
+
+        resp = httpx.Response(200, json={"code": -60009, "msg": "队列已满"})
+        with pytest.raises(mc._RetryableMinerUError) as ei:
+            self._client()._unwrap(resp, "x")
+        assert "-60009" in str(ei.value)
+
+    def test_non_json_body_is_retryable(self, settings):
+        import httpx
+        from app.services import mineru_client as mc
+
+        resp = httpx.Response(502, content=b"<html>bad gateway</html>")
+        with pytest.raises(mc._RetryableMinerUError):
+            self._client()._unwrap(resp, "x")
+
+
+class TestMinerUNetParseFileFlow:
+    """提交 → 上传 → 轮询 → 下载 → 归一化落盘（mock httpx 全链路）。"""
+
+    def test_full_flow_normalizes_artifacts(self, settings, tmp_path, monkeypatch):
+        import httpx
+
+        client, session = _make_net_client(monkeypatch)
+        session.post.return_value = httpx.Response(200, json={
+            "code": 0, "data": {"batch_id": "b1", "file_urls": ["https://up.example.com/x"]}})
+        session.put.return_value = httpx.Response(200)
+        session.get.side_effect = [
+            httpx.Response(200, json={"code": 0, "data": {"extract_result": [
+                {"state": "running", "extract_progress": {"extracted_pages": 3}}]}}),
+            httpx.Response(200, json={"code": 0, "data": {"extract_result": [
+                {"state": "done", "full_zip_url": "https://cdn.example.com/r.zip"}]}}),
+            httpx.Response(200, content=_net_zip_bytes("report")),
+        ]
+
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        parsed_dir = (tmp_path / "parsed" / "report").resolve()
+        result = client.parse_file(pdf, parsed_dir)
+
+        # ---- 步骤 1：申请上传链接（body / 鉴权）----
+        post_call = session.post.call_args
+        assert post_call.args[0] == "https://mineru.net/api/v4/file-urls/batch"
+        assert post_call.kwargs["headers"]["Authorization"] == "Bearer test-token"
+        assert post_call.kwargs["json"]["files"][0]["name"] == "report.pdf"
+        assert post_call.kwargs["json"]["model_version"] == "vlm"
+
+        # ---- 步骤 2：PUT 上传不设 Content-Type（官方要求）----
+        put_call = session.put.call_args
+        assert put_call.args[0] == "https://up.example.com/x"
+        assert "headers" not in put_call.kwargs
+
+        # ---- 归一化产物落盘（计划验证项 2 核心断言）----
+        assert (parsed_dir / "report.md").read_text(encoding="utf-8") == "# 标题\n正文内容"
+        assert (parsed_dir / "report_middle.json").is_file()           # layout.json
+        assert (parsed_dir / "report_model.json").is_file()            # *_model.json
+        assert (parsed_dir / "report_content_list_v2.json").is_file()  # *_content_list.json ★
+        assert (parsed_dir / "images" / "fig1.jpg").is_file()
+        assert (parsed_dir / "main.html").is_file()
+        # ZIP 顶层目录已剥离（不再有 report/ 子目录）
+        assert not (parsed_dir / "report").exists()
+
+        assert result.md_path == parsed_dir / "report.md"
+        assert result.response_kind == "zip"
+        assert result.attempts == 1
+        assert len(result.images) == 1
+        assert result.file_count == 4  # md + json_path + 1 张图 + main.html
+
+    def test_html_forces_mineru_html_model(self, settings, tmp_path, monkeypatch):
+        import httpx
+
+        client, session = _make_net_client(monkeypatch)
+        session.post.return_value = httpx.Response(200, json={
+            "code": 0, "data": {"batch_id": "b2", "file_urls": ["https://up.example.com/h"]}})
+        session.put.return_value = httpx.Response(200)
+        session.get.side_effect = [
+            httpx.Response(200, json={"code": 0, "data": {"extract_result": [
+                {"state": "done", "full_zip_url": "https://cdn.example.com/h.zip"}]}}),
+            httpx.Response(200, content=_net_zip_bytes("page")),
+        ]
+
+        html = tmp_path / "page.html"
+        html.write_text("<html>hi</html>", encoding="utf-8")
+        parsed_dir = (tmp_path / "out" / "page").resolve()
+        result = client.parse_file(html, parsed_dir)
+
+        assert session.post.call_args.kwargs["json"]["model_version"] == "MinerU-HTML"
+        assert result.md_path == parsed_dir / "page.md"
+
+    def test_token_error_aborts_without_retry(self, settings, tmp_path, monkeypatch):
+        """token 失效（A0202）→ 熔断：不重试、错误透传、空目录清理。"""
+        import httpx
+        from app.services import mineru_client as mc
+
+        client, session = _make_net_client(monkeypatch)
+        session.post.return_value = httpx.Response(200, json={"code": "A0202", "msg": "token 无效"})
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"%PDF")
+        parsed_dir = (tmp_path / "out" / "a").resolve()
+
+        with pytest.raises(mc.MinerUError) as ei:
+            client.parse_file(pdf, parsed_dir)
+
+        assert "A0202" in str(ei.value)
+        assert session.post.call_count == 1  # 熔断：没有第二次请求
+        assert not parsed_dir.exists()       # 失败后空目录已清理
+
+    def test_retryable_error_retries_then_succeeds(self, settings, tmp_path, monkeypatch):
+        """网关抖动（非 JSON 500）→ 按 max_retries 重试，第二次成功。"""
+        import httpx
+
+        client, session = _make_net_client(monkeypatch)
+        session.post.side_effect = [
+            httpx.Response(500, content=b"<html>bad gateway</html>"),
+            httpx.Response(200, json={"code": 0, "data": {
+                "batch_id": "b9", "file_urls": ["https://up.example.com/r"]}}),
+        ]
+        session.put.return_value = httpx.Response(200)
+        session.get.side_effect = [
+            httpx.Response(200, json={"code": 0, "data": {"extract_result": [
+                {"state": "done", "full_zip_url": "https://cdn.example.com/r.zip"}]}}),
+            httpx.Response(200, content=_net_zip_bytes("r")),
+        ]
+        pdf = tmp_path / "r.pdf"
+        pdf.write_bytes(b"%PDF")
+        parsed_dir = (tmp_path / "out" / "r").resolve()
+
+        result = client.parse_file(pdf, parsed_dir)
+
+        assert session.post.call_count == 2
+        assert result.attempts == 2
+        assert (parsed_dir / "r.md").is_file()
+
+    def test_state_failed_is_fatal(self, settings, tmp_path, monkeypatch):
+        """轮询到 state=failed → 立即失败（err_msg 带进错误信息）。"""
+        import httpx
+        from app.services import mineru_client as mc
+
+        client, session = _make_net_client(monkeypatch)
+        session.post.return_value = httpx.Response(200, json={
+            "code": 0, "data": {"batch_id": "b3", "file_urls": ["https://up.example.com/f"]}})
+        session.put.return_value = httpx.Response(200)
+        session.get.return_value = httpx.Response(200, json={"code": 0, "data": {"extract_result": [
+            {"state": "failed", "err_msg": "page limit exceeded"}]}})
+        pdf = tmp_path / "f.pdf"
+        pdf.write_bytes(b"%PDF")
+
+        with pytest.raises(mc.MinerUError) as ei:
+            client.parse_file(pdf, (tmp_path / "out" / "f").resolve())
+
+        assert "page limit exceeded" in str(ei.value)
+        assert session.post.call_count == 1
+
+
+class TestMinerUNetHealthCheck:
+    """健康检查：官方无 /health，借 file-urls/batch 鉴权层区分三态。"""
+
+    def test_no_token_reports_error_without_http(self, settings, monkeypatch):
+        from app.services import mineru_client as mc
+
+        client_cls = MagicMock()
+        monkeypatch.setattr(mc.httpx, "Client", client_cls)
+        c = mc._MinerUNetClient(token="")
+        out = c.health_check()
+        assert out["healthy"] is False
+        assert out["status"] == "error"
+        assert "未配置" in out["detail"]
+        client_cls.assert_not_called()  # 无 token 不发起 HTTP
+
+    def test_healthy_ok(self, settings, monkeypatch):
+        import httpx
+        from app.services import mineru_client as mc
+
+        session = _patch_httpx_session(
+            monkeypatch, post=httpx.Response(200, json={"code": 0, "data": None}))
+        c = mc._MinerUNetClient(token="t", model="vlm")
+        out = c.health_check()
+        assert out["healthy"] is True
+        assert out["version"] == "mineru.net/vlm"
+        assert out["status"] == "healthy"
+        assert session.post.call_args.kwargs["json"] == {"files": [], "model_version": "vlm"}
+
+    def test_token_invalid_reports_error(self, settings, monkeypatch):
+        import httpx
+        from app.services import mineru_client as mc
+
+        _patch_httpx_session(
+            monkeypatch, post=httpx.Response(200, json={"code": "A0211", "msg": "token 过期"}))
+        c = mc._MinerUNetClient(token="t")
+        out = c.health_check()
+        assert out["healthy"] is False
+        assert out["status"] == "error"
+        assert "token" in out["detail"]
+
+    def test_unreachable_on_connect_error(self, settings, monkeypatch):
+        import httpx
+        from app.services import mineru_client as mc
+
+        _patch_httpx_session(monkeypatch, post=[httpx.ConnectError("connection refused")])
+        c = mc._MinerUNetClient(token="t")
+        out = c.health_check()
+        assert out["healthy"] is False
+        assert out["status"] == "unreachable"
+
+
+class TestFacadeProviderDispatch:
+    """facade 按 provider 分派 + auto 降级 + health_check 前缀/备用探测。"""
+
+    def test_mineru_net_provider_filters_local_kwargs(self, settings):
+        from app.services import mineru_client as mc
+
+        c = mc.MinerUClient(
+            provider="mineru_net", token="t",
+            api_url="http://ignored:9999", backend="vlm-engine",  # local 专属，应被过滤
+        )
+        assert c.provider == "mineru_net"
+        assert isinstance(c._impl, mc._MinerUNetClient)
+        # 外观属性经 __getattr__ 委托给当前实现
+        assert c.api_url == c._impl.api_url
+        assert c.backend == c._impl.backend
+
+    def test_local_provider_default_impl(self, settings):
+        from app.services import mineru_client as mc
+
+        c = mc.MinerUClient(provider="local", api_url="http://localhost:9999")
+        assert isinstance(c._impl, mc._LocalMinerUClient)
+        assert c.api_url == "http://localhost:9999"
+
+    def test_invalid_provider_falls_back_to_local(self, settings):
+        from app.services import mineru_client as mc
+
+        c = mc.MinerUClient(provider="bogus", api_url="http://localhost:9999")
+        assert c.provider == "local"
+        assert isinstance(c._impl, mc._LocalMinerUClient)
+
+    def test_auto_uses_local_when_healthy(self, settings, monkeypatch):
+        from app.services import mineru_client as mc
+
+        monkeypatch.setattr(
+            mc._LocalMinerUClient, "health_check",
+            lambda self, timeout=10.0: {"healthy": True, "version": "v", "status": "healthy", "detail": "ok"},
+        )
+        c = mc.MinerUClient(provider="auto", api_url="http://localhost:9999")
+        assert isinstance(c._impl, mc._LocalMinerUClient)
+
+    def test_auto_falls_back_to_net_at_runtime(self, settings, tmp_path, monkeypatch):
+        """auto：本地解析失败且配置了 token → mineru.net 补救成功并粘性切换。"""
+        from app.services import mineru_client as mc
+
+        monkeypatch.setattr(mc.settings, "mineru_net_token", "tok")
+        monkeypatch.setattr(
+            mc._LocalMinerUClient, "health_check",
+            lambda self, timeout=10.0: {"healthy": True, "version": "v", "status": "healthy", "detail": "ok"},
+        )
+        c = mc.MinerUClient(provider="auto", api_url="http://localhost:9999")
+        assert isinstance(c._impl, mc._LocalMinerUClient)
+
+        def _local_boom(self, file_path, parsed_dir):
+            raise mc.MinerUError("local down", attempts=3)
+
+        sentinel = object()
+
+        def _net_ok(self, file_path, parsed_dir):
+            return sentinel
+
+        monkeypatch.setattr(mc._LocalMinerUClient, "parse_file", _local_boom)
+        monkeypatch.setattr(mc._MinerUNetClient, "parse_file", _net_ok)
+
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"%PDF")
+        assert c.parse_file(f, tmp_path / "out") is sentinel
+        # 降级成功后粘性切换：后续文件直接走 mineru.net
+        assert isinstance(c._impl, mc._MinerUNetClient)
+
+    def test_auto_double_failure_raises_combined_error(self, settings, tmp_path, monkeypatch):
+        from app.services import mineru_client as mc
+
+        monkeypatch.setattr(mc.settings, "mineru_net_token", "tok")
+        monkeypatch.setattr(
+            mc._LocalMinerUClient, "health_check",
+            lambda self, timeout=10.0: {"healthy": True, "version": "v", "status": "healthy", "detail": "ok"},
+        )
+        c = mc.MinerUClient(provider="auto", api_url="http://localhost:9999")
+
+        def _boom(self, file_path, parsed_dir):
+            raise mc.MinerUError("provider down", attempts=1)
+
+        monkeypatch.setattr(mc._LocalMinerUClient, "parse_file", _boom)
+        monkeypatch.setattr(mc._MinerUNetClient, "parse_file", _boom)
+
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"%PDF")
+        with pytest.raises(mc.MinerUError) as ei:
+            c.parse_file(f, tmp_path / "out")
+        assert "auto 双 provider 均失败" in str(ei.value)
+
+    def test_health_check_adds_provider_prefix(self, settings, monkeypatch):
+        from app.services import mineru_client as mc
+
+        monkeypatch.setattr(
+            mc._MinerUNetClient, "health_check",
+            lambda self, timeout=10.0: {
+                "healthy": True, "version": "mineru.net/vlm",
+                "status": "healthy", "detail": "token ok"},
+        )
+        c = mc.MinerUClient(provider="mineru_net", token="t")
+        out = c.health_check()
+        assert out["detail"] == "[provider=mineru_net] token ok"
+
+    def test_auto_health_check_reports_backup(self, settings, monkeypatch):
+        from app.services import mineru_client as mc
+
+        monkeypatch.setattr(mc.settings, "mineru_net_token", "tok")
+        monkeypatch.setattr(
+            mc._LocalMinerUClient, "health_check",
+            lambda self, timeout=10.0: {"healthy": True, "version": "v", "status": "healthy", "detail": "local ok"},
+        )
+        monkeypatch.setattr(
+            mc._MinerUNetClient, "health_check",
+            lambda self, timeout=10.0: {"healthy": True, "version": "n", "status": "healthy", "detail": "net ok"},
+        )
+        c = mc.MinerUClient(provider="auto", api_url="http://localhost:9999")
+        out = c.health_check()
+        assert out["detail"].startswith("[provider=auto] ")
+        assert "备用 provider: healthy" in out["detail"]

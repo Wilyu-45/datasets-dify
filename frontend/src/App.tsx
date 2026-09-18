@@ -7,6 +7,7 @@ import {
   SettingOutlined,
   GlobalOutlined,
   ProfileOutlined,
+  DashboardOutlined,
 } from "@ant-design/icons";
 import { useState } from "react";
 import ParsePage from "./pages/ParsePage";
@@ -16,6 +17,7 @@ import VerifyPage from "./pages/VerifyPage";
 import ConfigPage from "./pages/ConfigPage";
 import WebScrapePage from "./pages/WebScrapePage";
 import MetadataPage from "./pages/MetadataPage";
+import OpsPage from "./pages/OpsPage";
 
 const { Header, Content, Sider } = Layout;
 const { Title } = Typography;
@@ -81,6 +83,11 @@ export default function App() {
                 icon: <SettingOutlined />,
                 label: "配置中心",
               },
+              {
+                key: "ops",
+                icon: <DashboardOutlined />,
+                label: "运维",
+              },
             ]}
           />
         </Sider>
@@ -94,6 +101,7 @@ export default function App() {
           {page === "metadata" && <MetadataPage />}
           {page === "webscrape" && <WebScrapePage onOpenConfig={() => setPage("config")} />}
           {page === "config" && <ConfigPage />}
+          {page === "ops" && <OpsPage />}
         </Content>
       </Layout>
     </Layout>

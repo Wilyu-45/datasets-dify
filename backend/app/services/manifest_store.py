@@ -83,6 +83,21 @@ ON CONFLICT (filename) DO UPDATE SET
     {", ".join(f"{f} = EXCLUDED.{f}" for f in MANIFEST_FIELDS)}
 """
 
+# MySQL 方言：ON CONFLICT -> ON DUPLICATE KEY UPDATE，EXCLUDED.f -> VALUES(f)
+_UPSERT_SQL_MYSQL = f"""
+INSERT INTO manifest ({", ".join(MANIFEST_FIELDS)})
+VALUES ({", ".join("%(" + f + ")s" for f in MANIFEST_FIELDS)})
+ON DUPLICATE KEY UPDATE
+    {", ".join(f"{f} = VALUES({f})" for f in MANIFEST_FIELDS)}
+"""
+
+
+def _upsert_sql() -> str:
+    """按数据库方言（settings.rag_db_type）返回 manifest 的 UPSERT 语句。"""
+    if settings.rag_db_type == "mysql":
+        return _UPSERT_SQL_MYSQL
+    return _UPSERT_SQL
+
 # 写操作串行化，避免并发覆盖（替代原 Excel 写锁语义）
 _write_lock = threading.RLock()
 
@@ -165,7 +180,7 @@ def upsert(path: Optional[Path] = None, row: Optional[ManifestRow] = None, **ove
     _fill_timestamps(data)
     with _write_lock:
         with db.get_conn() as conn:
-            conn.execute(_UPSERT_SQL, data)
+            conn.execute(_upsert_sql(), data)
             conn.commit()
 
 
@@ -185,8 +200,9 @@ def bulk_upsert(path: Optional[Path] = None, rows: Optional[Iterable[ManifestRow
         with db.get_conn() as conn:
             # 注：部分 psycopg 构建（C 扩展版）的 Connection 不暴露 executemany，
             # 统一用单条 execute 循环，保证兼容。
+            sql = _upsert_sql()
             for data in params:
-                conn.execute(_UPSERT_SQL, data)
+                conn.execute(sql, data)
             conn.commit()
 
 
@@ -207,7 +223,7 @@ def update_fields(filename: str, fields: Dict[str, object]) -> Optional[Manifest
     data["update_time"] = now_iso()
     with _write_lock:
         with db.get_conn() as conn:
-            conn.execute(_UPSERT_SQL, data)
+            conn.execute(_upsert_sql(), data)
             conn.commit()
     return fetch(filename)
 
@@ -236,10 +252,17 @@ def clear() -> None:
 
 
 def exists() -> bool:
-    """manifest 表是否存在。"""
-    with db.get_conn() as conn:
-        cur = conn.execute(
+    """manifest 表是否存在。按方言限定 schema，避免跨库误匹配。"""
+    if settings.rag_db_type == "mysql":
+        sql = (
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = 'manifest') AS e"
+            "WHERE table_schema = DATABASE() AND table_name = 'manifest') AS e"
         )
+    else:
+        sql = (
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'manifest') AS e"
+        )
+    with db.get_conn() as conn:
+        cur = conn.execute(sql)
         return bool(cur.fetchone()["e"])

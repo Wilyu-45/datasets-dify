@@ -27,6 +27,15 @@
 落盘约定：
     - 把所有产物解压到 parsed_dir（默认 data/parsed/{stem}/）；
     - 一文档一文件夹，文件夹名 = 源文件 stem。
+
+★ Provider 双模式（2026-09 生产部署改造）：
+    settings.mineru_provider 决定实际实现，对外统一由 MinerUClient facade 分派：
+    - local      ：本地 mineru-api（上文 multipart 契约 → _LocalMinerUClient，默认）
+    - mineru_net ：官方 mineru.net 精准解析 API（异步任务制 → _MinerUNetClient）
+    - auto       ：优先 local，健康检查失败或解析重试耗尽时自动降级 mineru.net
+    两个实现满足同一契约：parse_file(file_path, parsed_dir) -> ParseResult、
+    health_check() -> {healthy, version, status, detail}、.api_url / .backend 属性，
+    parser.py / chunker.py / api/health.py 等调用方零改动。
 """
 
 from __future__ import annotations
@@ -193,8 +202,56 @@ class ParseResult:
         )
 
 
-class MinerUClient:
-    """薄包装 httpx，对接 mineru-api 的 /file_parse。"""
+def _cleanup_empty_dir(parsed_dir: Path) -> None:
+    """解析失败时，清理空目录（避免在 parsed/ 留下一堆空文件夹）。
+
+    从 _LocalMinerUClient._cleanup_on_failure 提取为模块级：mineru.net
+    provider 同样需要该逻辑。
+    """
+    try:
+        if parsed_dir.exists() and not any(parsed_dir.rglob("*")):
+            parsed_dir.rmdir()
+    except OSError:
+        # 不影响主流程
+        pass
+
+
+def _collect_outputs_in_dir(
+    parsed_dir: Path, *, attempts: int, kind: str
+) -> ParseResult:
+    """在已落盘的目录里清点产物（.md / .json / images / 其它文件）。
+
+    从 _LocalMinerUClient._collect_outputs 提取为模块级：mineru.net provider
+    归一化落盘后复用同一清点逻辑，保证 ParseResult 语义一致。
+    """
+    md_files = sorted(parsed_dir.rglob("*.md"))
+    json_files = sorted(parsed_dir.rglob("*.json"))
+    image_files = (
+        sorted(parsed_dir.rglob("*.png"))
+        + sorted(parsed_dir.rglob("*.jpg"))
+        + sorted(parsed_dir.rglob("*.jpeg"))
+        + sorted(parsed_dir.rglob("*.webp"))
+    )
+    # 其它文件
+    all_files = {p for p in parsed_dir.rglob("*") if p.is_file()}
+    others = sorted(all_files - set(md_files) - set(json_files) - set(image_files))
+
+    return ParseResult(
+        parse_dir=parsed_dir,
+        md_path=md_files[0] if md_files else None,
+        json_path=json_files[0] if json_files else None,
+        images=image_files,
+        other_files=others,
+        attempts=attempts,
+        response_kind=kind,
+    )
+
+
+class _LocalMinerUClient:
+    """薄包装 httpx，对接本地 mineru-api 的 /file_parse（provider=local）。
+
+    原 MinerUClient 实现，逻辑不变；对外入口统一走文件尾的 MinerUClient facade。
+    """
 
     def __init__(
         self,
@@ -674,12 +731,7 @@ class MinerUClient:
     @staticmethod
     def _cleanup_on_failure(parsed_dir: Path) -> None:
         """解析失败时，清理空目录（避免在 parsed/ 留下一堆空文件夹）。"""
-        try:
-            if parsed_dir.exists() and not any(parsed_dir.rglob("*")):
-                parsed_dir.rmdir()
-        except OSError:
-            # 不影响主流程
-            pass
+        _cleanup_empty_dir(parsed_dir)
 
     # -------------------- internal --------------------
 
@@ -907,27 +959,7 @@ class MinerUClient:
         self, parsed_dir: Path, *, attempts: int, kind: str
     ) -> ParseResult:
         """在已落盘的目录里找 .md / .json / images / 其它文件。"""
-        md_files = sorted(parsed_dir.rglob("*.md"))
-        json_files = sorted(parsed_dir.rglob("*.json"))
-        image_files = (
-            sorted(parsed_dir.rglob("*.png"))
-            + sorted(parsed_dir.rglob("*.jpg"))
-            + sorted(parsed_dir.rglob("*.jpeg"))
-            + sorted(parsed_dir.rglob("*.webp"))
-        )
-        # 其它文件
-        all_files = {p for p in parsed_dir.rglob("*") if p.is_file()}
-        others = sorted(all_files - set(md_files) - set(json_files) - set(image_files))
-
-        return ParseResult(
-            parse_dir=parsed_dir,
-            md_path=md_files[0] if md_files else None,
-            json_path=json_files[0] if json_files else None,
-            images=image_files,
-            other_files=others,
-            attempts=attempts,
-            response_kind=kind,
-        )
+        return _collect_outputs_in_dir(parsed_dir, attempts=attempts, kind=kind)
 
 
 # 内部异常：4xx 不重试，5xx/网络重试
@@ -940,3 +972,650 @@ class _FatalMinerUError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+# ============================================================
+# mineru.net 官方 API provider（provider=mineru_net）
+# ============================================================
+
+# token 无效 / 过期的业务码（官方文档 A0202/A0211）：重试无意义，直接熔断
+_NET_TOKEN_ERROR_CODES = frozenset({"A0202", "A0211"})
+
+# _MinerUNetClient 构造函数认识的参数（facade 透传时过滤用）
+_NET_CLIENT_KWARGS = frozenset(
+    {
+        "token",
+        "base_url",
+        "model",
+        "poll_interval",
+        "poll_timeout",
+        "http_timeout",
+        "upload_timeout",
+        "max_retries",
+        "retry_initial_wait",
+        "retry_backoff_factor",
+        "retry_max_wait",
+    }
+)
+
+
+def _filter_net_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """从 facade 收到的构造参数中筛出 _MinerUNetClient 认识的键。
+
+    facade 的 **kwargs 可能含 local 专属参数（api_url/backend 等），
+    直接透传给 _MinerUNetClient 会 TypeError。
+    """
+    picked = {k: v for k, v in kwargs.items() if k in _NET_CLIENT_KWARGS}
+    dropped = sorted(set(kwargs) - _NET_CLIENT_KWARGS)
+    if dropped:
+        log.debug("mineru.net provider 忽略 local 专属参数: %s", dropped)
+    return picked
+
+
+class _MinerUNetClient:
+    """官方 mineru.net 精准解析 API 客户端（异步任务制，Bearer token）。
+
+    接口契约（https://mineru.net/apiManage/docs）：
+        1) POST {base}/api/v4/file-urls/batch  申请上传链接
+           body = {"files": [{"name", "data_id"}], "model_version"}
+           → {code: 0, data: {batch_id, file_urls: [...]}}
+        2) PUT {file_url}  上传原始文件字节（官方要求：不要设 Content-Type）
+        3) GET {base}/api/v4/extract-results/batch/{batch_id}  轮询任务状态
+           → data.extract_result[]: {state, full_zip_url, err_msg, extract_progress}
+           state: waiting-file / pending / running / converting / done / failed
+        4) GET {full_zip_url}  下载产物 ZIP
+
+    限制：单文件 ≤200MB、≤200 页；HTML 文件强制 model_version=MinerU-HTML。
+
+    产物归一化（对齐本地命名约定；chunker.locate_parsed_files 用 rglob 递归查找）：
+        full.md             → {stem}.md
+        layout.json         → {stem}_middle.json        （= 本地 middle.json）
+        *_model.json        → {stem}_model.json
+        *_content_list.json → {stem}_content_list_v2.json ★ chunker 主输入
+        images/*、main.html → 原样保留
+    """
+
+    def __init__(
+        self,
+        *,
+        token: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+        poll_interval: Optional[float] = None,
+        poll_timeout: Optional[int] = None,
+        http_timeout: Optional[float] = None,
+        upload_timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+        retry_initial_wait: Optional[float] = None,
+        retry_backoff_factor: Optional[float] = None,
+        retry_max_wait: Optional[float] = None,
+    ) -> None:
+        self.base_url = (base_url or settings.mineru_net_base_url).rstrip("/")
+        self.token = token if token is not None else settings.mineru_net_token
+        self.model = (model or settings.mineru_net_model or "vlm").strip()
+        if self.model not in {"pipeline", "vlm", "MinerU-HTML"}:
+            log.warning(
+                "mineru_net_model=%r 非法（应为 pipeline/vlm/MinerU-HTML），保留原值由服务端校验",
+                self.model,
+            )
+        self.poll_interval = (
+            poll_interval
+            if poll_interval is not None
+            else settings.mineru_net_poll_interval
+        )
+        self.poll_timeout = (
+            poll_timeout if poll_timeout is not None else settings.mineru_net_poll_timeout
+        )
+        # 常规 JSON 请求（申请链接 / 轮询）单次超时
+        self.http_timeout = http_timeout if http_timeout is not None else 30.0
+        # 上传（≤200MB）/ 产物 ZIP 下载单次超时
+        self.upload_timeout = upload_timeout if upload_timeout is not None else 600.0
+        # 整任务重试策略（与 local 同公式：min(initial * factor^(n-1), max_wait)）
+        self.max_retries = max_retries or settings.mineru_max_retries
+        self.retry_initial_wait = (
+            retry_initial_wait
+            if retry_initial_wait is not None
+            else settings.mineru_retry_initial_wait
+        )
+        self.retry_backoff_factor = (
+            retry_backoff_factor
+            if retry_backoff_factor is not None
+            else settings.mineru_retry_backoff_factor
+        )
+        self.retry_max_wait = (
+            retry_max_wait if retry_max_wait is not None else settings.mineru_retry_max_wait
+        )
+        # ★ 外观契约属性：parser.py 读 .api_url 写 ParseReport；
+        #   pdf_fallback.py 打日志读 .backend
+        self.api_url = self.base_url
+        self.backend = f"mineru-net/{self.model}"
+
+    # -------------------- public --------------------
+
+    def health_check(self, timeout: float = 10.0) -> dict:
+        """mineru.net 健康检查：探测 base_url 可达性 + token 有效性。
+
+        官方无专用 /health 端点；借 file-urls/batch 的鉴权层区分：
+            - 网络不可达 → unreachable
+            - token 无效/过期（A0202/A0211 / HTTP 401）→ error
+            - 其余响应（含参数校验错误）→ healthy（token 已通过鉴权）
+
+        Returns:
+            dict: {healthy, version, status, detail}（与 local 同结构，
+            供 api/health.py 的 MinerUHealthInfo 直接构造）
+        """
+        if not self.token:
+            return {
+                "healthy": False,
+                "version": None,
+                "status": "error",
+                "detail": "RAG_MINERU_NET_TOKEN 未配置，无法调用官方 mineru.net API",
+            }
+        url = f"{self.base_url}/api/v4/file-urls/batch"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.token}",
+        }
+        # 空 files：只过鉴权层，不创建真实任务
+        body = {"files": [], "model_version": self.model}
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(url, headers=headers, json=body)
+        except httpx.TimeoutException:
+            log.warning(
+                "mineru.net 健康检查超时 (%ss)",
+                timeout,
+                extra={"step": "health", "status": "unhealthy", "error_msg": f"timeout after {timeout}s"},
+            )
+            return {
+                "healthy": False,
+                "version": None,
+                "status": "unreachable",
+                "detail": f"timeout after {timeout}s",
+            }
+        except httpx.HTTPError as e:
+            log.warning(
+                "mineru.net 健康检查异常: %s",
+                e,
+                extra={"step": "health", "status": "unhealthy", "error_msg": str(e)},
+            )
+            return {"healthy": False, "version": None, "status": "unreachable", "detail": str(e)}
+
+        try:
+            shell = resp.json() if resp.content else {}
+        except Exception:  # noqa: BLE001
+            shell = {}
+        code = shell.get("code")
+        if resp.status_code == 401 or str(code) in _NET_TOKEN_ERROR_CODES:
+            detail = f"token 无效或过期: code={code} msg={shell.get('msg')}"
+            log.warning(
+                "mineru.net 健康检查: %s",
+                detail,
+                extra={"step": "health", "status": "unhealthy", "error_msg": detail},
+            )
+            return {"healthy": False, "version": None, "status": "error", "detail": detail}
+        if 200 <= resp.status_code < 300:
+            log.info(
+                "mineru.net 健康: base=%s model=%s",
+                self.base_url,
+                self.model,
+                extra={"step": "health", "status": "ok"},
+            )
+            return {
+                "healthy": True,
+                "version": f"mineru.net/{self.model}",
+                "status": "healthy",
+                "detail": f"base={self.base_url}, model={self.model}, token ok",
+            }
+        return {"healthy": False, "version": None, "status": "error", "detail": f"HTTP {resp.status_code}"}
+
+    def parse_file(self, file_path: Path, parsed_dir: Path) -> ParseResult:
+        """上传 file_path → mineru.net 异步解析 → 产物归一化落盘到 parsed_dir。
+
+        抛 MinerUError 表示重试耗尽 / 任务失败；调用方应将文件移入 error/。
+        （官方 API 支持 .doc 旧格式，故不做本地 OLE 预检。）
+        """
+        file_path = Path(file_path).resolve()
+        if not file_path.is_file():
+            raise MinerUError(f"待解析文件不存在: {file_path}")
+        if not self.token:
+            raise MinerUError(
+                "mineru_net_token 未配置（RAG_MINERU_NET_TOKEN），无法调用官方 mineru.net API"
+            )
+
+        tracker = get_tracker()
+        tracker.update(file_path.name, 0, "准备解析（mineru.net）...", "parsing")
+
+        parsed_dir = Path(parsed_dir).resolve()
+        # 干净目录：避免上次产物残留（同 local 逻辑）
+        lp = _long_path(parsed_dir)
+        if Path(lp).exists():
+            shutil.rmtree(lp, ignore_errors=True)
+        Path(lp).mkdir(parents=True, exist_ok=True)
+
+        # HTML 文件官方强制 MinerU-HTML；其余用配置模型（默认 vlm）
+        suffix = file_path.suffix.lower()
+        model = "MinerU-HTML" if suffix in {".html", ".htm"} else self.model
+
+        attempts = 0
+        last_err: Optional[MinerUError] = None
+        for attempt in range(1, self.max_retries + 1):
+            attempts = attempt
+            try:
+                tracker.update(
+                    file_path.name,
+                    20 + (attempt - 1) * 15,
+                    f"提交 mineru.net 任务（第 {attempt} 次, model={model}）...",
+                    "parsing",
+                )
+                t0 = time.perf_counter()
+                zip_bytes = self._run_task(file_path, model, tracker)
+                dt = int((time.perf_counter() - t0) * 1000)
+                log.info(
+                    "mineru.net ok",
+                    extra={
+                        "step": "mineru",
+                        "status": "ok",
+                        "file_name": file_path.name,
+                        "duration_ms": dt,
+                        "attempts": attempt,
+                        "backend": self.backend,
+                        "provider": "mineru_net",
+                    },
+                )
+                tracker.update(file_path.name, 90, "解压并归一化产物...", "parsing")
+                result = self._write_normalized(
+                    zip_bytes, parsed_dir, file_path.stem, attempts=attempts
+                )
+                tracker.update(file_path.name, 100, "解析完成", "done")
+                return result
+            except _RetryableMinerUError as e:
+                last_err = MinerUError(str(e), attempts=attempt)
+                wait = min(
+                    self.retry_initial_wait * (self.retry_backoff_factor ** (attempt - 1)),
+                    self.retry_max_wait,
+                )
+                log.warning(
+                    "mineru.net 失败，准备重试",
+                    extra={
+                        "step": "mineru",
+                        "status": "retry",
+                        "file_name": file_path.name,
+                        "attempts": attempt,
+                        "max_retries": self.max_retries,
+                        "wait_s": wait,
+                        "backend": self.backend,
+                        "error_msg": str(e),
+                    },
+                )
+                if attempt < self.max_retries:
+                    tracker.update(
+                        file_path.name,
+                        20 + attempt * 15,
+                        f"第 {attempt} 次失败，{wait}s 后重试...",
+                        "parsing",
+                    )
+                    time.sleep(wait)
+            except _FatalMinerUError as e:
+                # 任务明确失败（token 过期 / state=failed 等）：重试无意义
+                _cleanup_empty_dir(parsed_dir)
+                tracker.update(file_path.name, 0, f"解析失败：{e}", "failed")
+                raise MinerUError(
+                    str(e), attempts=attempt, status_code=e.status_code, body=e.body
+                ) from e
+
+        # 重试耗尽
+        _cleanup_empty_dir(parsed_dir)
+        assert last_err is not None
+        tracker.update(
+            file_path.name,
+            0,
+            f"解析失败（重试 {attempts} 次）：{last_err}",
+            "failed",
+        )
+        raise last_err
+
+    # -------------------- internal --------------------
+
+    def _run_task(self, file_path: Path, model: str, tracker: Any) -> bytes:
+        """跑完一次完整任务：申请链接 → 上传 → 轮询 → 下载 ZIP。返回 ZIP 字节。"""
+        batch_id, upload_url = self._request_upload_url(file_path, model)
+        self._upload_file(upload_url, file_path)
+        zip_url = self._poll_result(batch_id, file_path, tracker)
+        return self._download_zip(zip_url)
+
+    def _request_upload_url(self, file_path: Path, model: str) -> tuple[str, str]:
+        """步骤 1：申请上传链接，返回 (batch_id, upload_url)。"""
+        url = f"{self.base_url}/api/v4/file-urls/batch"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.token}",
+        }
+        body = {
+            "files": [{"name": file_path.name, "data_id": file_path.stem}],
+            "model_version": model,
+        }
+        try:
+            with httpx.Client(timeout=self.http_timeout) as client:
+                resp = client.post(url, headers=headers, json=body)
+        except httpx.TimeoutException as e:
+            raise _RetryableMinerUError(f"申请上传链接超时: {e}") from e
+        except httpx.HTTPError as e:
+            raise _RetryableMinerUError(f"申请上传链接失败: {e}") from e
+
+        data = self._unwrap(resp, "file-urls/batch")
+        batch_id = data.get("batch_id")
+        file_urls = data.get("file_urls") or []
+        if not batch_id or not file_urls:
+            raise _FatalMinerUError(
+                f"file-urls/batch 响应缺 batch_id / file_urls: {data}",
+                status_code=resp.status_code,
+                body=json.dumps(data, ensure_ascii=False)[:500],
+            )
+        return str(batch_id), str(file_urls[0])
+
+    def _upload_file(self, upload_url: str, file_path: Path) -> None:
+        """步骤 2：PUT 原始文件字节到签名 URL。
+
+        ★ 官方要求：不要设置 Content-Type（签名链接对请求头敏感），
+          直接把文件字节作为 body 发送。
+        """
+        try:
+            with open(file_path, "rb") as f:
+                with httpx.Client(timeout=self.upload_timeout) as client:
+                    resp = client.put(upload_url, content=f)
+        except httpx.TimeoutException as e:
+            raise _RetryableMinerUError(f"上传文件超时（{file_path.name}）: {e}") from e
+        except httpx.HTTPError as e:
+            raise _RetryableMinerUError(f"上传文件失败: {e}") from e
+        if not (200 <= resp.status_code < 300):
+            raise _RetryableMinerUError(
+                f"上传文件失败: HTTP {resp.status_code} {(resp.text or '')[:200]}"
+            )
+
+    def _poll_result(self, batch_id: str, file_path: Path, tracker: Any) -> str:
+        """步骤 3：轮询任务状态直到 done/failed/超时，返回产物 ZIP URL。
+
+        轮询期间的单次网络错误不中断（任务仍在服务端运行），等到总超时。
+        """
+        url = f"{self.base_url}/api/v4/extract-results/batch/{batch_id}"
+        headers = {"Authorization": f"Bearer {self.token}"}
+        deadline = time.monotonic() + self.poll_timeout
+        polls = 0
+        last_state = ""
+        while True:
+            polls += 1
+            try:
+                with httpx.Client(timeout=self.http_timeout) as client:
+                    resp = client.get(url, headers=headers)
+                data = self._unwrap(resp, "extract-results")
+                results = data.get("extract_result") or []
+                er = results[0] if results else {}
+            except _FatalMinerUError:
+                raise
+            except _RetryableMinerUError as e:
+                # 轮询抖动：不立即失败，继续等 deadline
+                if time.monotonic() >= deadline:
+                    raise _RetryableMinerUError(
+                        f"轮询超时（{self.poll_timeout}s，state={last_state}）: {e}"
+                    ) from e
+                time.sleep(self.poll_interval)
+                continue
+
+            state = str(er.get("state") or "")
+            last_state = state
+            if state == "done":
+                zip_url = er.get("full_zip_url")
+                if not zip_url:
+                    raise _RetryableMinerUError("state=done 但响应缺 full_zip_url")
+                return str(zip_url)
+            if state == "failed":
+                err_msg = er.get("err_msg") or "unknown"
+                raise _FatalMinerUError(
+                    f"mineru.net 解析失败: {err_msg}",
+                    status_code=200,
+                    body=json.dumps(er, ensure_ascii=False)[:500],
+                )
+
+            # 进度上报（running 时 extract_progress.extracted_pages 有值）
+            pages = (er.get("extract_progress") or {}).get("extracted_pages")
+            label = f"mineru.net {state}" + (f"（已解析 {pages} 页）" if pages else "")
+            tracker.update(file_path.name, min(85, 30 + polls * 5), label, "parsing")
+
+            if time.monotonic() >= deadline:
+                raise _RetryableMinerUError(
+                    f"轮询超时（{self.poll_timeout}s），state={last_state}"
+                )
+            time.sleep(self.poll_interval)
+
+    def _download_zip(self, zip_url: str) -> bytes:
+        """步骤 4：下载产物 ZIP，返回字节流。"""
+        try:
+            with httpx.Client(timeout=self.upload_timeout) as client:
+                resp = client.get(zip_url)
+        except httpx.TimeoutException as e:
+            raise _RetryableMinerUError(f"下载产物 ZIP 超时: {e}") from e
+        except httpx.HTTPError as e:
+            raise _RetryableMinerUError(f"下载产物 ZIP 失败: {e}") from e
+        if not (200 <= resp.status_code < 300):
+            raise _RetryableMinerUError(f"下载产物 ZIP 失败: HTTP {resp.status_code}")
+        return resp.content
+
+    def _unwrap(self, resp: httpx.Response, where: str) -> Dict[str, Any]:
+        """解析 mineru.net 统一响应壳 {code, msg, data}，返回 data 部分。
+
+        - 非 2xx / 非法 JSON → _RetryableMinerUError（网关抖动，重试）
+        - code=0 → data
+        - token 无效/过期（A0202/A0211 / HTTP 401）→ _FatalMinerUError（重试无意义）
+        - 其余业务码（如 -60009 队列满 / 服务端偶发拒绝）→ _RetryableMinerUError
+          （宁可多试几次也不提前熔断；重试耗尽后错误信息里带 code/msg）
+        """
+        try:
+            shell = resp.json() if resp.content else {}
+            body_snippet = json.dumps(shell, ensure_ascii=False)[:500]
+        except Exception as e:  # noqa: BLE001
+            raise _RetryableMinerUError(
+                f"mineru.net {where} 响应不是合法 JSON: {e}"
+            ) from e
+
+        code = shell.get("code")
+        if code == 0:
+            data = shell.get("data")
+            return data if isinstance(data, dict) else {}
+
+        msg = str(shell.get("msg") or "")
+        if resp.status_code == 401 or str(code) in _NET_TOKEN_ERROR_CODES:
+            raise _FatalMinerUError(
+                f"mineru.net token 无效或过期（{where}）: code={code} msg={msg}",
+                status_code=resp.status_code,
+                body=body_snippet,
+            )
+        raise _RetryableMinerUError(f"mineru.net {where} 失败: code={code} msg={msg}")
+
+    def _write_normalized(
+        self, zip_bytes: bytes, parsed_dir: Path, stem: str, *, attempts: int
+    ) -> ParseResult:
+        """解压 mineru.net 产物 ZIP 并按本地命名约定归一化落盘。
+
+        chunker.locate_parsed_files 用 rglob 递归查找 *_content_list_v2.json /
+        *.md / images，因此归一化保证命名约定即可（不强制 backend 子目录）。
+        """
+        try:
+            buf = io.BytesIO(zip_bytes)
+            with zipfile.ZipFile(buf) as zf:
+                for info in zf.infolist():
+                    # 跳过目录条目
+                    if info.filename.endswith("/"):
+                        continue
+                    parts = Path(info.filename).parts
+                    # 去掉 ZIP 顶层目录（官方 ZIP 内有 {name}/ 前缀）
+                    rel = Path(*parts[1:]) if len(parts) > 1 else Path(*parts)
+                    rel = self._normalize_entry_name(rel, stem)
+                    target = parsed_dir / rel
+                    # ★ 与 local _write_from_zip 相同的 Windows 长路径处理
+                    Path(_long_path(target.parent)).mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src, Path(_long_path(target)).open("wb") as dst:
+                        dst.write(src.read())
+        except zipfile.BadZipFile as e:
+            raise _RetryableMinerUError(f"产物不是合法 ZIP: {e}") from e
+        except Exception as e:  # noqa: BLE001
+            raise _RetryableMinerUError(f"无法解压 mineru.net 产物: {e}") from e
+
+        return _collect_outputs_in_dir(parsed_dir, attempts=attempts, kind="zip")
+
+    @staticmethod
+    def _normalize_entry_name(rel: Path, stem: str) -> Path:
+        """把 mineru.net 产物文件名映射为本地命名约定（见类 docstring）。"""
+        name = rel.name
+        lower = name.lower()
+        if lower == "full.md":
+            new_name = f"{stem}.md"
+        elif lower == "layout.json":
+            new_name = f"{stem}_middle.json"
+        elif lower.endswith("_model.json"):
+            new_name = f"{stem}_model.json"
+        elif lower.endswith("_content_list.json"):
+            # ★ chunker 主输入是 *_content_list_v2.json，官方产物叫
+            #   *_content_list.json，必须重命名对齐（否则走 md-only 兜底切分）
+            new_name = f"{stem}_content_list_v2.json"
+        else:
+            # images/*.jpg、main.html（HTML 正文）、其它附件：原样保留
+            new_name = name
+        return rel.parent / new_name
+
+
+# ==================== Facade：统一入口（2026-09 生产部署改造） ====================
+
+
+class MinerUClient:
+    """MinerU 客户端统一入口（facade）。
+
+    按 settings.mineru_provider 分派实际实现：
+    - "local"      → _LocalMinerUClient（本地 mineru-api multipart 契约，默认）
+    - "mineru_net" → _MinerUNetClient（官方 https://mineru.net 精准解析 API）
+    - "auto"       → 构造时探测本地健康度：不可达且配置了 token 则直接用 mineru.net；
+                     运行中本地重试耗尽后再给 mineru.net 一次机会（成功后切换实现）。
+
+    兼容性约定（调用方零改动）：
+    - 构造参数 **kwargs 原样透传给对应实现（net 只取认识的键，其余忽略并记 debug）；
+    - 未在 facade 显式定义的属性（api_url / backend / timeout / _compute_retry_wait /
+      backoff / …）通过 __getattr__ 委托给当前实现，parser / pdf_fallback / chunker /
+      api/health 及旧测试用例均不感知本次重构。
+
+    ★ .doc 旧 OLE 预检只在 local provider 生效；官方 API 支持 .doc，net 不预检；
+      auto 模式下 local 的 _UnsupportedLegacyDocError 同样会触发降级到 mineru.net。
+    """
+
+    _VALID_PROVIDERS = frozenset({"local", "mineru_net", "auto"})
+
+    def __init__(self, **kwargs: Any) -> None:
+        provider = kwargs.pop("provider", None) or settings.mineru_provider or "local"
+        provider = str(provider).strip().lower()
+        if provider not in self._VALID_PROVIDERS:
+            log.warning(
+                "mineru_provider=%r 非法（应为 local/mineru_net/auto），回退 local",
+                provider,
+            )
+            provider = "local"
+        self.provider = provider
+        # 留存原始构造参数：auto 运行时降级需要用同样的参数重建另一个实现
+        self._init_kwargs: Dict[str, Any] = dict(kwargs)
+
+        if provider == "mineru_net":
+            self._impl = _MinerUNetClient(**_filter_net_kwargs(kwargs))
+        elif provider == "auto":
+            self._impl = self._resolve_auto_impl(kwargs)
+        else:
+            self._impl = _LocalMinerUClient(**kwargs)
+
+    # -------------------- provider 解析与降级 --------------------
+
+    def _resolve_auto_impl(self, kwargs: Dict[str, Any]) -> Any:
+        """auto 构造决策：本地健康则用 local；不可达且配置了 token 则用 mineru.net。"""
+        local = _LocalMinerUClient(**kwargs)
+        try:
+            probe = local.health_check(timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            probe = {"healthy": False, "detail": f"探测异常: {e}"}
+        if probe.get("healthy"):
+            return local
+        if settings.mineru_net_token:
+            log.warning(
+                "mineru provider=auto: 本地 mineru-api 不可达（%s），改用 mineru.net",
+                probe.get("detail"),
+            )
+            return _MinerUNetClient(**_filter_net_kwargs(kwargs))
+        log.warning(
+            "mineru provider=auto: 本地不可达且未配置 mineru_net_token，"
+            "保持 local（后续请求失败会原样报错，便于排查配置）"
+        )
+        return local
+
+    # -------------------- public --------------------
+
+    def parse_file(self, file_path: Path, parsed_dir: Path) -> ParseResult:
+        """解析入口（两个 provider 同签名）。auto 下本地失败会给 mineru.net 一次机会。"""
+        try:
+            return self._impl.parse_file(file_path, parsed_dir)
+        except (MinerUError, _UnsupportedLegacyDocError) as local_err:
+            # 仅 auto + 当前实现是 local + 配置了 token 时才降级
+            if not (
+                self.provider == "auto"
+                and isinstance(self._impl, _LocalMinerUClient)
+                and settings.mineru_net_token
+            ):
+                raise
+            log.warning(
+                "mineru provider=auto: 本地解析失败（%s），降级 mineru.net 重试",
+                local_err,
+            )
+            net_impl = _MinerUNetClient(**_filter_net_kwargs(self._init_kwargs))
+            try:
+                result = net_impl.parse_file(file_path, parsed_dir)
+            except (MinerUError, _UnsupportedLegacyDocError) as net_err:
+                raise MinerUError(
+                    f"auto 双 provider 均失败。local: {local_err} | mineru.net: {net_err}",
+                    attempts=(getattr(local_err, "attempts", 0) or 0) + 1,
+                ) from net_err
+            # 降级成功：切换实现，本批后续文件直接走 mineru.net
+            self._impl = net_impl
+            log.info(
+                "mineru provider=auto: 降级 mineru.net 成功，后续文件直接走该 provider"
+            )
+            return result
+
+    def health_check(self, timeout: float = 10.0) -> dict:
+        """健康检查（两个 provider 同签名，返回 healthy/version/status/detail 四键）。
+
+        auto 模式额外探测备用 provider 并把状态拼进 detail，
+        方便 /api/health 直接观察双 provider 情况（B4）。
+        """
+        result = dict(self._impl.health_check(timeout))
+        detail = str(result.get("detail") or "")
+        if self.provider == "auto":
+            try:
+                if isinstance(self._impl, _LocalMinerUClient) and settings.mineru_net_token:
+                    backup = _MinerUNetClient(**_filter_net_kwargs(self._init_kwargs))
+                elif isinstance(self._impl, _MinerUNetClient):
+                    backup = _LocalMinerUClient(**self._init_kwargs)
+                else:
+                    backup = None
+                if backup is not None:
+                    backup_result = backup.health_check(timeout)
+                    detail += f" | 备用 provider: {backup_result.get('status')}"
+            except Exception as e:  # noqa: BLE001
+                detail += f" | 备用探测失败: {e}"
+        result["detail"] = f"[provider={self.provider}] {detail}"
+        return result
+
+    # -------------------- 委托 --------------------
+
+    def __getattr__(self, name: str) -> Any:
+        """未显式定义的属性/方法委托给当前实现（api_url/backend/backoff 等）。"""
+        # dunder 不委托，避免 copy/pickle/类型检查误触
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        impl = self.__dict__.get("_impl")
+        if impl is None:
+            raise AttributeError(f"MinerUClient 尚未初始化完成，无法访问: {name}")
+        return getattr(impl, name)

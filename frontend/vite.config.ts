@@ -6,7 +6,10 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const proxyTarget = env.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000";
+  // 部署子路径（如部署到 https://host/rag/ 下时设 VITE_BASE_PATH=/rag/）
+  const base = env.VITE_BASE_PATH || "/";
   return {
+    base,
     plugins: [react()],
     server: {
       port: Number(env.VITE_DEV_PORT || 5173),
@@ -20,7 +23,8 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: "dist",
-      sourcemap: true,
+      // 生产构建默认不带 sourcemap（生产方定制前端时按需开启，避免泄漏源码）
+      sourcemap: env.VITE_SOURCEMAP === "true",
     },
   };
 });
