@@ -1,0 +1,163 @@
+# ═══════════════════════════════════════════
+# Docker Compose 编排（docker/ 目录，容器化部署）
+#
+# 服务：backend(FastAPI) + frontend(Nginx 托管 React + 反代) + postgres
+#
+# 用法（在仓库根目录执行）：
+#   1) 准备后端配置：cp backend/.env.production.example backend/.env  并按需修改
+#      （关键：数据库用本编排内置的 PostgreSQL，compose 已用 environment 覆盖
+#        RAG_DB_TYPE / RAG_PG_HOST 等，backend/.env 里填 mysql 也会被覆盖为 postgres）
+#   2) 准备 compose 变量：cp docker/.env.example docker/.env  并改密码/端口
+#   3) 构建并启动：docker compose -f docker/docker-compose.yaml up -d --build
+#   4) 查看日志：  docker compose -f docker/docker-compose.yaml logs -f backend
+#   5) 访问前端：  http://localhost:${FRONTEND_PORT:-8080}
+#      访问后端文档：http://localhost:${BACKEND_PORT:-8000}/docs
+#   停止：        docker compose -f docker/docker-compose.yaml down
+#
+# ★ compose 会自动加载「compose 文件同目录」的 .env（即 docker/.env）作为变量来源。
+# ═══════════════════════════════════════════
+
+services:
+  # ──── 后端（FastAPI）─────────────────────────
+  backend:
+    build:
+      context: ..                        # 构建上下文 = 仓库根
+      dockerfile: docker/Dockerfile.backend
+      args:
+        # 国内镜像源（网络受限时避免 deb.debian.org 502 / pip 超时）；可在 docker/.env 覆盖
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-mirrors.aliyun.com}
+        PLAYWRIGHT_DOWNLOAD_HOST: ${PLAYWRIGHT_DOWNLOAD_HOST:-https://cdn.npmmirror.com/binaries/playwright}
+    image: ragsystem-backend:${TAG:-latest}
+    container_name: ragsystem-backend
+    restart: unless-stopped
+
+    # 注入 backend/.env（Dify / OSS / MinerU / 切分 等业务配置）。
+    # ★ 镜像内不存在 backend/.env，故 config.py 的 dotenv 源读空，
+    #   最终生效的是「env_file + environment」合并后的进程环境变量，
+    #   且 environment 优先级高于 env_file（用于覆盖容器网络相关项）。
+    env_file:
+      - ../backend/.env
+
+    environment:
+      # 数据根目录（与命名卷挂载点对齐；日志/解析产物/chunks 都在此）
+      - RAG_DATA_ROOT=/opt/ragsystem/data
+      - RAG_LOG_LEVEL=${RAG_LOG_LEVEL:-info}
+
+      # ★ 数据库：本编排内置 PostgreSQL（覆盖 backend/.env 中可能的 mysql 配置）
+      - RAG_DB_TYPE=postgres
+      - RAG_PG_HOST=postgres             # 容器网络下用 compose 服务名，而非 127.0.0.1
+      - RAG_PG_PORT=5432
+      - RAG_PG_DBNAME=${POSTGRES_DB:-ragsystem}
+      - RAG_PG_USER=${POSTGRES_USER:-ragsystem}
+      - RAG_PG_PASSWORD=${POSTGRES_PASSWORD:-ragsystem_password}
+      - RAG_PG_POOL_MIN=${RAG_PG_POOL_MIN:-1}
+      - RAG_PG_POOL_MAX=${RAG_PG_POOL_MAX:-10}
+
+      # ★ 前端由独立 Nginx 容器托管，后端不挂载 dist/
+      - RAG_SERVE_FRONTEND=false
+
+      # 同源反代部署下浏览器不跨域，CORS 非必需；如需放行独立前端/后端域名，
+      # 在 backend/.env 里设置 RAG_CORS_ORIGINS=["https://your-domain"] 即可（经 env_file 注入）。
+
+    # 允许容器内访问宿主机服务（如本地 MinerU：host.docker.internal:7860）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # 持久化全部运行时数据（input/parsed/chunks/output/logs 等）
+      - ragsystem_data:/opt/ragsystem/data
+
+    ports:
+      # 直接暴露后端便于调试 /docs 与健康检查；生产建议用防火墙限制或注释掉，
+      # 仅通过 frontend 的 Nginx 反代访问。
+      - "${BACKEND_PORT:-8000}:8000"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+    # ★ 等数据库就绪后再启动，避免建表失败
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - ragsystem-network
+
+  # ──── 前端（Nginx 托管 React + 反代 /api、/static）──────
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}   # 默认同源，由 Nginx 反代到 backend
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
+    image: ragsystem-frontend:${TAG:-latest}
+    container_name: ragsystem-frontend
+    restart: unless-stopped
+
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
+    healthcheck:
+      # ★ 用 127.0.0.1 而非 localhost：nginx 仅监听 IPv4，alpine wget 会先把 localhost
+      #   解析为 IPv6 ::1 导致连接被拒、容器误判 unhealthy
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    depends_on:
+      - backend
+
+    networks:
+      - ragsystem-network
+
+  # ──── PostgreSQL 数据库 ──────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: ragsystem-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ragsystem}
+      POSTGRES_USER: ${POSTGRES_USER:-ragsystem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragsystem_password}
+
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+    # 如需从宿主机直连数据库调试，取消下面端口映射（生产不建议暴露）
+    # ports:
+    #   - "${POSTGRES_PORT:-5432}:5432"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ragsystem} -d ${POSTGRES_DB:-ragsystem}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      - ragsystem-network
+
+# ──── 网络 ────────────────────────────────────
+networks:
+  ragsystem-network:
+    driver: bridge
+
+# ──── 数据卷 ──────────────────────────────────
+volumes:
+  ragsystem_data:
+    driver: local
+    name: ragsystem_data
+  pg_data:
+    driver: local
+    name: ragsystem_pg_data

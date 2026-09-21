@@ -1,0 +1,118 @@
+# ═══════════════════════════════════════════
+# 后端镜像（FastAPI + Python 3.10）
+#
+# 构建上下文 = 仓库根目录（compose 中 context: ..）
+# 手动构建：docker build -f docker/Dockerfile.backend -t ragsystem-backend:latest .
+#
+# 阶段 1 builder：安装 Python 依赖（编译型包在此装好）
+# 阶段 2 runtime：精简运行时 + Playwright Chromium（网站抓取反爬用）
+#
+# ★ 说明：镜像内不放置 backend/.env（.dockerignore 已排除 **/.env），
+#   运行时配置由 compose 的 env_file / environment 以「进程环境变量」注入。
+#   config.py 的 dotenv 源在容器内读不到 .env 文件，会自动回退到进程环境变量。
+# ═══════════════════════════════════════════
+
+# ── 阶段 1: Builder（安装 Python 依赖）──
+FROM python:3.10-slim AS builder
+
+# ★ 国内镜像源（可用 --build-arg 覆盖）：
+#   deb.debian.org 在国内常返回 502/超时，默认换成阿里云镜像；
+#   如需还原官方源：--build-arg APT_MIRROR=deb.debian.org
+ARG APT_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+WORKDIR /build
+
+# 替换 apt 源为国内镜像（Debian 12+ 用 deb822 格式 debian.sources；兼容旧 sources.list）
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi
+
+# 弱网友好：apt 多次重试 + 放宽超时（避免单个包连接中断导致整体失败）
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "120";\nAcquire::https::Timeout "120";\n' \
+        > /etc/apt/apt.conf.d/99-retries
+
+# 构建依赖：仅需 C 编译器（oss2 依赖的 crcmod 要从源码编译）。
+# psycopg[binary] / pymupdf / pydantic-core 均有 wheel，无需 g++ 与 libpq-dev，精简下载量
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+
+# 装到独立前缀，方便整体拷进 runtime，避免污染系统 site-packages（pip 走国内源 + 重试）
+RUN pip install --no-cache-dir --upgrade pip -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --retries 10 --timeout 120 \
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_HOST} --retries 10 --timeout 120
+
+# ── 阶段 2: Runtime ──
+FROM python:3.10-slim AS runtime
+
+# ★ 国内镜像源（可用 --build-arg 覆盖）
+ARG APT_MIRROR=mirrors.aliyun.com
+# Playwright 浏览器二进制下载源（默认走 npmmirror CDN，避免官方 CDN 不通）
+ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+
+# Playwright 浏览器统一装到固定路径，非 root 运行用户也可读
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# 替换 apt 源为国内镜像（同 builder 阶段）
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi
+
+# 弱网友好：apt 多次重试 + 放宽超时（curl 安装与下方 playwright --with-deps 的 apt 均受益）
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "120";\nAcquire::https::Timeout "120";\n' \
+        > /etc/apt/apt.conf.d/99-retries
+
+# 运行时系统依赖：
+#   curl                —— 健康检查
+#   playwright --with-deps chromium 会 apt 安装 Chromium 运行所需的系统库
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/ragsystem/backend
+
+# 从 builder 拷贝已安装的 Python 包与可执行入口（uvicorn 等）
+COPY --from=builder /install/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=builder /install/bin /usr/local/bin
+
+# 安装 Playwright Chromium 内核 + 系统依赖（网站抓取遇 WAF 412/403/502 时降级用）
+# ★ 未装 LibreOffice：旧版 .doc/.xls/.ppt 在线预览会退回「文件信息 + 下载自查」，
+#   如需该能力可在此追加：apt-get install -y libreoffice --no-install-recommends
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制应用代码（仅 app/，配置走环境变量注入）
+COPY backend/app ./app
+
+# 非 root 用户运行（安全加固）
+RUN useradd --create-home ragsystemuser
+
+# 预创建数据目录（与 config.py ensure_dirs / settings.logs_dir 对齐）。
+# ★ 命名卷首次挂载会继承镜像内目录属主/权限，若属主为 root 则运行用户无法写入，
+#   故此处提前 chown。日志目录为 data/logs（logging_config 写 settings.logs_dir）。
+RUN mkdir -p /opt/ragsystem/data/{input,pending,parsed,chunks,output,error,manual_fix,webscrape,single_uploads,logs} \
+    && chown -R ragsystemuser:ragsystemuser /opt/ragsystem/data /ms-playwright
+
+USER ragsystemuser
+
+EXPOSE 8000
+
+# 健康检查（命中后端 /api/health）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/api/health || exit 1
+
+# ★ 固定 --workers 1：解析进度为进程内存态，多 worker 会导致进度查询失效（见 deploy/README.md）
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--log-level", "info"]
