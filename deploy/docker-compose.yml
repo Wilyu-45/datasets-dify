@@ -153,6 +153,11 @@ services:
       # - ./init-scripts:/docker-entrypoint-initdb.d
       # 自定义 my.cnf（可选）
       # - ./my.cnf:/etc/mysql/conf.d/custom.cnf:ro
+
+    # ★ 外部访问：把 MySQL 暴露到宿主机（Navicat / DBeaver / 外部程序可直连）
+    #   宿主机 3306 已被本机 MySQL 占用，故映射到 13306；可用 MYSQL_HOST_PORT 覆盖
+    ports:
+      - "${MYSQL_HOST_PORT:-13306}:3306"
     
     # 字符集 + 性能调优（容器环境）
     command: >
