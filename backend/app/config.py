@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Tuple
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -338,7 +339,13 @@ class Settings(BaseSettings):
 
     # ---- 数据库方言（生产 MySQL / 本地 PostgreSQL 切换）----
     # rag_db_type: postgres（默认，本地开发）/ mysql（生产）。切换后 db.py 按此分支。
-    rag_db_type: str = "postgres"
+    # ★ validation_alias：字段名本身含 rag_ 前缀，若不加别名，env_prefix="RAG_"
+    #   会导致查找 RAG_RAG_DB_TYPE（永远匹配不上，Docker compose 注入的
+    #   RAG_DB_TYPE 被静默忽略、回退默认 postgres）。别名同时兼容两种写法。
+    rag_db_type: str = Field(
+        default="postgres",
+        validation_alias=AliasChoices("RAG_DB_TYPE", "RAG_RAG_DB_TYPE"),
+    )
 
     # ---- PostgreSQL（manifest / doc_metadata 持久化，rag_db_type=postgres 时生效）----
     # 连接信息可用 .env 或环境变量（前缀 RAG_）覆盖。

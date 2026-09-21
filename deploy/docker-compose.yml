@@ -55,9 +55,8 @@ services:
       - RAG_MYSQL_USER=${MYSQL_USER:-ragsystem_app}
       - RAG_MYSQL_PASSWORD=${MYSQL_PASSWORD:-ragsystem_password}
       
-      # ★ MinerU：生产默认官方网页端 API（mineru.net）
-      #   RAG_MINERU_NET_TOKEN 等详细参数由 backend/.env 注入；
-      #   此处仅兜底 provider 默认值（可改 deploy/.env 或宿主机环境变量覆盖回 local）
+      # ★ MinerU：生产默认官方网页端 API（mineru.net，token 由 backend/.env 注入）
+      #   本地开发不受影响（backend/.env 未设 RAG_MINERU_PROVIDER 时，代码默认 local）
       - RAG_MINERU_PROVIDER=${MINERU_PROVIDER:-mineru_net}
       
       # ★ 存储清理：定时任务由 RAG_CLEANUP_* 控制（默认开启，24h 周期），
@@ -102,7 +101,7 @@ services:
     networks:
       - ragsystem-network
 
-  # ──── 前端服务（React + Nginx）─────────────────
+  #──── 前端服务（React + Nginx）─────────────────
   frontend:
     build:
       context: ..
