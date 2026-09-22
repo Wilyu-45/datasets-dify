@@ -288,7 +288,7 @@ GET /api/manifest?limit=100&offset=0
 }
 ```
 
-关键字段：`status`（`new` / `parsed` / `chunked` / `done` / `failed`）、`dify_doc_id`（入库后回填）、`chunks`（切分段数）。
+关键字段：`tenant_id`（所属租户）、`status`（`new` / `parsed` / `chunked` / `done` / `failed`）、`parse` / `chunks`（各阶段状态或产物路径）、`dify_doc_id`（入库后回填）、`dify_status`（`done` / `error` / 空）。
 
 #### 更新台账行
 
