@@ -26,6 +26,8 @@ from app.api import doc_metadata as doc_metadata_api  # ★ 2026-08-31 文档元
 from app.api import pipeline as pipeline_api
 from app.api import upload as upload_api
 from app.api import webscrape as webscrape_api  # ★ 2026-08: 网站抓取
+from app.api import tenants as tenants_api  # ★ 2026-09: 租户管理（管理员）
+from app.services import tenant_store  # ★ 2026-09: 租户隔离
 from app import db
 from app.config import settings
 from app.logging_config import setup as setup_logging
@@ -81,6 +83,8 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     settings.ensure_dirs()
     # 初始化 PostgreSQL 表结构（manifest / doc_metadata 持久化层）
     manifest_store.bootstrap()
+    # ★ 2026-09 租户隔离：确保 default 租户存在（绑定全局 dataset，幂等）
+    tenant_store.bootstrap_default_tenant()
     log.info(
         "app started",
         extra={
@@ -146,6 +150,7 @@ app.include_router(doc_metadata_api.router, prefix="/api")  # ★ 2026-08-31 文
 app.include_router(pipeline_api.router, prefix="/api")
 app.include_router(upload_api.router, prefix="/api")
 app.include_router(webscrape_api.router, prefix="/api")  # ★ 2026-08: 网站抓取
+app.include_router(tenants_api.router, prefix="/api")  # ★ 2026-09: 租户管理（X-Admin-Key）
 
 
 # 图片静态托管：把 data/output/ 暴露为 /static/output/*

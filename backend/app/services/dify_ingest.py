@@ -36,6 +36,7 @@ from app.models.schemas import (
     ManifestRow,
 )
 from app.services import image_host, manifest_store
+from app.services import tenant_store
 from app.services.dify_uploader import DifyClient, DifyError
 from app.services import doc_metadata
 
@@ -66,34 +67,45 @@ class ChunkUploadInfo:
 # ============ 工具函数 ============
 
 
-def _list_chunk_dirs(target_stems: Optional[List[str]] = None) -> List[Path]:
-    """列出 data/chunks/ 与 data/output/ 下所有子目录（每目录对应 1 个 Dify 文档）。
+def _list_chunk_dirs(target_stems: Optional[List[str]] = None) -> List[Tuple[Path, str]]:
+    """列出 data/chunks/ 与 data/output/ 下所有文档目录（每目录对应 1 个 Dify 文档）。
 
     来源：
-    - data/chunks/{stem}/  ← §3.3 切分产物（待入库）
-    - data/output/{stem}/  ← §3.4 入库成功后已归档的目录（force 重传时需要）
+    - data/chunks/{stem}/           ← §3.3 切分产物（待入库，default 租户）
+    - data/output/{stem}/           ← §3.4 入库成功后已归档的目录（force 重传时需要）
+    - data/{chunks,output}/{tenant}/{stem}/  ← ★ 2026-09 非 default 租户的对应目录
 
-    同一 stem 不会同时存在于两个位置（成功后会移动）；若重复则优先 chunks/。
+    返回 (chunks_dir, tenant_id) 元组列表；区分 stem 目录与租户目录的依据：
+    含 chunk_metadata.json 的是 stem 目录，否则视为租户目录并下钻一层。
 
     ★ 2026-08 新增 target_stems 白名单（单文件上传 + 一键入库）：
         - target_stems=None（默认）：返回所有目录
         - target_stems=[stem1, stem2, ...]：只返回 stem 在白名单内的目录
     """
-    out: Dict[str, Path] = {}
+    out: Dict[str, Tuple[Path, str]] = {}
     for root in (settings.chunks_dir, settings.output_dir):
         if not root.exists():
             continue
         for p in root.iterdir():
             if not p.is_dir():
                 continue
-            # chunks/ 优先于 output/（理论上不会同时存在，但兜底防重）
-            if p.name not in out:
-                out[p.name] = p
+            if (p / "chunk_metadata.json").is_file():
+                # default 租户的 stem 目录
+                out.setdefault(str(p), (p, "default"))
+                continue
+            # 租户目录：下钻一层找 stem 目录
+            for sub in p.iterdir():
+                if sub.is_dir() and (sub / "chunk_metadata.json").is_file():
+                    out.setdefault(str(sub), (sub, p.name))
 
     # ★ target_stems 白名单过滤
     if target_stems is not None:
         target_stem_set = set(target_stems)
-        out = {stem: path for stem, path in out.items() if stem in target_stem_set}
+        out = {
+            key: (path, tenant)
+            for key, (path, tenant) in out.items()
+            if path.name in target_stem_set
+        }
     return [out[k] for k in sorted(out.keys())]
 
 
@@ -208,14 +220,17 @@ def _pick_dify_source_url(uploaded: Any) -> str:
     return f"{_get_dify_base_url()}/files/{uploaded.file_id}/file-preview"
 
 
-def _build_public_url(stem: str, ref: str) -> str:
+def _build_public_url(stem: str, ref: str, tenant_id: str = "default") -> str:
     """根据 settings.image_host_backend 派发到对应后端生成公网 URL。
 
     薄 shim：实际实现见 app/services/image_host.py。
     历史行为（cloudflared tunnel 暴露 /static/output/...）由 tunnel 后端提供，
     默认 backend=tunnel 时与改动前完全一致。
+    ★ 2026-09 租户隔离：非 default 租户 URL 带 {tenant}/ 段。
     """
-    return image_host.build_image_url(settings.image_host_backend, stem, ref)
+    return image_host.build_image_url(
+        settings.image_host_backend, stem, ref, tenant_id=tenant_id
+    )
 
 
 def _rewrite_image_refs_in_content(content: str, ref_to_url: Dict[str, str]) -> str:
@@ -247,7 +262,7 @@ def _rewrite_image_refs_in_content(content: str, ref_to_url: Dict[str, str]) -> 
     return _IMG_RE_FULL.sub(_repl, content)
 
 
-def _stage_for_upload(chunks_dir: Path) -> Tuple[Path, bool]:
+def _stage_for_upload(chunks_dir: Path, tenant_id: str = "default") -> Tuple[Path, bool]:
     """为 Dify 上传做"预复制"：把 chunks_dir 的内容复制到 output/{stem}/。
 
     目的：Dify 处理 segment 时如果遇到内联 URL，会去拉取该 URL 的图片。
@@ -275,7 +290,7 @@ def _stage_for_upload(chunks_dir: Path) -> Tuple[Path, bool]:
     if not in_chunks:
         return chunks_dir, False
 
-    output_subdir = settings.output_dir / stem
+    output_subdir = settings.output_dir_of(tenant_id) / stem
     if output_subdir.exists():
         # 已存在（force 重传场景），不覆盖
         log.info(
@@ -285,7 +300,7 @@ def _stage_for_upload(chunks_dir: Path) -> Tuple[Path, bool]:
         )
         return chunks_dir, False
 
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    output_subdir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(str(chunks_dir), str(output_subdir))
     log.info(
         "dify: chunks 已预复制到 output",
@@ -300,7 +315,8 @@ def _stage_for_upload(chunks_dir: Path) -> Tuple[Path, bool]:
     return chunks_dir, True
 
 
-def _cleanup_after_upload(chunks_dir: Path, was_copied: bool, success: bool) -> str:
+def _cleanup_after_upload(chunks_dir: Path, was_copied: bool, success: bool,
+                          tenant_id: str = "default") -> str:
     """上传结束后清理"预复制"产物，把数据放到正确位置。
 
     - 成功 + was_copied: 删除 chunks_dir（output/ 副本成为新家），相当于旧 _archive_chunks_dir
@@ -314,7 +330,7 @@ def _cleanup_after_upload(chunks_dir: Path, was_copied: bool, success: bool) -> 
     if not was_copied:
         return "无需归档清理"
     stem = chunks_dir.name
-    output_subdir = settings.output_dir / stem
+    output_subdir = settings.output_dir_of(tenant_id) / stem
     if success:
         if chunks_dir.is_dir():
             shutil.rmtree(str(chunks_dir))
@@ -338,6 +354,7 @@ def upload_one_doc(
     field_map: Optional[Dict[str, Dict[str, Any]]] = None,
     doc_meta_cache: Optional[Dict[str, Dict[str, Any]]] = None,
     manifest_row: Optional[Any] = None,
+    tenant_id: str = "default",
 ) -> Tuple[str, List[ChunkUploadInfo], Optional[str]]:
     """把单个 chunks 目录入库到 Dify。
 
@@ -434,7 +451,7 @@ def upload_one_doc(
     oss_ref_to_url: Dict[str, str] = {}
     if settings.image_host_backend == "oss" and use_public_url_in_content:
         oss_ref_to_url = image_host.prepare_chunks_images(
-            "oss", stem, chunks_dir,
+            "oss", stem, chunks_dir, tenant_id=tenant_id,
         )
         if oss_ref_to_url:
             log.info(
@@ -466,7 +483,7 @@ def upload_one_doc(
                     if ref in oss_ref_to_url:
                         ref_to_public_url[ref] = oss_ref_to_url[ref]
                     else:
-                        public_url = _build_public_url(stem, ref)
+                        public_url = _build_public_url(stem, ref, tenant_id)
                         if public_url:
                             ref_to_public_url[ref] = public_url
                         else:
@@ -510,7 +527,7 @@ def upload_one_doc(
             #   保证聊天召回时图片可显示（attachment_ids 这张图就空缺，编辑器预览不出来，
             #   但聊天召回仍能显示图片 → 优于完全不显示）。
             if ref not in ref_to_public_url and use_public_url_in_content:
-                public_url = _build_public_url(stem, ref)
+                public_url = _build_public_url(stem, ref, tenant_id)
                 if public_url:
                     log.info(
                         "dify: /files/upload 失败但有公网 URL，content 写公网 URL: ref=%s",
@@ -525,7 +542,7 @@ def upload_one_doc(
             if ref in oss_ref_to_url:
                 ref_to_public_url[ref] = oss_ref_to_url[ref]
             else:
-                ref_to_public_url[ref] = _build_public_url(stem, ref)
+                ref_to_public_url[ref] = _build_public_url(stem, ref, tenant_id)
             continue
 
         # 策略 C：没有任何图片托管配置，段里保持 `![](images/xxx.jpg)` 相对路径
@@ -788,6 +805,7 @@ def upload_all_docs(
     chunk_dirs = _list_chunk_dirs(target_stems=target_stems)
     actions: List[DifyActionRecord] = []
     uploaded = skipped = failed = 0
+    used_datasets: set = set()  # 本次实际路由到的 dataset（租户隔离后可能多个）
 
     # 加载 manifest（写 dify_doc_id / dify_status 用）
     manifest = _load_manifest_index()
@@ -796,37 +814,58 @@ def upload_all_docs(
     # ★ 加载文档元数据 + 确保 Dify 元数据字段存在
     #   doc_metadata 表有行，或 manifest 用户填写列（分类/关键词等）有值时才建字段，
     #   避免完全不用元数据时也往 Dify 知识库里创建一堆空字段
-    field_map: Optional[Dict[str, Dict[str, Any]]] = None
-    doc_meta_cache: Optional[Dict[str, Dict[str, Any]]] = None
-    if not dry_run and chunk_dirs:
+    # ★ 2026-09 租户隔离：metadata 字段是 dataset 级资源，按租户 dataset 惰性创建
+    field_maps: Dict[str, Dict[str, Any]] = {}   # dataset_id → field_map
+    doc_meta_caches: Dict[str, Dict[str, Any]] = {}  # tenant_id → doc_meta_cache
+
+    def _tenant_dataset_id(tid: str) -> str:
+        tenant = tenant_store.get_tenant(tid)
+        ds = (tenant.dify_dataset_id or "").strip() if tenant else ""
+        return ds or settings.dify_dataset_id
+
+    def _ensure_field_map(tid: str) -> Optional[Dict[str, Any]]:
+        ds = _tenant_dataset_id(tid)
+        if ds in field_maps:
+            return field_maps[ds]
         try:
-            doc_meta_cache = doc_metadata.load_doc_metadata()
-            manifest_has_meta = any(
-                doc_metadata.build_merged_metadata(row, {}) for row in manifest.values()
-            )
-            if doc_meta_cache or manifest_has_meta:
-                c0 = client or DifyClient()
-                field_map = doc_metadata.ensure_metadata_fields(c0)
-                log.info(
-                    "dify: 文档元数据已加载，字段已同步",
-                    extra={"step": "dify", "status": "metadata_loaded",
-                           "docs_with_meta": len(doc_meta_cache or {}),
-                           "fields": len(field_map)},
+            cache = doc_meta_caches.get(tid)
+            if cache is None:
+                cache = doc_metadata.load_doc_metadata(
+                    tenant_id=None if tid == "default" else tid
                 )
+                doc_meta_caches[tid] = cache
+            manifest_has_meta = any(
+                doc_metadata.build_merged_metadata(row, {})
+                for row in manifest.values()
+                if (getattr(row, "tenant_id", None) or "default") == tid
+            )
+            if not cache and not manifest_has_meta:
+                field_maps[ds] = {}
+                return field_maps[ds]
+            c0 = client or DifyClient(dataset_id=ds)
+            field_maps[ds] = doc_metadata.ensure_metadata_fields(c0)
+            log.info(
+                "dify: 文档元数据已加载，字段已同步 (dataset=%s)",
+                ds,
+                extra={"step": "dify", "status": "metadata_loaded",
+                       "docs_with_meta": len(cache or {}),
+                       "fields": len(field_maps[ds] or {})},
+            )
+            return field_maps[ds]
         except Exception as meta_exc:  # noqa: BLE001
             log.warning(
                 "dify: 文档元数据加载失败（不影响入库流程）: %s",
                 meta_exc,
             )
-            field_map = None
-            doc_meta_cache = None
+            field_maps[ds] = {}
+            return field_maps[ds]
 
-    for chunks_dir in chunk_dirs:
+    for chunks_dir, tenant_id in chunk_dirs:
         stem = chunks_dir.name
         t0 = time.perf_counter()
 
         # 1) 幂等检查
-        existing_row = _find_manifest_row_by_stem(manifest, stem)
+        existing_row = _find_manifest_row_by_stem(manifest, stem, tenant_id=tenant_id)
         if existing_row is not None and not force:
             existing_status = (existing_row.dify_status or "").strip()
             if existing_status == "done":
@@ -857,7 +896,7 @@ def upload_all_docs(
         # 2) 实际入库
         # 2a) 预复制 chunks/ → output/（让 Dify 拉图的 URL 始终指向 output/）
         try:
-            _, was_copied = _stage_for_upload(chunks_dir)
+            _, was_copied = _stage_for_upload(chunks_dir, tenant_id)
         except Exception as stage_exc:  # noqa: BLE001
             log.error(
                 "dify: 预复制 chunks → output 失败: stem=%s err=%s",
@@ -875,14 +914,19 @@ def upload_all_docs(
             )
             continue
 
-        # 如果没有传 client，则现场创建
+        # 如果没有传 client，则现场创建（★ 按租户 dataset 路由）
         own_client = client is None
-        c = client or DifyClient()
+        tenant_ds = _tenant_dataset_id(tenant_id)
+        if client is None:
+            used_datasets.add(tenant_ds)
+        c = client or DifyClient(dataset_id=tenant_ds)
+        field_map = _ensure_field_map(tenant_id)
+        doc_meta_cache = doc_meta_caches.get(tenant_id)
         try:
             dify_doc_id, _chunk_infos, err = upload_one_doc(
                 chunks_dir, c, force=force,
                 field_map=field_map, doc_meta_cache=doc_meta_cache,
-                manifest_row=existing_row,
+                manifest_row=existing_row, tenant_id=tenant_id,
             )
         except Exception as e:  # noqa: BLE001
             log.exception("dify 上传单文档失败: stem=%s", stem)
@@ -898,7 +942,8 @@ def upload_all_docs(
         # 2b) 清理预复制（成功→删 chunks/ 留 output/，失败→删 output/ 留 chunks/）
         cleanup_note = ""
         try:
-            cleanup_note = _cleanup_after_upload(chunks_dir, was_copied, err is None)
+            cleanup_note = _cleanup_after_upload(chunks_dir, was_copied, err is None,
+                                                 tenant_id=tenant_id)
         except Exception as cleanup_exc:  # noqa: BLE001
             log.error(
                 "dify: 清理预复制失败: stem=%s err=%s",
@@ -955,6 +1000,7 @@ def upload_all_docs(
         else:
             new_row = ManifestRow(
                 filename=stem,
+                tenant_id=tenant_id,
                 status="done" if err is None else "error",
                 chunks=f"output/{stem}" if err is None else None,
                 dify_doc_id=dify_doc_id or None,
@@ -985,7 +1031,8 @@ def upload_all_docs(
         failed=failed,
         actions=actions,
         api_url=settings.dify_api_url,
-        dataset_id=settings.dify_dataset_id,
+        # ★ 租户隔离：多租户批次会路由到多个 dataset，单一值时才如实上报
+        dataset_id=next(iter(used_datasets)) if len(used_datasets) == 1 else None,
     )
     log.info(
         "dify upload all done",
@@ -1002,25 +1049,33 @@ def upload_all_docs(
     return report
 
 
-def _find_manifest_row_by_stem(manifest: Dict[str, Any], stem: str) -> Optional[Any]:
+def _find_manifest_row_by_stem(
+    manifest: Dict[str, Any], stem: str, tenant_id: Optional[str] = None
+) -> Optional[Any]:
     """根据 chunks 目录的 stem 在 manifest 里找对应行。
 
+    ★ 2026-09 租户隔离：tenant_id 非 None 时只匹配该租户的行。
     匹配规则：
     1) 先按 chunks 列完全匹配
     2) 再按 chunks 列的 basename（即 directory 名）
     3) 再按 filename stem 包含 stem
     """
+    def _same_tenant(row: Any) -> bool:
+        if tenant_id is None:
+            return True
+        return (getattr(row, "tenant_id", None) or "default") == tenant_id
+
     # 1) chunks == stem
     for fname, row in manifest.items():
-        if (row.chunks or "").strip() == stem:
+        if (row.chunks or "").strip() == stem and _same_tenant(row):
             return row
     # 2) chunks 末尾段 == stem
     for fname, row in manifest.items():
         c = (row.chunks or "").replace("\\", "/").rstrip("/")
-        if c and Path(c).name == stem:
+        if c and Path(c).name == stem and _same_tenant(row):
             return row
     # 3) filename stem 包含 stem（兜底）
     for fname, row in manifest.items():
-        if Path(fname).stem == stem:
+        if Path(fname).stem == stem and _same_tenant(row):
             return row
     return None

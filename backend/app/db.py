@@ -46,10 +46,13 @@ _pool: Any = None
 
 # ============ 表结构（幂等 DDL） ============
 
-# manifest 表：对应原 manifest.xlsx 的全部 20 列（filename 为主键）。
+# manifest 表：对应原 manifest.xlsx 的全部 20 列 + tenant_id（★ 2026-09 租户隔离）。
+# 主键为 (tenant_id, filename)：不同租户可各自登记同名文件。
+# 旧库升级：tenant_id 列 + 回填 'default' + 主键迁移（见 MANIFEST_TENANT_MIGRATION_SQL）。
 MANIFEST_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS manifest (
-    filename        TEXT PRIMARY KEY,
+    tenant_id       TEXT NOT NULL DEFAULT 'default',
+    filename        TEXT,
     seq             INTEGER,
     category_l1     TEXT,
     category_l2     TEXT,
@@ -68,15 +71,24 @@ CREATE TABLE IF NOT EXISTS manifest (
     parse           TEXT,
     chunks          TEXT,
     dify_doc_id     TEXT,
-    dify_status     TEXT
+    dify_status     TEXT,
+    PRIMARY KEY (tenant_id, filename)
 );
 CREATE INDEX IF NOT EXISTS idx_manifest_status ON manifest (status);
 """
 
+# 旧库上 idx_manifest_tenant_status 依赖 tenant_id 列，必须待 TENANT_MIGRATION_SQL
+# 补列之后再创建（新建库无影响，因为列在 CREATE TABLE 里已存在）。
+MANIFEST_TENANT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_manifest_tenant_status ON manifest (tenant_id, status);
+"""
+
 # doc_metadata 表：对应原 doc_metadata.xlsx（filename 为文件 stem，不含后缀）。
+# ★ 2026-09 租户隔离：主键改 (tenant_id, filename)。
 DOC_METADATA_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS doc_metadata (
-    filename             TEXT PRIMARY KEY,
+    tenant_id            TEXT NOT NULL DEFAULT 'default',
+    filename             TEXT,
     doc_type_primary     TEXT,
     doc_type_secondary   TEXT,
     topic_primary        TEXT,
@@ -87,8 +99,32 @@ CREATE TABLE IF NOT EXISTS doc_metadata (
     applicable_scenarios TEXT,
     effective_date       TEXT,
     priority             DOUBLE PRECISION,
-    status               TEXT
+    status               TEXT,
+    PRIMARY KEY (tenant_id, filename)
 );
+"""
+
+# tenants 表：租户注册表（★ 2026-09 租户隔离）。
+# api_key 只存 sha256 哈希（api_key_hash），明文仅在创建/轮换时返回一次。
+TENANTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id       TEXT PRIMARY KEY,
+    name            TEXT,
+    dify_dataset_id TEXT,
+    api_key_hash    TEXT,
+    status          TEXT,
+    create_time     TEXT,
+    update_time     TEXT
+);
+"""
+
+# 旧库租户隔离迁移（幂等）：补列 + 回填默认租户；主键迁移由 init 时探测后执行
+# （PG 的 DROP CONSTRAINT 主键名不确定，统一在 _migrate_manifest_pk 中处理）。
+TENANT_MIGRATION_SQL = """
+ALTER TABLE manifest ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE doc_metadata ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE process_config_log ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+ALTER TABLE webscrape_records ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 """
 
 # webscrape_task 表：网站抓取任务（2026-08 新增）。
@@ -183,7 +219,9 @@ ALTER TABLE webscrape_records ADD COLUMN IF NOT EXISTS content_hash TEXT;
 """
 
 INIT_SQL = (
-    MANIFEST_TABLE_SQL
+    TENANTS_TABLE_SQL
+    + "\n"
+    + MANIFEST_TABLE_SQL
     + "\n"
     + DOC_METADATA_TABLE_SQL
     + "\n"
@@ -194,6 +232,10 @@ INIT_SQL = (
     + WEBSCRAPE_RECORD_TABLE_SQL
     + "\n"
     + WEBSCRAPE_RECORD_ALTER_SQL
+    + "\n"
+    + TENANT_MIGRATION_SQL
+    + "\n"
+    + MANIFEST_TENANT_INDEX_SQL
 )
 
 
@@ -204,7 +246,8 @@ INIT_SQL = (
 # - CREATE INDEX / ADD COLUMN 不支持 IF NOT EXISTS，改由 init 时 information_schema 探测
 _MYSQL_MANIFEST = """
 CREATE TABLE IF NOT EXISTS manifest (
-    filename        VARCHAR(255) PRIMARY KEY,
+    tenant_id       VARCHAR(64) NOT NULL DEFAULT 'default',
+    filename        VARCHAR(255),
     seq             INT,
     category_l1     TEXT,
     category_l2     TEXT,
@@ -223,13 +266,15 @@ CREATE TABLE IF NOT EXISTS manifest (
     parse           TEXT,
     chunks          TEXT,
     dify_doc_id     TEXT,
-    dify_status     TEXT
+    dify_status     TEXT,
+    PRIMARY KEY (tenant_id, filename)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
 _MYSQL_DOC_METADATA = """
 CREATE TABLE IF NOT EXISTS doc_metadata (
-    filename             VARCHAR(255) PRIMARY KEY,
+    tenant_id            VARCHAR(64) NOT NULL DEFAULT 'default',
+    filename             VARCHAR(255),
     doc_type_primary     TEXT,
     doc_type_secondary   TEXT,
     topic_primary        TEXT,
@@ -240,7 +285,20 @@ CREATE TABLE IF NOT EXISTS doc_metadata (
     applicable_scenarios TEXT,
     effective_date       TEXT,
     priority             DOUBLE,
-    status               TEXT
+    status               TEXT,
+    PRIMARY KEY (tenant_id, filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_MYSQL_TENANTS = """
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id       VARCHAR(64) PRIMARY KEY,
+    name            VARCHAR(255),
+    dify_dataset_id TEXT,
+    api_key_hash    VARCHAR(128),
+    status          VARCHAR(16),
+    create_time     TEXT,
+    update_time     TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -306,6 +364,7 @@ CREATE TABLE IF NOT EXISTS webscrape_records (
 # 索引（table, index_name, create_index_sql）——init 时按 information_schema 探测后按需创建
 _MYSQL_INDEXES = [
     ("manifest", "idx_manifest_status", "CREATE INDEX idx_manifest_status ON manifest (status)"),
+    ("manifest", "idx_manifest_tenant_status", "CREATE INDEX idx_manifest_tenant_status ON manifest (tenant_id, status)"),
     ("webscrape_tasks", "idx_webscrape_tasks_time", "CREATE INDEX idx_webscrape_tasks_time ON webscrape_tasks (created_at)"),
     ("process_config_log", "idx_process_config_log_time", "CREATE INDEX idx_process_config_log_time ON process_config_log (run_time)"),
     ("webscrape_records", "idx_webscrape_records_time", "CREATE INDEX idx_webscrape_records_time ON webscrape_records (created_at)"),
@@ -314,10 +373,31 @@ _MYSQL_INDEXES = [
 
 # 补列（table, column, add_column_sql）——旧库升级时按 information_schema 探测后按需 ADD
 _MYSQL_ALTERS = [
+    ("manifest", "tenant_id", "ALTER TABLE manifest ADD COLUMN tenant_id VARCHAR(64) DEFAULT 'default'"),
+    ("doc_metadata", "tenant_id", "ALTER TABLE doc_metadata ADD COLUMN tenant_id VARCHAR(64) DEFAULT 'default'"),
+    ("process_config_log", "tenant_id", "ALTER TABLE process_config_log ADD COLUMN tenant_id VARCHAR(64)"),
+    ("webscrape_records", "tenant_id", "ALTER TABLE webscrape_records ADD COLUMN tenant_id VARCHAR(64)"),
     ("process_config_log", "dataset_id", "ALTER TABLE process_config_log ADD COLUMN dataset_id TEXT"),
     ("process_config_log", "chunk_strategy", "ALTER TABLE process_config_log ADD COLUMN chunk_strategy TEXT"),
     ("webscrape_records", "page_time", "ALTER TABLE webscrape_records ADD COLUMN page_time TEXT"),
     ("webscrape_records", "content_hash", "ALTER TABLE webscrape_records ADD COLUMN content_hash TEXT"),
+]
+
+# 租户隔离主键迁移：旧库 manifest/doc_metadata 主键为 (filename)，需改为 (tenant_id, filename)。
+# 由 _init_mysql 在补列+回填之后探测执行（information_schema.key_column_usage 查 PK 列）。
+_MYSQL_PK_MIGRATIONS = [
+    (
+        "manifest",
+        "UPDATE manifest SET tenant_id='default' WHERE tenant_id IS NULL",
+        "ALTER TABLE manifest MODIFY tenant_id VARCHAR(64) NOT NULL DEFAULT 'default', "
+        "DROP PRIMARY KEY, ADD PRIMARY KEY (tenant_id, filename)",
+    ),
+    (
+        "doc_metadata",
+        "UPDATE doc_metadata SET tenant_id='default' WHERE tenant_id IS NULL",
+        "ALTER TABLE doc_metadata MODIFY tenant_id VARCHAR(64) NOT NULL DEFAULT 'default', "
+        "DROP PRIMARY KEY, ADD PRIMARY KEY (tenant_id, filename)",
+    ),
 ]
 
 
@@ -472,9 +552,21 @@ def _mysql_column_exists(conn: Any, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _mysql_pk_columns(conn: Any, table: str) -> list:
+    """查询表的主键列名列表（按 ordinal_position 排序）。"""
+    cur = conn.execute(
+        "SELECT column_name AS column_name FROM information_schema.key_column_usage "
+        "WHERE table_schema = DATABASE() AND table_name = %s "
+        "AND constraint_name = 'PRIMARY' ORDER BY ordinal_position",
+        (table,),
+    )
+    return [row["column_name"] for row in cur.fetchall()]
+
+
 def _init_mysql(conn: Any) -> None:
     """幂等建表（MySQL）：建表 + 按 information_schema 探测补索引/补列。"""
     for stmt in (
+        _MYSQL_TENANTS,
         _MYSQL_MANIFEST,
         _MYSQL_DOC_METADATA,
         _MYSQL_PROCESS_CONFIG_LOG,
@@ -482,12 +574,20 @@ def _init_mysql(conn: Any) -> None:
         _MYSQL_WEBSCRAPE_RECORD,
     ):
         conn.execute(stmt)
-    for table, name, stmt in _MYSQL_INDEXES:
-        if not _mysql_index_exists(conn, table, name):
-            conn.execute(stmt)
+    # 先补列再建索引：idx_manifest_tenant_status 依赖 tenant_id（旧库走补列路径）
     for table, column, stmt in _MYSQL_ALTERS:
         if not _mysql_column_exists(conn, table, column):
             conn.execute(stmt)
+    for table, name, stmt in _MYSQL_INDEXES:
+        if not _mysql_index_exists(conn, table, name):
+            conn.execute(stmt)
+    # 租户隔离：旧库主键 (filename) → (tenant_id, filename)；回填 + 改造一步完成
+    for table, backfill, migrate in _MYSQL_PK_MIGRATIONS:
+        pk_cols = _mysql_pk_columns(conn, table)
+        if pk_cols and "tenant_id" not in pk_cols:
+            conn.execute(backfill)
+            conn.execute(migrate)
+            log.info("表 %s 主键已迁移为 (tenant_id, 主键)", table)
     conn.commit()
 
 
@@ -553,7 +653,43 @@ def init_db() -> None:
             _init_mysql(conn)
         else:
             _ = conn.execute(INIT_SQL)  # 建表结果通过 commit/日志反馈，返回值无需使用
-    log.info("数据库表结构已就绪（manifest / doc_metadata / process_config_log）")
+            _migrate_pg_tenant_pk(conn)
+    log.info("数据库表结构已就绪（tenants / manifest / doc_metadata / process_config_log）")
+
+
+def _pg_pk_columns(conn: Any, table: str) -> list:
+    """查询 PG 表的主键列名列表（按 ordinal_position 排序）。"""
+    cur = conn.execute(
+        """
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = current_schema()
+          AND tc.table_name = %s
+          AND tc.constraint_type = 'PRIMARY KEY'
+        ORDER BY kcu.ordinal_position
+        """,
+        (table,),
+    )
+    return [row["column_name"] for row in cur.fetchall()]
+
+
+def _migrate_pg_tenant_pk(conn: Any) -> None:
+    """旧库主键 (filename) → (tenant_id, filename)（幂等探测后执行）。
+
+    前置：TENANT_MIGRATION_SQL 已补 tenant_id 列（NOT NULL DEFAULT 'default'），
+    故无需回填。约束名按 PG 惯例 {table}_pkey 处理；探测不到则跳过。
+    """
+    for table in ("manifest", "doc_metadata"):
+        pk_cols = _pg_pk_columns(conn, table)
+        if pk_cols and "tenant_id" not in pk_cols:
+            conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_pkey")
+            conn.execute(
+                f"ALTER TABLE {table} ADD PRIMARY KEY (tenant_id, filename)"
+            )
+            log.info("表 %s 主键已迁移为 (tenant_id, filename)", table)
 
 
 def close_pool() -> None:

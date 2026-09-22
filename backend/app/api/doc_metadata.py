@@ -14,12 +14,17 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.auth import require_tenant
 from app.services import doc_metadata
+from app.services.tenant_store import Tenant
 
-router = APIRouter(tags=["doc-metadata"])
+router = APIRouter(
+    tags=["doc-metadata"],
+    dependencies=[Depends(require_tenant)],
+)
 log = logging.getLogger("ragsystem.api.doc_metadata")
 
 
@@ -40,20 +45,29 @@ class DocMetadataUpdate(BaseModel):
 
 
 @router.get("/doc-metadata")
-def list_doc_metadata() -> Dict[str, Any]:
-    """全量文档元数据（{stem: {field: value}}，无行的 stem 不出现）。"""
-    rows = doc_metadata.load_doc_metadata()
+def list_doc_metadata(tenant: Tenant = Depends(require_tenant)) -> Dict[str, Any]:
+    """文档元数据（{stem: {field: value}}，无行的 stem 不出现）。
+
+    default 租户返回全部行（兼容旧行为）；命名租户只返回自己的行。
+    """
+    tid = None if tenant.tenant_id == "default" else tenant.tenant_id
+    rows = doc_metadata.load_doc_metadata(tenant_id=tid)
     return {"total": len(rows), "rows": rows}
 
 
 @router.get("/doc-metadata/{stem}")
-def get_doc_metadata(stem: str) -> Dict[str, Any]:
+def get_doc_metadata(
+    stem: str, tenant: Tenant = Depends(require_tenant)
+) -> Dict[str, Any]:
     """单个文档的元数据行（不存在时返回空对象，前端表单据此渲染空值）。"""
-    return doc_metadata.get_doc_metadata(stem)
+    tid = None if tenant.tenant_id == "default" else tenant.tenant_id
+    return doc_metadata.get_doc_metadata(stem, tenant_id=tid)
 
 
 @router.put("/doc-metadata/{stem}")
-def put_doc_metadata(stem: str, body: DocMetadataUpdate) -> Dict[str, Any]:
+def put_doc_metadata(
+    stem: str, body: DocMetadataUpdate, tenant: Tenant = Depends(require_tenant)
+) -> Dict[str, Any]:
     """保存（upsert）单个文档的元数据行。
 
     表单全量提交：显式传入的空字符串 / None 会清空对应字段（整行覆盖语义）。
@@ -62,7 +76,11 @@ def put_doc_metadata(stem: str, body: DocMetadataUpdate) -> Dict[str, Any]:
     if not stem:
         raise HTTPException(status_code=400, detail="stem 不能为空")
     fields = {k: v for k, v in body.model_dump().items()}
-    doc_metadata.save_doc_metadata({stem: fields})
-    row = doc_metadata.get_doc_metadata(stem)
-    log.info("doc-metadata saved: stem=%s fields=%d", stem, len(row))
+    doc_metadata.save_doc_metadata({stem: fields}, tenant_id=tenant.tenant_id)
+    tid = None if tenant.tenant_id == "default" else tenant.tenant_id
+    row = doc_metadata.get_doc_metadata(stem, tenant_id=tid)
+    log.info(
+        "doc-metadata saved: tenant=%s stem=%s fields=%d",
+        tenant.tenant_id, stem, len(row),
+    )
     return row

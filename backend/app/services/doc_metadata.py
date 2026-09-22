@@ -81,17 +81,26 @@ ALL_METADATA_FIELD_DEFS: Dict[str, str] = {
 # ============ PostgreSQL 读取 / 写入 ============
 
 
-def load_doc_metadata(excel_path: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
-    """读取文档元数据（PostgreSQL doc_metadata 表）。
+def load_doc_metadata(
+    excel_path: Optional[Path] = None,
+    tenant_id: Optional[str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """读取文档元数据（doc_metadata 表）。
+
+    Args:
+        tenant_id: 指定租户时只读该租户的行；None 读全部（旧行为）。
 
     Returns:
         {stem: {field_name: value, ...}, ...}
         stem = 文件名（不含后缀），field_name = 英文字段名
     """
+    sql = f"SELECT filename, {', '.join(DOC_METADATA_FIELDS)} FROM doc_metadata"
+    params: Dict[str, Any] = {}
+    if tenant_id:
+        sql += " WHERE tenant_id = %(tenant_id)s"
+        params["tenant_id"] = tenant_id
     with db.get_conn() as conn:
-        cur = conn.execute(
-            f"SELECT filename, {', '.join(DOC_METADATA_FIELDS)} FROM doc_metadata"
-        )
+        cur = conn.execute(sql, params)
         records = cur.fetchall()
 
     result: Dict[str, Dict[str, Any]] = {}
@@ -124,8 +133,12 @@ def _normalize_row(rec: Dict[str, Any]) -> Dict[str, Any]:
     return row_data
 
 
-def get_doc_metadata(stem: str) -> Dict[str, Any]:
+def get_doc_metadata(stem: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
     """读取单个文档的元数据行（doc_metadata 表）。
+
+    Args:
+        tenant_id: 指定租户时按 (tenant_id, filename) 精确匹配；
+            None 时兼容旧行为（任一租户命中即返回）。
 
     Returns:
         {field_name: value, ...}（不存在或全空时返回 {}）
@@ -133,22 +146,31 @@ def get_doc_metadata(stem: str) -> Dict[str, Any]:
     stem = (stem or "").strip()
     if not stem:
         return {}
+    sql = (
+        f"SELECT {', '.join(DOC_METADATA_FIELDS)} FROM doc_metadata "
+        "WHERE filename = %(stem)s"
+    )
+    params: Dict[str, Any] = {"stem": stem}
+    if tenant_id:
+        sql += " AND tenant_id = %(tenant_id)s"
+        params["tenant_id"] = tenant_id
     with db.get_conn() as conn:
-        cur = conn.execute(
-            f"SELECT {', '.join(DOC_METADATA_FIELDS)} FROM doc_metadata WHERE filename = %(stem)s",
-            {"stem": stem},
-        )
+        cur = conn.execute(sql, params)
         rec = cur.fetchone()
     if not rec:
         return {}
     return _normalize_row(rec)
 
 
-def save_doc_metadata(rows: Dict[str, Dict[str, Any]]) -> int:
-    """批量写入文档元数据（upsert，按 filename 主键）。
+def save_doc_metadata(
+    rows: Dict[str, Dict[str, Any]],
+    tenant_id: str = "default",
+) -> int:
+    """批量写入文档元数据（upsert，按 (tenant_id, filename) 主键）。
 
     Args:
         rows: {stem: {field_name: value, ...}, ...}
+        tenant_id: 这些行归属的租户
 
     Returns:
         写入行数
@@ -156,16 +178,25 @@ def save_doc_metadata(rows: Dict[str, Dict[str, Any]]) -> int:
     if not rows:
         return 0
 
-    columns = ["filename"] + DOC_METADATA_FIELDS
-    sql = f"""
+    tid = (tenant_id or "default").strip() or "default"
+    columns = ["tenant_id", "filename"] + DOC_METADATA_FIELDS
+    update_cols = ", ".join(f"{c} = EXCLUDED.{c}" for c in DOC_METADATA_FIELDS)
+    update_cols_mysql = ", ".join(f"{c} = VALUES({c})" for c in DOC_METADATA_FIELDS)
+    if settings.rag_db_type == "mysql":
+        sql = f"""
         INSERT INTO doc_metadata ({", ".join(columns)})
         VALUES ({", ".join("%(" + c + ")s" for c in columns)})
-        ON CONFLICT (filename) DO UPDATE SET
-            {", ".join(f"{c} = EXCLUDED.{c}" for c in DOC_METADATA_FIELDS)}
+        ON DUPLICATE KEY UPDATE {update_cols_mysql}
+    """
+    else:
+        sql = f"""
+        INSERT INTO doc_metadata ({", ".join(columns)})
+        VALUES ({", ".join("%(" + c + ")s" for c in columns)})
+        ON CONFLICT (tenant_id, filename) DO UPDATE SET {update_cols}
     """
     params = []
     for stem, values in rows.items():
-        param = {"filename": stem}
+        param = {"tenant_id": tid, "filename": stem}
         for field in DOC_METADATA_FIELDS:
             val = values.get(field)
             if val is None or str(val).strip() == "":

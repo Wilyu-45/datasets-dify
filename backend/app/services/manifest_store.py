@@ -70,7 +70,7 @@ FIELD_TO_HEADER = {v: k for k, v in HEADER_TO_FIELD.items()}
 
 # manifest 表的列（顺序固定，INSERT / UPDATE 共用）
 MANIFEST_FIELDS: List[str] = [
-    "seq", "filename", "category_l1", "category_l2", "keywords",
+    "tenant_id", "seq", "filename", "category_l1", "category_l2", "keywords",
     "department", "effective_date", "import_status", "process_status",
     "verified", "process_note", "status", "md5", "create_time",
     "update_time", "error_msg", "parse", "chunks", "dify_doc_id", "dify_status",
@@ -79,8 +79,8 @@ MANIFEST_FIELDS: List[str] = [
 _UPSERT_SQL = f"""
 INSERT INTO manifest ({", ".join(MANIFEST_FIELDS)})
 VALUES ({", ".join("%(" + f + ")s" for f in MANIFEST_FIELDS)})
-ON CONFLICT (filename) DO UPDATE SET
-    {", ".join(f"{f} = EXCLUDED.{f}" for f in MANIFEST_FIELDS)}
+ON CONFLICT (tenant_id, filename) DO UPDATE SET
+    {", ".join(f"{f} = EXCLUDED.{f}" for f in MANIFEST_FIELDS if f not in ("tenant_id", "filename"))}
 """
 
 # MySQL 方言：ON CONFLICT -> ON DUPLICATE KEY UPDATE，EXCLUDED.f -> VALUES(f)
@@ -88,7 +88,7 @@ _UPSERT_SQL_MYSQL = f"""
 INSERT INTO manifest ({", ".join(MANIFEST_FIELDS)})
 VALUES ({", ".join("%(" + f + ")s" for f in MANIFEST_FIELDS)})
 ON DUPLICATE KEY UPDATE
-    {", ".join(f"{f} = VALUES({f})" for f in MANIFEST_FIELDS)}
+    {", ".join(f"{f} = VALUES({f})" for f in MANIFEST_FIELDS if f not in ("tenant_id", "filename"))}
 """
 
 
@@ -138,6 +138,9 @@ def _row_to_dict(row: ManifestRow) -> Dict:
     data = {}
     for field in MANIFEST_FIELDS:
         data[field] = getattr(row, field, None)
+    # tenant_id 列 NOT NULL：缺省归入 default 租户（存量调用兼容）
+    if not data.get("tenant_id"):
+        data["tenant_id"] = "default"
     return data
 
 
@@ -149,10 +152,19 @@ def _fill_timestamps(data: Dict) -> None:
         data["update_time"] = now
 
 
-def load(path: Optional[Path] = None) -> Dict[str, ManifestRow]:
-    """读取 manifest 全表，返回 {filename: ManifestRow}。"""
+def load(path: Optional[Path] = None, tenant_id: Optional[str] = None) -> Dict[str, ManifestRow]:
+    """读取 manifest，返回 {filename: ManifestRow}。
+
+    tenant_id=None（全局/管理视角）：读全部租户，同 filename 先到先得；
+    指定 tenant_id：仅该租户的行。
+    """
+    sql = "SELECT * FROM manifest"
+    params = None
+    if tenant_id is not None:
+        sql += " WHERE tenant_id = %s"
+        params = (tenant_id,)
     with db.get_conn() as conn:
-        cur = conn.execute("SELECT * FROM manifest")
+        cur = conn.execute(sql, params)
         records = cur.fetchall()
     result: Dict[str, ManifestRow] = {}
     for rec in records:
@@ -161,10 +173,21 @@ def load(path: Optional[Path] = None) -> Dict[str, ManifestRow]:
     return result
 
 
-def fetch(filename: str) -> Optional[ManifestRow]:
-    """按文件名查询单行。"""
+def fetch(filename: str, tenant_id: Optional[str] = None) -> Optional[ManifestRow]:
+    """按文件名查询单行。
+
+    tenant_id=None：任意租户中第一个匹配（default 优先）；
+    指定 tenant_id：仅查该租户。
+    """
+    if tenant_id is not None:
+        sql = "SELECT * FROM manifest WHERE tenant_id = %s AND filename = %s"
+        params = (tenant_id, filename)
+    else:
+        sql = ("SELECT * FROM manifest WHERE filename = %s "
+               "ORDER BY (tenant_id = 'default') DESC LIMIT 1")
+        params = (filename,)
     with db.get_conn() as conn:
-        cur = conn.execute("SELECT * FROM manifest WHERE filename = %s", (filename,))
+        cur = conn.execute(sql, params)
         rec = cur.fetchone()
     return ManifestRow(**rec) if rec else None
 
@@ -206,16 +229,21 @@ def bulk_upsert(path: Optional[Path] = None, rows: Optional[Iterable[ManifestRow
             conn.commit()
 
 
-def update_fields(filename: str, fields: Dict[str, object]) -> Optional[ManifestRow]:
+def update_fields(filename: str, fields: Dict[str, object],
+                  tenant_id: Optional[str] = None) -> Optional[ManifestRow]:
     """按文件名部分更新一行（仅更新 fields 中出现的列），自动刷新 update_time。
 
-    仅允许更新 MANIFEST_FIELDS 中的字段，且禁止改写 filename 主键。
+    仅允许更新 MANIFEST_FIELDS 中的字段，且禁止改写 filename / tenant_id 主键。
+    tenant_id=None：在任意租户中按 filename 定位（default 优先）。
     清单中不存在该文件名时返回 None。
     """
-    row = fetch(filename)
+    row = fetch(filename, tenant_id=tenant_id)
     if row is None:
         return None
-    clean = {k: v for k, v in fields.items() if k in MANIFEST_FIELDS and k != "filename"}
+    clean = {
+        k: v for k, v in fields.items()
+        if k in MANIFEST_FIELDS and k not in ("filename", "tenant_id")
+    }
     if not clean:
         return row
     data = _row_to_dict(row)
@@ -225,14 +253,20 @@ def update_fields(filename: str, fields: Dict[str, object]) -> Optional[Manifest
         with db.get_conn() as conn:
             conn.execute(_upsert_sql(), data)
             conn.commit()
-    return fetch(filename)
+    return fetch(row.filename, tenant_id=row.tenant_id)
 
 
-def delete(filename: str) -> None:
-    """按文件名删除一行。"""
+def delete(filename: str, tenant_id: Optional[str] = None) -> None:
+    """按文件名删除一行。tenant_id=None 时删除所有租户中的同名行。"""
     with _write_lock:
         with db.get_conn() as conn:
-            conn.execute("DELETE FROM manifest WHERE filename = %s", (filename,))
+            if tenant_id is not None:
+                conn.execute(
+                    "DELETE FROM manifest WHERE tenant_id = %s AND filename = %s",
+                    (tenant_id, filename),
+                )
+            else:
+                conn.execute("DELETE FROM manifest WHERE filename = %s", (filename,))
             conn.commit()
 
 

@@ -953,8 +953,8 @@ def test_collect_v2_text_chars_counts_table_html(tmp_path: Path):
     ])
     v2_path = tmp_path / "v2.json"
     v2_path.write_text(json.dumps(v2, ensure_ascii=False), encoding="utf-8")
-    # ★ 不应该抛 TypeError
-    total, tp, chars = chunker._collect_v2_text_chars(v2_path)
+    # ★ 不应该抛 TypeError（函数现在接受解析后的数据，文件读取由 _collect_v2_file_stats 负责）
+    total, tp, chars = chunker._collect_v2_text_chars(json.loads(v2_path.read_text(encoding="utf-8")))
     # 1 title + 1 paragraph + 1 table = 3 块
     assert total == 3
     # 2 个 title/paragraph
@@ -1006,7 +1006,9 @@ def test_collect_v2_text_chars_table_only_doc_passes_trivial_check(tmp_path: Pat
     # ★ 直接测 _collect_v2_text_chars（这个函数是 bug 出现的精确位置）
     # 不调用 _is_parse_content_trivial，避免 _PARSE_QUALITY_MIN_BLOCKS 等其他阈值干扰
     v2_path = inner / "doc_content_list_v2.json"
-    total, tp, chars = chunker._collect_v2_text_chars(v2_path)
+    total, tp, chars = chunker._collect_v2_text_chars(
+        json.loads(v2_path.read_text(encoding="utf-8"))
+    )
     # 2 title + 1 paragraph + 1 table = 4 块
     assert total == 4
     # 2 title + 1 paragraph = 3 title_or_para

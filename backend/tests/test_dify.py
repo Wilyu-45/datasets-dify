@@ -1868,8 +1868,25 @@ def test_list_chunk_dirs_includes_output_dir(fresh_settings):
     )
 
     dirs = dify_ingest._list_chunk_dirs()
-    stems = sorted(p.name for p in dirs)
+    stems = sorted(p.name for p, _tid in dirs)
     assert stems == ["docA", "docB"]
+    # 无租户子目录场景：全部归属 default
+    assert {tid for _p, tid in dirs} == {"default"}
+
+
+def test_list_chunk_dirs_tenant_subdir(fresh_settings):
+    """chunks/ 下的非 stem 目录视为租户目录，向下再探一层（★ 2026-09 租户隔离）。"""
+    from app.services import dify_ingest
+
+    s = fresh_settings
+    _make_chunks_dir(s.chunks_dir, "docA", [{"content": "a"}])
+    tenant_root = s.chunks_dir / "tenantA"
+    _make_chunks_dir(tenant_root, "docT", [{"content": "t"}])
+
+    dirs = dify_ingest._list_chunk_dirs()
+    got = {(p.name, tid) for p, tid in dirs}
+    assert ("docA", "default") in got
+    assert ("docT", "tenantA") in got
 
 
 def test_list_chunk_dirs_dedup_when_in_both(fresh_settings):
@@ -1883,7 +1900,7 @@ def test_list_chunk_dirs_dedup_when_in_both(fresh_settings):
     (out_dir / "marker.txt").write_text("in output", encoding="utf-8")
 
     dirs = dify_ingest._list_chunk_dirs()
-    matches = [p for p in dirs if p.name == "docA"]
+    matches = [p for p, _tid in dirs if p.name == "docA"]
     assert len(matches) == 1
     assert matches[0].parent == s.chunks_dir, f"应优先 chunks/，实际={matches[0].parent}"
 

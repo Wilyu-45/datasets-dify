@@ -41,9 +41,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.api.auth import require_tenant
 from app.config import settings
 from app.models.schemas import ManifestRow
 from app.services import (
@@ -56,6 +57,7 @@ from app.services import (
     scanner,
 )
 from app.services import hasher
+from app.services.tenant_store import DEFAULT_TENANT_ID, Tenant
 
 router = APIRouter(tags=["upload"])
 log = logging.getLogger("ragsystem.api.upload")
@@ -96,9 +98,10 @@ class BatchUploadResponse(BaseModel):
     pipeline: Optional[Dict[str, Any]] = None  # 整批流水线 Report（auto_ingest=True 时才有）
 
 
-def _single_uploads_dir() -> Path:
-    """单文件上传中转目录（data/single_uploads/）。"""
-    p = settings.data_root / SINGLE_UPLOADS_DIRNAME
+def _single_uploads_dir(tenant_id: str = DEFAULT_TENANT_ID) -> Path:
+    """单文件上传中转目录（default: data/single_uploads/，命名租户再下一层）。"""
+    base = settings.data_root / SINGLE_UPLOADS_DIRNAME
+    p = base if (not tenant_id or tenant_id == DEFAULT_TENANT_ID) else base / tenant_id
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -323,7 +326,7 @@ def _split_pipeline_report_by_stem(
     return per_file
 
 
-async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
+async def _save_and_stage_upload(file: UploadFile, tenant: Tenant) -> Dict[str, Any]:
     """把单个上传文件保存到 single_uploads/、加 manifest、移到 pending/。
 
     抽出来供单文件/批量端点复用。返回 dict 包含：
@@ -332,6 +335,7 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
         - filename / stem / md5 / size / saved_path / manifest_row_added
     调用方根据 ok 字段决定后续处理（成功才入 pipeline 列表）。
     """
+    tenant_id = tenant.tenant_id or DEFAULT_TENANT_ID
     if not file.filename:
         return {"ok": False, "error": "未提供文件名", "filename": ""}
 
@@ -347,7 +351,7 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
     stem = _safe_stem(raw_name)
 
     # 1) 保存到 single_uploads/{stem}/{stem}{ext}
-    upload_dir = _single_uploads_dir() / stem
+    upload_dir = _single_uploads_dir(tenant_id) / stem
     upload_dir.mkdir(parents=True, exist_ok=True)
     saved_filename = f"{stem}{ext}"
     saved_path = upload_dir / saved_filename
@@ -379,8 +383,8 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
     #   之前在 upsert 之前没做 dedup 检查，导致同名/同 md5 的"重传"会把已有
     #   status='done' 行覆盖成 status='new'，把已入库的文档状态搞坏。
     #   这里先检查 pending/ 下是否已有同 md5 文件，有就跳过整次 upsert。
-    settings.pending_dir.mkdir(parents=True, exist_ok=True)
-    pending_dst = settings.pending_dir / saved_filename
+    settings.pending_dir_of(tenant_id).mkdir(parents=True, exist_ok=True)
+    pending_dst = settings.pending_dir_of(tenant_id) / saved_filename
     if pending_dst.exists() and hasher.md5_of_file(pending_dst, settings.scan_chunk_size) == md5_hex:
         # 同 md5 已存在 pending/ → 视为完全重复，不动 manifest，删 single_uploads/ 即可
         log.info(
@@ -414,6 +418,7 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
         import_status="已上传",
         process_status="待扫描",
         process_note=f"上传，大小 {total} 字节",
+        tenant_id=tenant_id,
     )
     try:
         manifest_store.upsert(new_row)
@@ -458,7 +463,7 @@ async def _save_and_stage_upload(file: UploadFile) -> Dict[str, Any]:
         return {"ok": False, "error": f"移入 pending/ 失败: {e}", "filename": saved_filename}
 
     # 4) 更新 manifest 的 import_status 为"已移入待处理"
-    updated_row = manifest_store.load().get(saved_filename)
+    updated_row = manifest_store.fetch(saved_filename, tenant_id=tenant_id)
     if updated_row:
         updated_row = updated_row.model_copy(update={
             "import_status": "已移入待处理",
@@ -490,6 +495,7 @@ async def post_upload_single(
         "",
         description="配置方案 ID；为空则使用当前激活配置方案（必选，未配置则拒绝处理）",
     ),
+    tenant: Tenant = Depends(require_tenant),
 ) -> SingleUploadResponse:
     """单文件上传（multipart/form-data）。
 
@@ -509,7 +515,7 @@ async def post_upload_single(
     ★ 2026-08 重构：保存/加 manifest/移 pending 的逻辑抽到 _save_and_stage_upload，
        与批量上传共用，单文件端点只负责"一个文件"语义 + 触发全流程。
     """
-    result = await _save_and_stage_upload(file)
+    result = await _save_and_stage_upload(file, tenant)
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["error"])
 
@@ -564,6 +570,7 @@ async def post_upload_batch(
         "",
         description="配置方案 ID；为空则使用当前激活配置方案（必选，未配置则拒绝处理）",
     ),
+    tenant: Tenant = Depends(require_tenant),
 ) -> BatchUploadResponse:
     """批量文件上传（multipart/form-data，2026-08 新增）。
 
@@ -609,7 +616,7 @@ async def post_upload_batch(
 
     for idx, f in enumerate(files):
         try:
-            result = await _save_and_stage_upload(f)
+            result = await _save_and_stage_upload(f, tenant)
             if not result["ok"]:
                 log.warning(
                     "batch upload: file %d/%d failed: %s err=%s",
@@ -726,6 +733,7 @@ async def post_upload_batch(
 def post_upload_single_ingest(
     filename: str,
     profile_id: str = "",
+    tenant: Tenant = Depends(require_tenant),
 ) -> Dict[str, Any]:
     """对已上传的单文件触发全流程入库（不重复上传文件）。
 
@@ -742,6 +750,14 @@ def post_upload_single_ingest(
     )
     # 从 filename 提取 stem（去除扩展名），作为 target_stems
     target_stem = Path(filename).stem
+    # 租户隔离：确认该文件确实属于当前租户，防止跨租户触发他人文档
+    if tenant.tenant_id != DEFAULT_TENANT_ID:
+        row = manifest_store.fetch(filename, tenant_id=tenant.tenant_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"当前租户下不存在文件：{filename}",
+            )
     # ★ 2026-08 配置中心：处理前必须已配置好方案
     profile = _resolve_run_config(profile_id or None)
     if not profile:

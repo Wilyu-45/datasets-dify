@@ -276,6 +276,8 @@ class ManifestRow(BaseModel):
     #  - dify_status:  done / error / 空
     dify_doc_id: Optional[str] = None
     dify_status: Optional[str] = None
+    # ★ 2026-09 租户隔离：所属租户（default=全局/存量数据）
+    tenant_id: Optional[str] = "default"
 
 
 class ManifestPage(BaseModel):
@@ -347,7 +349,8 @@ class DifyUploadReport(BaseModel):
 
     dry_run: bool
     api_url: str
-    dataset_id: str
+    # ★ 租户隔离：多租户批次路由到多个 dataset 时无法表达单一值，置 None
+    dataset_id: Optional[str]
     scanned: int
     uploaded: int
     skipped_done: int

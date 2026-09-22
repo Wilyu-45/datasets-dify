@@ -16,6 +16,7 @@
 - [数据库初始化](#数据库初始化)
 - [备份与恢复](#备份与恢复)
 - [故障排查](#故障排查)
+- [租户隔离（多租户）](#-租户隔离多租户2026-09-新增)
 - [生产方定制前端](#生产方定制前端)
 
 ---
@@ -925,6 +926,70 @@ curl -H "Authorization: Bearer dataset-your-key" \
 # 检查 dataset ID 是否正确
 grep RAG_DIFY_DATASET_ID backend/.env
 ```
+
+---
+
+## 🔐 租户隔离（多租户，2026-09 新增）
+
+一套部署服务多个租户，知识库访问严格受限；租户可只使用后端 API（自有用户体系与前端）。
+**完整接口文档（含 curl / Python 示例）见仓库根目录 [API.md](../API.md)**，本节只讲部署要点。
+
+### 1. 开启管理面
+
+在 `backend/.env` 配置管理员密钥（管理接口 `/api/tenants` 的 `X-Admin-Key` 请求头凭证）：
+
+```bash
+# 生成一个强随机值
+python -c "import secrets; print('ragadm-' + secrets.token_urlsafe(24))"
+# 写入 backend/.env
+RAG_ADMIN_API_KEY=ragadm-xxxxxxxxxxxxxxxx
+```
+
+- 留空 = 管理接口整体返回 `403`（管理面未开启），不影响存量匿名调用与租户业务接口。
+- Docker 部署需重启后端使配置生效：`docker compose ... up -d backend`。
+
+### 2. 为每个租户准备 Dify 知识库
+
+在 Dify 控制台创建知识库（dataset），记下 `dataset_id`；如需限制可见性，在 Dify 侧把该库
+仅授权给对应应用/成员。所有租户的库可位于**同一个 Dify 账号/工作空间**，系统使用统一的
+`RAG_DIFY_API_KEY` 访问，运行时按租户绑定关系**强制路由**（租户无法访问他人库）。
+
+### 3. 创建租户并下发 Key
+
+```bash
+curl -X POST http://<host>:18000/api/tenants \
+  -H "X-Admin-Key: $RAG_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"acme","name":"ACME 公司","dify_dataset_id":"<dataset_id>"}'
+# 响应中的 api_key（rt- 前缀）仅显示一次，交付给租户保存
+```
+
+租户侧在自有后端转发请求时加请求头 `X-API-Key: rt-xxx` 即可，上传/台账/元数据/Dify 校验
+全部按租户隔离。
+
+### 4. 升级既有部署（数据迁移）
+
+- 应用启动时**自动迁移**：`manifest` / `doc_metadata` 补 `tenant_id` 列并重建主键
+  `(tenant_id, filename)`，既有数据归属内置 `default` 租户；`tenants` 表自动创建并注册
+  `default` 租户（绑定 `RAG_DIFY_DATASET_ID`）。
+- MySQL / PostgreSQL 均已支持，无需手工 DDL；升级前建议照常备份数据库（见「备份与恢复」）。
+- **行为兼容**：不带 `X-API-Key` 的请求 = `default` 租户（可见全部数据），存量前端与脚本无需改动。
+
+### 5. 安全建议
+
+- 运维类接口（`/api/pipeline` `/api/scan` `/api/parse` `/api/chunk` `/api/cleanup` `/api/config`
+  `/api/webscrape`）为全局操作、不参与租户隔离，建议在 Nginx 层限制来源：
+
+  ```nginx
+  location ~ ^/api/(pipeline|scan|parse|chunk|cleanup|config|webscrape) {
+      allow 10.0.0.0/8;   # 仅内网
+      deny all;
+  }
+  ```
+
+- 租户 Key 泄露时用 `POST /api/tenants/{tenant_id}/rotate-key` 立即轮换，或 `PATCH` 置
+  `status=disabled` 临时停用。
+- 每个租户的 `rt-` Key 应保存在**租户服务端或你自己的网关**，不要放进浏览器前端。
 
 ---
 

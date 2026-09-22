@@ -92,6 +92,14 @@
 
 **反爬兼容（2026-08-31 浏览器引擎）**：抓取优先走 httpx（带完整浏览器指纹：`Sec-Fetch-*`、`Upgrade-Insecure-Requests`、同源 `Referer` 等，412 间隔 1s 重试 1 次）；被 WAF 拦截（**412** JS 动态令牌挑战 / **403**）或源站回源故障（**502**）时，**自动降级 Playwright Chromium 浏览器内核**重新抓取——真实浏览器自动执行 JS 挑战并渲染，静态抓取不到的政府网站（如卫健委 www.nhc.gov.cn 的瑞数类 WAF）也可正常抓取；附件下载同样支持浏览器降级。实现要点：`browser_fetch.py` 自动探测并使用**完整 Chromium 内核**（瑞数类 WAF 会识别精简 headless shell 并卡死在 412，完整内核 + 隐藏 navigator.webdriver 才能通过挑战）；若浏览器也拿不到真实页面（如源站 502 故障）给出明确错误提示「网站源站当前不可用（502）」。部署依赖：`pip install playwright` 后执行一次 `python -m playwright install chromium`（约 150MB）。
 
+### 3.8 租户隔离（多租户，2026-09 新增）
+面向生产的多租户方案：**一套系统服务多个租户，知识库访问严格受限**——前后端分离，租户使用自有用户体系与前端，仅通过后端 API 接入（完整对接文档见 [API.md](./API.md)）。
+
+- **身份**：租户请求头 `X-API-Key: rt-xxx`（`/api/tenants` 管理员接口签发，库中仅存 sha256）；管理接口用 `X-Admin-Key: <RAG_ADMIN_API_KEY>`。**匿名调用 = 内置 default 租户**（存量行为不变）；带无效 Key 返回 401（不静默降级）。
+- **隔离维度**：台账/元数据行按 `tenant_id` 过滤（主键 `(tenant_id, filename)`，不同租户可同名文件）；文件目录按 `data/.../{tenant_id}/` 分目录；**Dify 知识库按租户强制路由**——命名租户的查询/上传只作用于其绑定 dataset，请求参数中的 `dataset_id` 被忽略，无法越权。
+- **租户管理**：`POST/GET/PATCH/DELETE /api/tenants` + `POST /api/tenants/{id}/rotate-key`（创建与轮换时明文 Key 仅返回一次；`status=disabled` 即时停用；`default` 不可删）。
+- **配置**：`RAG_ADMIN_API_KEY`（留空则管理接口整体 403）；租户模型 = 同一 Dify 工作空间下「一租户一知识库」，租户可见性由 Dify 控制台的库权限设置管理。
+
 ### 单文件上传 + 一键入库
 `/api/upload/single` / `/api/upload/batch` 直接上传 PDF / DOCX / DOC / PPTX / XLSX / HTML 等，随即触发全流程入库（`target_stems` 白名单），只处理本批文件，不影响 manifest / chunks 中其他文档。
 - `auto_ingest`：默认 `true` 自动触发流水线；`false` 则只保存到 `pending/` 不触发
@@ -258,6 +266,7 @@ npm run dev        # 默认 http://localhost:5173
 | `RAG_PG_*` | - | PostgreSQL 连接与连接池（`RAG_PG_POOL_TIMEOUT` 默认 30s） |
 | `RAG_DB_TYPE` | `postgres` | 数据库方言：`postgres`（本地开发）/ `mysql`（生产） |
 | `RAG_MYSQL_*` | - | MySQL 连接与连接池（`RAG_MYSQL_POOL_TIMEOUT` 默认 30s；`RAG_DB_TYPE=mysql` 时生效） |
+| `RAG_ADMIN_API_KEY` | `""` | 租户管理接口（`/api/tenants`）的管理员密钥（`X-Admin-Key` 请求头）；留空则管理接口整体 403。租户业务调用用各自 `rt-xxx` Key（`X-API-Key`），见 [API.md](./API.md) |
 | `RAG_MINERU_PROVIDER` | `local` | 解析 provider：`local` / `mineru_net` / `auto`（本地优先，失败降级官方） |
 | `RAG_MINERU_NET_TOKEN` | `""` | 官方 mineru.net API Key（`mineru_net` / `auto` 时需要） |
 | `RAG_MINERU_NET_MODEL` / `RAG_MINERU_NET_BASE_URL` | `vlm` / `https://mineru.net` | 官方 API 解析模型 / 地址 |
@@ -370,6 +379,9 @@ npm run dev        # 默认 http://localhost:5173
 | 网站抓取 | `POST /api/webscrape/run` · `GET /api/webscrape/tasks` · `GET /api/webscrape/task/{id}` · `GET /api/webscrape/task/{id}/preview/{idx}` · `POST /api/webscrape/task/{id}/confirm` | 网站抓取两步式：抓取（正文 Markdown / 附件）→ 预览勾选 → 确认入库（parse → chunk → dify） |
 | 清理 | `POST /api/cleanup` · `GET /api/cleanup/status` | 手动触发一次文件清理（body 可选 `dry_run`）/ 查询最近一次清理结果 |
 | 健康 | `GET /api/health` | 健康检查（返回当前实际生效的 MinerU provider） |
+| 租户管理 | `POST/GET /api/tenants` · `GET/PATCH/DELETE /api/tenants/{tenant_id}` · `POST /api/tenants/{tenant_id}/rotate-key` | **管理员接口**（`X-Admin-Key`）：租户创建（签发 `rt-` Key）/ 列表 / 查询 / 改名·换绑知识库·停用 / 删除 / 轮换 Key |
+
+**租户隔离（★ 2026-09）**：业务接口支持租户请求头 `X-API-Key: rt-xxx`——上传（`/api/upload/*`）、台账（`/api/manifest*`）、文件（`/api/files`）、文档元数据（`/api/doc-metadata*`）、Dify 校验（`/api/dify/documents*`）均按租户过滤/路由；不带 Key 即 `default` 租户（全局，存量行为不变）。运维类接口（pipeline / scan / parse / chunk / cleanup / config / webscrape）为全局操作，不参与租户隔离，生产建议在 Nginx 层限制来源。**对接细节与 curl 示例见 [API.md](./API.md)**。
 
 交互式文档：后端启动后访问 `http://localhost:8000/docs`。
 
@@ -394,5 +406,8 @@ data/
 
 `input/`（源文件）与 `parsed/`（解析产物）为**永久保留**，清理服务硬编码跳过；`chunks/` / `output/` / `error/` / `webscrape/` 按保留期被定期清理（见「生产部署 → 存储清理」）。
 
-```
-文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` / `webscrape_records` 等表；生产可切换 MySQL），应用启动时自动建表（按方言幂等），无需手工维护 Excel。
+**租户隔离（★ 2026-09）**：命名租户的文件位于各目录下的 `{tenant_id}/` 子目录
+（如 `data/pending/acme/规范.pdf`、`data/parsed/acme/规范/`），`default` 租户沿用根目录；
+清理服务同样按子目录判期。Dify 侧每个租户绑定独立知识库，图片 URL 带 `{tenant_id}/` 前缀。
+
+文件清单台账存于 PostgreSQL（`manifest` / `doc_metadata` / `tenants` / `webscrape_records` 等表；生产可切换 MySQL），应用启动时自动建表（按方言幂等），无需手工维护 Excel。

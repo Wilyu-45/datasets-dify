@@ -51,7 +51,7 @@ ImageUrlBuilder = Callable[[str, str], str]
 # ---- 各后端实现 ----
 
 
-def _build_tunnel_url(stem: str, ref: str) -> str:
+def _build_tunnel_url(stem: str, ref: str, tenant_id: str = "default") -> str:
     """tunnel 后端：从 settings.public_base_url 拼出公网 URL。
 
     路径模板：`{public_base_url}/static/output/{stem}/{ref}`，与 main.py
@@ -70,10 +70,12 @@ def _build_tunnel_url(stem: str, ref: str) -> str:
     # 反复去掉前导的 ./ 或 /
     while ref_clean.startswith(("./", "/")):
         ref_clean = ref_clean[2:] if ref_clean.startswith("./") else ref_clean[1:]
-    return f"{base}/static/output/{stem}/{ref_clean}"
+    # ★ 2026-09 租户隔离：非 default 租户带 {tenant}/ 段（与 output/{tenant}/ 目录一致）
+    stem_seg = stem if (not tenant_id or tenant_id == "default") else f"{tenant_id}/{stem}"
+    return f"{base}/static/output/{stem_seg}/{ref_clean}"
 
 
-def _build_oss_url(stem: str, ref: str) -> str:
+def _build_oss_url(stem: str, ref: str, tenant_id: str = "default") -> str:
     """OSS 后端：生成永久公网外链（不依赖 oss2 SDK，可独立调用）。
 
     ★ 2026-08-04 启用 + 重构：
@@ -91,9 +93,10 @@ def _build_oss_url(stem: str, ref: str) -> str:
     ref_clean = (ref or "").replace("\\", "/")
     while ref_clean.startswith(("./", "/")):
         ref_clean = ref_clean[2:] if ref_clean.startswith("./") else ref_clean[1:]
+    stem_seg = stem if (not tenant_id or tenant_id == "default") else f"{tenant_id}/{stem}"
     key = build_oss_object_key(
         object_prefix=settings.oss_object_prefix,
-        stem=stem,
+        stem=stem_seg,
         ref=ref_clean,
     )
     return build_oss_public_url(
@@ -115,7 +118,7 @@ _BUILDERS: Dict[str, ImageUrlBuilder] = {
 # ---- 公开 API ----
 
 
-def build_image_url(backend: str, stem: str, ref: str) -> str:
+def build_image_url(backend: str, stem: str, ref: str, tenant_id: str = "default") -> str:
     """派发到对应 builder；未知后端 / NotImplementedError → 记 WARNING + 返回空串。
 
     返回空串的语义是"无法生成公网 URL"，调用方应保留原 `images/xxx.jpg` 相对路径，
@@ -138,7 +141,7 @@ def build_image_url(backend: str, stem: str, ref: str) -> str:
         )
         return ""
     try:
-        return fn(stem, ref)
+        return fn(stem, ref, tenant_id)
     except NotImplementedError as e:
         log.warning(
             "image host backend not implemented, falling back to no-op: %s",
@@ -205,6 +208,7 @@ def prepare_chunks_images(
     backend: str,
     stem: str,
     chunks_dir: Path,
+    tenant_id: str = "default",
 ) -> Dict[str, str]:
     """为 chunks_dir/images/ 下的所有图片准备公网 URL 映射。
 
@@ -243,7 +247,8 @@ def prepare_chunks_images(
             )
             return {}
         try:
-            res = up.upload_chunks_images(stem, chunks_dir)
+            stem_seg = stem if (not tenant_id or tenant_id == "default") else f"{tenant_id}/{stem}"
+            res = up.upload_chunks_images(stem_seg, chunks_dir)
         except Exception as e:  # noqa: BLE001
             log.error(
                 "OSS 批量上传异常，降级为相对路径: stem=%s err=%s",

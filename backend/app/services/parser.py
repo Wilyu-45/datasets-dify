@@ -129,47 +129,58 @@ def _is_mineru_output_trivial(parsed_dir: Path) -> tuple[bool, str]:
     return False, ""
 
 
-def _resolve_pending_path(name_in_manifest: str) -> Optional[Path]:
-    """在 pending/ 找清单中的「文件名称」。
+def _resolve_pending_path(
+    name_in_manifest: str, tenant_id: Optional[str] = None
+) -> Optional[Path]:
+    """在 pending/（或 pending/{tenant}/）找清单中的「文件名称」。
 
     1) 精确匹配
     2) 按 allowed_extensions 顺序追加扩展名（与 §3.1 行为一致）
     3) ★ stem 模糊匹配：把 manifest 中的 stem 与 pending/ 中所有文件做 stem 比较。
        场景：用户把 .doc 转成 .docx 后放回 pending/，但 manifest filename 还是 .doc。
 
+    ★ 2026-09 租户隔离：tenant_id 非 default 时优先搜 pending/{tenant}/，
+    找不到再回退 pending/ 根目录（兼容旧文件）。
+
     返回值：用 Path（真实找到的文件）。调用方负责在 stem 匹配时同步 manifest.filename。
     """
-    if not settings.pending_dir.exists():
-        return None
-    exact = settings.pending_dir / name_in_manifest
-    if exact.is_file():
-        return exact
-    for ext in settings.allowed_extensions:
-        candidate = settings.pending_dir / f"{name_in_manifest}{ext}"
-        if candidate.is_file():
-            return candidate
+    roots: List[Path] = []
+    tenant_root = settings.pending_dir_of(tenant_id)
+    if tenant_root != settings.pending_dir and tenant_root.exists():
+        roots.append(tenant_root)
+    roots.append(settings.pending_dir)
+
+    for root in roots:
+        exact = root / name_in_manifest
+        if exact.is_file():
+            return exact
+        for ext in settings.allowed_extensions:
+            candidate = root / f"{name_in_manifest}{ext}"
+            if candidate.is_file():
+                return candidate
 
     # ★ stem 模糊匹配：去掉 .doc 之类后缀，在 pending/ 中找同 stem 的任意文件
     # 防止类似 "name.doc" vs "name.docx" 在用户手动转换扩展名后找不到
     name_stem = Path(name_in_manifest).stem
-    candidates: List[Path] = []
-    for f in settings.pending_dir.iterdir():
-        if not f.is_file():
-            continue
-        if f.stem == name_stem:
-            candidates.append(f)
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        # 多个候选（同一 stem 但不同扩展名）：按 allowed_extensions 优先级取第一个
-        # 优先级排序后返回
-        def _ext_rank(p: Path) -> int:
-            try:
-                return settings.allowed_extensions.index(p.suffix.lower())
-            except ValueError:
-                return len(settings.allowed_extensions) + 1
-        candidates.sort(key=_ext_rank)
-        return candidates[0]
+    for root in roots:
+        candidates: List[Path] = []
+        for f in root.iterdir():
+            if not f.is_file():
+                continue
+            if f.stem == name_stem:
+                candidates.append(f)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            # 多个候选（同一 stem 但不同扩展名）：按 allowed_extensions 优先级取第一个
+            # 优先级排序后返回
+            def _ext_rank(p: Path) -> int:
+                try:
+                    return settings.allowed_extensions.index(p.suffix.lower())
+                except ValueError:
+                    return len(settings.allowed_extensions) + 1
+            candidates.sort(key=_ext_rank)
+            return candidates[0]
     return None
 
 
@@ -497,8 +508,8 @@ def _try_pymupdf_fallback(
     return True, fb_result.backend
 
 
-def _move_to_error(src: Path, err: str) -> Path:
-    """把失败文件移入 data/error/。同 md5 跳过；同 md5 不一致则 _<6hex> 重命名。
+def _move_to_error(src: Path, err: str, tenant_id: Optional[str] = None) -> Path:
+    """把失败文件移入 data/error/（租户非 default 时为 error/{tenant}/）。同 md5 跳过；同 md5 不一致则 _<6hex> 重命名。
 
     ★ 2026-08 修复（Windows 文件锁）：
       PyMuPDF 在「文件无法解析为 PDF」时仍会短暂持有 Windows 文件句柄，
@@ -508,8 +519,9 @@ def _move_to_error(src: Path, err: str) -> Path:
     """
     from app.services import hasher
 
-    settings.error_dir.mkdir(parents=True, exist_ok=True)
-    dst = settings.error_dir / src.name
+    error_root = settings.error_dir_of(tenant_id)
+    error_root.mkdir(parents=True, exist_ok=True)
+    dst = error_root / src.name
     if dst.exists():
         try:
             if hasher.md5_of_file(dst, settings.scan_chunk_size) == hasher.md5_of_file(
@@ -616,23 +628,27 @@ def parse_pending(
             if row_stem not in target_stem_set:
                 continue
 
+        # ★ 2026-09 租户隔离：按行所属租户派生存储路径（default → 根目录）
+        tenant_id = getattr(row, "tenant_id", None) or "default"
+        parsed_root = settings.parsed_dir_of(tenant_id)
+
         # 1) 已解析 → 跳过（除非 force）
         if _is_already_parsed(row):
-            if not force and _is_parsed_dir_valid(settings.parsed_dir / row.parse):
+            if not force and _is_parsed_dir_valid(parsed_root / row.parse):
                 # 幂等跳过：已解析 + 目录有效 + 未开 force
                 skipped_count += 1
                 actions.append(
                     ParseActionRecord(
                         filename=fname,
                         action=ParseAction.SKIPPED_DONE,
-                        parse_dir=str((settings.parsed_dir / row.parse).resolve()),
+                        parse_dir=str((parsed_root / row.parse).resolve()),
                         duration_ms=int((time.perf_counter() - t0) * 1000),
                     )
                 )
                 continue
             # ★ 2026-08 修复（流水线一致性）：force=True 时清空旧 parsed 目录，重新调 MinerU
             if force:
-                old_parse_dir = settings.parsed_dir / row.parse
+                old_parse_dir = parsed_root / row.parse
                 if old_parse_dir.exists():
                     log.info(
                         "parse: force=True，清空旧 parsed 目录: %s",
@@ -645,7 +661,7 @@ def parse_pending(
                 manifest[fname] = row
 
         # 2) 在 pending/ 找原文件
-        src = _resolve_pending_path(fname)
+        src = _resolve_pending_path(fname, tenant_id)
         if src is None:
             # 没有原始文件（可能已经被移走/被前面步骤消费），跳过
             log.warning(
@@ -681,7 +697,7 @@ def parse_pending(
                 ParseActionRecord(
                     filename=src.name,
                     action=ParseAction.DRY_RUN,
-                    parse_dir=str((settings.parsed_dir / _safe_stem(src.name)).resolve()),
+                    parse_dir=str((parsed_root / _safe_stem(src.name)).resolve()),
                     duration_ms=int((time.perf_counter() - t0) * 1000),
                 )
             )
@@ -698,7 +714,7 @@ def parse_pending(
         if src.suffix.lower() in _LOCAL_PARSE_EXTS:
             _set_progress(src.name, 0, "本地解析中...", "parsing")
             try:
-                parsed_dir = settings.parsed_dir / _safe_stem(src.name)
+                parsed_dir = parsed_root / _safe_stem(src.name)
                 md_path = _parse_local_document(src, parsed_dir)
                 _set_progress(src.name, 100, "解析完成(本地)", "done")
                 parsed_count += 1
@@ -742,7 +758,7 @@ def parse_pending(
                         "duration_ms": int((time.perf_counter() - t0) * 1000),
                     },
                 )
-                _move_to_error(src, err_text)
+                _move_to_error(src, err_text, tenant_id)
                 _write_manifest_row(row, parse_text=err_text, sys_status="error", err=err_text)
                 actions.append(
                     ParseActionRecord(
@@ -757,7 +773,7 @@ def parse_pending(
         # 5) 实际调 API（MinerU）
         _set_progress(src.name, 0, "正在调用 MinerU API...", "parsing")
         try:
-            result = client.parse_file(src, settings.parsed_dir / _safe_stem(src.name))
+            result = client.parse_file(src, parsed_root / _safe_stem(src.name))
             _set_progress(src.name, 100, "解析完成", "done")
             parsed_count += 1
 
@@ -867,7 +883,7 @@ def parse_pending(
                 },
             )
             try:
-                err_dst = _move_to_error(src, err_text)
+                err_dst = _move_to_error(src, err_text, tenant_id)
             except Exception as move_err:  # noqa: BLE001
                 log.exception(
                     "移入 error/ 失败",
@@ -999,7 +1015,7 @@ def parse_pending(
             failed_count += 1
             _set_progress(src.name, 0, f"解析失败: {err_text[:50]}", "failed")
             try:
-                err_dst = _move_to_error(src, err_text)
+                err_dst = _move_to_error(src, err_text, tenant_id)
             except Exception as move_err:  # noqa: BLE001
                 # 移入 error 也失败：记日志，源文件保留
                 log.exception(

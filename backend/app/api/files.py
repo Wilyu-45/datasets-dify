@@ -6,29 +6,36 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
 
+from app.api.auth import require_tenant
 from app.config import settings
 from app.models.schemas import FileItem
 from app.services import manifest_store
+from app.services.tenant_store import DEFAULT_TENANT_ID, Tenant
 
 router = APIRouter(tags=["files"])
 
 
 @router.get("/files", response_model=List[FileItem])
-def list_files(dir: Literal["input", "pending"]) -> List[FileItem]:
+def list_files(
+    dir: Literal["input", "pending"],
+    tenant: Tenant = Depends(require_tenant),
+) -> List[FileItem]:
+    tid = tenant.tenant_id or DEFAULT_TENANT_ID
     if dir == "input":
-        target = settings.input_dir
+        target = settings.input_dir if tid == DEFAULT_TENANT_ID else settings.input_dir_of(tid)
     else:
-        target = settings.pending_dir
+        target = settings.pending_dir_of(tid)
 
     if not target.exists():
         return []
 
-    # 读 manifest，filename → status
+    # 读 manifest，filename → status（命名租户只关联自己的行）
     manifest = {}
     try:
-        manifest = manifest_store.load()
+        manifest = manifest_store.load(tenant_id=None if tid == DEFAULT_TENANT_ID else tid)
     except Exception:  # noqa: BLE001
         manifest = {}
 

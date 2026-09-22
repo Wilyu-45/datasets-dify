@@ -292,18 +292,20 @@ def test_dify_list_chunk_dirs_target_stems(
     for name in ("a", "b", "c"):
         (fresh_settings.chunks_dir / name).mkdir()
         (fresh_settings.chunks_dir / name / "chunk_001.md").write_text("x")
+        # stem 目录标记（缺失会被 _list_chunk_dirs 误判为租户目录）
+        (fresh_settings.chunks_dir / name / "chunk_metadata.json").write_text("{}")
 
     # 无白名单 → 返回所有
     all_dirs = dify_ingest._list_chunk_dirs()
-    assert sorted([p.name for p in all_dirs]) == ["a", "b", "c"]
+    assert sorted([p.name for p, _tid in all_dirs]) == ["a", "b", "c"]
 
     # 有白名单 → 只返回 a
     filtered = dify_ingest._list_chunk_dirs(target_stems=["a"])
-    assert [p.name for p in filtered] == ["a"]
+    assert [p.name for p, _tid in filtered] == ["a"]
 
     # 多元素白名单
     filtered2 = dify_ingest._list_chunk_dirs(target_stems=["a", "c"])
-    assert sorted([p.name for p in filtered2]) == ["a", "c"]
+    assert sorted([p.name for p, _tid in filtered2]) == ["a", "c"]
 
     # 空白名单（不过滤任何）→ 返回 []
     empty = dify_ingest._list_chunk_dirs(target_stems=[])

@@ -72,10 +72,19 @@ class TestMySQLDDLTemplates:
         assert re.search(r"target_stems\s+JSON\b", db._MYSQL_PROCESS_CONFIG_LOG)
 
     def test_text_primary_keys_become_varchar(self):
-        """TEXT 主键/被索引列 → VARCHAR（InnoDB 索引键长限制）。"""
-        assert re.search(r"filename\s+TEXT PRIMARY KEY", db.MANIFEST_TABLE_SQL)
-        assert re.search(r"filename\s+VARCHAR\(255\) PRIMARY KEY", db._MYSQL_MANIFEST)
-        assert re.search(r"filename\s+VARCHAR\(255\) PRIMARY KEY", db._MYSQL_DOC_METADATA)
+        """TEXT 主键/被索引列 → VARCHAR（InnoDB 索引键长限制）。
+
+        ★ 2026-09 租户隔离：manifest / doc_metadata 主键改为复合
+        (tenant_id, filename)，filename 不再单独作主键。
+        """
+        for pg_sql, mysql_sql in (
+            (db.MANIFEST_TABLE_SQL, db._MYSQL_MANIFEST),
+            (db.DOC_METADATA_TABLE_SQL, db._MYSQL_DOC_METADATA),
+        ):
+            assert "PRIMARY KEY (tenant_id, filename)" in pg_sql
+            assert "PRIMARY KEY (tenant_id, filename)" in mysql_sql
+            assert re.search(r"filename\s+TEXT\b", pg_sql)
+            assert re.search(r"filename\s+VARCHAR\(255\)", mysql_sql)
         assert re.search(r"id\s+VARCHAR\(255\) PRIMARY KEY", db._MYSQL_WEBSCRAPE_TASK)
         # webscrape_records：(task_id, url) 为唯一键，改 VARCHAR 且限制长度
         assert re.search(r"task_id\s+VARCHAR\(191\)", db._MYSQL_WEBSCRAPE_RECORD)
@@ -96,7 +105,7 @@ class TestMySQLIndexesAndAlters:
     """MySQL 的索引/补列集中在显式列表，init 时经 information_schema 探测（幂等）。"""
 
     def test_index_entries_without_if_not_exists(self):
-        assert len(db._MYSQL_INDEXES) == 5
+        assert len(db._MYSQL_INDEXES) == 6
         for table, name, sql in db._MYSQL_INDEXES:
             assert name.startswith("idx_")
             assert sql.startswith("CREATE INDEX ")
@@ -104,7 +113,7 @@ class TestMySQLIndexesAndAlters:
             assert "IF NOT EXISTS" not in sql
 
     def test_alter_entries_without_if_not_exists(self):
-        assert len(db._MYSQL_ALTERS) == 4
+        assert len(db._MYSQL_ALTERS) == 8
         for table, column, sql in db._MYSQL_ALTERS:
             assert sql.startswith(f"ALTER TABLE {table} ADD COLUMN {column} ")
             assert "IF NOT EXISTS" not in sql
@@ -115,7 +124,7 @@ class TestMySQLIndexesAndAlters:
         assert db.INIT_SQL.count("ADD COLUMN IF NOT EXISTS") >= 2
 
     def test_mysql_entries_match_pg_index_and_column_names(self):
-        """MySQL 5 索引 + 4 补列与 PG DDL 中声明的名称完全一致。"""
+        """MySQL 6 索引 + 8 补列与 PG DDL 中声明的名称完全一致。"""
         pg_indexes = set(re.findall(r"CREATE INDEX IF NOT EXISTS (\w+)", db.INIT_SQL))
         assert {name for _, name, _ in db._MYSQL_INDEXES} == pg_indexes
         pg_cols = set(re.findall(r"ADD COLUMN IF NOT EXISTS (\w+)", db.INIT_SQL))
@@ -131,20 +140,23 @@ class TestManifestUpsertDialect:
     def test_postgres_uses_on_conflict(self, monkeypatch):
         monkeypatch.setattr(manifest_store.settings, "rag_db_type", "postgres")
         sql = manifest_store._upsert_sql()
-        assert "ON CONFLICT (filename) DO UPDATE" in sql
-        assert "filename = EXCLUDED.filename" in sql
+        assert "ON CONFLICT (tenant_id, filename) DO UPDATE" in sql
+        # filename 是主键列，不出现在 UPDATE SET 中
+        assert "EXCLUDED.seq" in sql
+        assert "EXCLUDED.filename" not in sql
         assert "ON DUPLICATE KEY" not in sql
 
     def test_mysql_uses_on_duplicate_key(self, monkeypatch):
         monkeypatch.setattr(manifest_store.settings, "rag_db_type", "mysql")
         sql = manifest_store._upsert_sql()
         assert "ON DUPLICATE KEY UPDATE" in sql
-        assert "filename = VALUES(filename)" in sql
+        assert "seq = VALUES(seq)" in sql
+        assert "filename = VALUES(filename)" not in sql
         assert "ON CONFLICT" not in sql
 
     def test_both_templates_cover_all_fields_with_named_placeholders(self):
-        """两个模板均覆盖 20 列，且用 %(field)s 具名占位（psycopg/pymysql 两侧通用）。"""
-        assert len(manifest_store.MANIFEST_FIELDS) == 20
+        """两个模板均覆盖 21 列（20 列 + tenant_id），且用 %(field)s 具名占位。"""
+        assert len(manifest_store.MANIFEST_FIELDS) == 21
         for sql in (manifest_store._UPSERT_SQL, manifest_store._UPSERT_SQL_MYSQL):
             for field in manifest_store.MANIFEST_FIELDS:
                 assert f"%({field})s" in sql

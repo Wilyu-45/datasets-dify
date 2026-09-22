@@ -198,8 +198,70 @@ def _extract_runs_text(runs: Any) -> str:
     return "".join(parts)
 
 
+def _normalize_legacy_v1(data: Any) -> Optional[List[List[dict]]]:
+    """把旧版 content_list（v1 扁平格式）转换为 v2 嵌套页结构。
+
+    v1 块格式：{"type": "text|title|image|table", "text": "...", "text_level": int,
+               "img_path": ..., "img_caption": [...], "table_body": ..., "table_caption": [...]}
+    MinerU 官方 API 的 ZIP 在不同请求间可能返回 v1 或 v2 任一格式（2026-09 e2e 实测），
+    这里统一成 v2 嵌套结构供 load_v2_blocks 消费；非 v1 扁平格式返回 None。
+    """
+    if not isinstance(data, list) or not data or not all(isinstance(x, dict) for x in data):
+        return None
+
+    def _runs(text: str) -> List[dict]:
+        return [{"type": "text", "content": text}] if text else []
+
+    pages: List[List[dict]] = []
+    cur: List[dict] = []
+    cur_page = 0
+    for blk in data:
+        t = blk.get("type")
+        text = (blk.get("text") or "").strip()
+        page_idx = blk.get("page_idx") or 0
+        if page_idx != cur_page or not isinstance(page_idx, int):
+            if cur:
+                pages.append(cur)
+            cur = []
+            cur_page = page_idx if isinstance(page_idx, int) else 0
+        if t in ("text", "title", "paragraph"):
+            level = blk.get("text_level")
+            if t == "text" and isinstance(level, int) and level:
+                t = "title"
+            if t == "title":
+                cur.append({"type": "title", "content": {
+                    "title_content": _runs(text), "level": level}})
+            else:
+                cur.append({"type": "paragraph", "content": {
+                    "paragraph_content": _runs(text)}})
+        elif t == "image":
+            cur.append({"type": "image", "content": {
+                "image_source": {"path": blk.get("img_path") or ""},
+                "image_caption": [
+                    {"type": "text", "content": c}
+                    for c in (blk.get("img_caption") or []) if isinstance(c, str)
+                ]}})
+        elif t == "table":
+            cur.append({"type": "table", "content": {
+                "html": blk.get("table_body") or "",
+                "table_caption": [
+                    {"type": "text", "content": c}
+                    for c in (blk.get("table_caption") or []) if isinstance(c, str)
+                ]}})
+        else:
+            # equation / equation_interline 等其它类型：文本兜底保留
+            if text:
+                cur.append({"type": "paragraph", "content": {
+                    "paragraph_content": _runs(text)}})
+    if cur:
+        pages.append(cur)
+    return pages
+
+
 def load_v2_blocks(v2_path: Path) -> List[Block]:
     """加载 v2 json → 扁平化的 Block 列表（按页序，丢弃 header/footer/page_number）。
+
+    兼容两种格式：v2 嵌套页结构 / v1 扁平块列表（见 _normalize_legacy_v1）。
 
     对于纯 paragraph 文档（v2 没有显式 title 块），
     把匹配「第X章」「第X条」「附录 X」「参考文献」「前言」「目录」
@@ -209,6 +271,10 @@ def load_v2_blocks(v2_path: Path) -> List[Block]:
         return []
     with open(v2_path, "r", encoding="utf-8") as fp:
         pages = json.load(fp)
+
+    legacy = _normalize_legacy_v1(pages)
+    if legacy is not None:
+        pages = legacy
 
     blocks: List[Block] = []
     if not isinstance(pages, list):
@@ -593,16 +659,12 @@ _PARSE_QUALITY_MIN_TITLE_OR_PARA = 1   # 至少 1 个 title 或 paragraph 块
 _PARSE_QUALITY_MIN_TEXT_CHARS = 50     # 真实文本字符数（去除空白）
 
 
-def _collect_v2_text_chars(v2_path: Path) -> Tuple[int, int, int]:
-    """统计 v2 文件中的块数和文本字符数。
+def _collect_v2_text_chars(data) -> Tuple[int, int, int]:
+    """统计嵌套 v2 数据（[[块, ...], ...] 按页嵌套）中的块数和文本字符数。
 
     Returns:
         (total_blocks, title_or_para_blocks, text_chars)
     """
-    try:
-        data = json.loads(v2_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return 0, 0, 0
     if not isinstance(data, list):
         return 0, 0, 0
     total = 0
@@ -637,17 +699,39 @@ def _collect_v2_text_chars(v2_path: Path) -> Tuple[int, int, int]:
     return total, title_or_para, text_chars
 
 
+def _collect_v2_file_stats(v2_path: Path) -> Tuple[int, int, int]:
+    """统计单个 v2 文件，兼容两种格式：
+
+    - 嵌套格式（MinerU v2 原生）：[[块, ...], [块, ...]]（按页嵌套）
+    - 扁平格式（pdf_fallback 产物）：[块, ...]
+    """
+    try:
+        data = json.loads(v2_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0, 0, 0
+    if not isinstance(data, list):
+        return 0, 0, 0
+    if data and all(isinstance(page, list) for page in data):
+        return _collect_v2_text_chars(data)
+    # 扁平格式：包一层页结构复用同一统计逻辑
+    return _collect_v2_text_chars([data])
+
+
 def _is_parse_content_trivial(parsed_dir: Path) -> Tuple[bool, str]:
     """检测 MinerU 解析产物是否严重缺失（如扫描件 OCR 失败、纯图片 PDF 等）。
+
+    目录中可能同时存在多份 v2 文件（原始解析 + fallback 重解析产物），
+    取统计结果最好（块最多）的一份判断，避免 rglob 顺序碰巧选中
+    空的/格式不同的文件而误判 trivial。
 
     Returns:
         (is_trivial, reason)
     """
     # 1) 优先检查 v2 文件
-    v2_files = list(parsed_dir.rglob("*_content_list_v2.json"))
+    v2_files = sorted(parsed_dir.rglob("*_content_list_v2.json"))
     if v2_files:
-        v2_path = v2_files[0]
-        total, tp, chars = _collect_v2_text_chars(v2_path)
+        best = max((_collect_v2_file_stats(p) for p in v2_files), default=(0, 0, 0))
+        total, tp, chars = best
         if total < _PARSE_QUALITY_MIN_BLOCKS:
             return True, f"v2 块数过少（{total} 个），MinerU 可能解析失败"
         if tp < _PARSE_QUALITY_MIN_TITLE_OR_PARA:
@@ -682,20 +766,24 @@ def _is_parse_content_trivial(parsed_dir: Path) -> Tuple[bool, str]:
 # ============================================================
 
 
-def _find_source_pdf(stem: str, manifest_filename: Optional[str] = None) -> Optional[Path]:
+def _find_source_pdf(stem: str, manifest_filename: Optional[str] = None,
+                     tenant_id: Optional[str] = None) -> Optional[Path]:
     """在 pending_dir / input_dir 下找原 PDF。
 
     优先级：
-    1) pending/{stem}.pdf
-    2) input/{stem}.pdf
+    1) pending/{stem}.pdf（命名租户优先搜 pending/{tenant}/）
+    2) input/{stem}.pdf（命名租户优先搜 input/{tenant}/）
     3) pending/*.{pdf} 中 stem 前缀匹配的（防 stem 截断）
 
     Returns:
         找到的 PDF 路径；都找不到返回 None
     """
     candidates: List[Path] = []
+    # 命名租户优先搜自己的租户目录，再回落全局目录（default 与根目录相同，自动去重）
+    pending_roots = [settings.pending_dir_of(tenant_id), settings.pending_dir]
+    input_roots = [settings.input_dir_of(tenant_id), settings.input_dir]
     # 1) 直匹配
-    for d in (settings.pending_dir, settings.input_dir):
+    for d in (*pending_roots, *input_roots):
         if not d.exists():
             continue
         for ext in (".pdf", ".PDF"):
@@ -703,7 +791,7 @@ def _find_source_pdf(stem: str, manifest_filename: Optional[str] = None) -> Opti
             if p.is_file():
                 return p
     # 2) 前缀匹配（防 stem 被截断 / 含特殊字符）
-    for d in (settings.pending_dir, settings.input_dir):
+    for d in (*pending_roots, *input_roots):
         if not d.exists():
             continue
         for p in d.iterdir():
@@ -717,12 +805,14 @@ def _find_source_pdf(stem: str, manifest_filename: Optional[str] = None) -> Opti
 def _try_pdf_fallback_for_trivial_parse(
     parse_path: Path,
     stem: str,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """v2 解析严重缺失时，自动用 pdf_fallback 重解析。
 
     Args:
         parse_path: 当前解析产物目录（如 data/parsed/{stem}/）
         stem: 文档 stem（用于在 pending/ 或 input/ 找原 PDF）
+        tenant_id: 租户隔离（在 pending/{tenant}/ 中找原 PDF）
 
     Returns:
         (ok, reason)
@@ -732,7 +822,7 @@ def _try_pdf_fallback_for_trivial_parse(
     from app.services import pdf_fallback
     from app.services.mineru_client import MinerUClient
 
-    src_pdf = _find_source_pdf(stem)
+    src_pdf = _find_source_pdf(stem, tenant_id=tenant_id)
     if src_pdf is None:
         return False, "未找到原 PDF，无法触发 fallback 重解析（请手动重跑解析）"
 
@@ -2682,15 +2772,23 @@ def _resolve_chunks_dir_from_manifest(row: ManifestRow) -> Optional[Path]:
     if not text:
         return None
     text = text.replace("\\", "/").rstrip("/")
+    # ★ 2026-09 租户隔离：非 default 租户的产物在 chunks/{tenant}/、output/{tenant}/ 下
+    tenant = getattr(row, "tenant_id", None) or "default"
+    candidates: List[Path] = []
     # 去掉 "output/" 前缀（兼容 dify_ingest 写入的形式）
     if text.startswith("output/"):
         stem = text[len("output/"):].strip()
-        candidate = settings.output_dir / stem
+        candidates.append(settings.output_dir / stem)
+        if tenant != "default":
+            candidates.append(settings.output_dir_of(tenant) / stem)
     else:
         # 旧形式：纯 stem，文件在 data/chunks/{stem}/
-        candidate = settings.chunks_dir / text
-    if _is_chunks_dir_valid(candidate):
-        return candidate
+        candidates.append(settings.chunks_dir / text)
+        if tenant != "default":
+            candidates.append(settings.chunks_dir_of(tenant) / text)
+    for candidate in candidates:
+        if _is_chunks_dir_valid(candidate):
+            return candidate
     return None
 
 
@@ -2900,8 +2998,10 @@ def chunk_parsed(
         # 也可能是 fallback 链路写入的带后缀 stem（"[vlm-image-fallback 修复]"）。
         # 用 _resolve_parsed_dir 做多级回退查找（精确 → 去后缀 → 去编号 → 前缀匹配）。
         parse_text = str(row.parse or "").strip()
+        # ★ 2026-09 租户隔离：按行所属租户派生 parsed/chunks 根目录（default → 根目录）
+        tenant_id = getattr(row, "tenant_id", None) or "default"
         # 若是绝对路径，截出根再回退
-        parse_root = settings.parsed_dir
+        parse_root = settings.parsed_dir_of(tenant_id)
         parse_stem_input = parse_text
         if parse_text:
             pp = Path(parse_text)
@@ -2968,7 +3068,7 @@ def chunk_parsed(
         parse_path = resolved_dir
 
         # 4) 切分目标目录
-        chunks_dir = settings.chunks_dir / parse_path.name
+        chunks_dir = settings.chunks_dir_of(tenant_id) / parse_path.name
 
         # 5) dry_run
         if dry_run:
@@ -3003,7 +3103,7 @@ def chunk_parsed(
                 # 优先级：v2 严重缺失 → 找原 PDF → pdf_fallback.maybe_fallback_after_mineru_failure
                 # 重新检测产物；通过则继续切分，否则报错。
                 fb_ok, fb_reason = _try_pdf_fallback_for_trivial_parse(
-                    parse_path, parse_path.name
+                    parse_path, parse_path.name, tenant_id=tenant_id
                 )
                 if fb_ok:
                     log.info(

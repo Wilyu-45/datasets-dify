@@ -18,9 +18,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.auth import require_tenant
 from app.config import settings, REPO_ROOT
 from app.models.schemas import (
     DifyConfigInfo,
@@ -31,11 +32,29 @@ from app.models.schemas import (
     DifyConfigUpdate,
 )
 from app.services import dify_ingest
+from app.services import tenant_store
 from app.services.dify_uploader import DifyClient, DifyError
 from app.services import doc_metadata
+from app.services.tenant_store import DEFAULT_TENANT_ID, Tenant
 
 router = APIRouter(tags=["dify"])
 log = logging.getLogger("ragsystem.api.dify")
+
+
+def _tenant_dataset_id(tenant: Tenant, requested: Optional[str] = None) -> Optional[str]:
+    """解析本次请求的目标 dataset。
+
+    default 租户：尊重显式传入的 dataset_id（旧行为），缺省用全局配置；
+    命名租户：强制使用其绑定的 dataset（防止凭 dataset_id 越权浏览他人知识库）。
+    """
+    if tenant.tenant_id == DEFAULT_TENANT_ID:
+        return requested or None
+    tid = tenant.tenant_id
+    tenant_rec = tenant_store.get_tenant(tid)
+    ds = (tenant_rec.dify_dataset_id or "").strip() if tenant_rec else ""
+    if not ds:
+        ds = (settings.dify_dataset_id or "").strip()
+    return ds or None
 
 
 # ============ §3.5 人工校验相关 schema ============
@@ -261,23 +280,27 @@ def get_dify_documents(
     limit: int = 50,
     keyword: Optional[str] = None,
     dataset_id: Optional[str] = None,
+    tenant: Tenant = Depends(require_tenant),
 ) -> List[DifyDocumentItem]:
     """列出 Dify 数据集中的所有文档（人工校验左栏 / 元数据页）。
 
     通过 ``GET /datasets/{id}/documents`` 拉取，兼容 Dify 自托管和云服务。
     ★ 2026-08-31 dataset_id 可选：缺省用当前配置的目标知识库，
     元数据页切换知识库时传入对应 ID。
+    ★ 2026-09 租户隔离：命名租户强制路由到自己的 dataset。
     """
+    effective_ds = _tenant_dataset_id(tenant, dataset_id)
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置（backend/.env 的 RAG_DIFY_API_KEY）")
-    if not (dataset_id or settings.dify_dataset_id):
+    if not (effective_ds or settings.dify_dataset_id):
         raise HTTPException(status_code=400, detail="dify_dataset_id 未配置（backend/.env 的 RAG_DIFY_DATASET_ID）")
     log.info(
         "api /dify/documents called",
-        extra={"step": "api", "status": "list_documents", "page": page, "limit": limit},
+        extra={"step": "api", "status": "list_documents", "page": page, "limit": limit,
+               "tenant_id": tenant.tenant_id},
     )
     try:
-        client = DifyClient(dataset_id=dataset_id or None)
+        client = DifyClient(dataset_id=effective_ds or None)
         payload = client.list_documents(page=page, limit=limit, keyword=keyword)
         items = payload.get("data") or []
         out: List[DifyDocumentItem] = []
@@ -308,19 +331,22 @@ def get_dify_document_segments(
     doc_id: str,
     keyword: Optional[str] = None,
     status: Optional[str] = None,
+    tenant: Tenant = Depends(require_tenant),
 ) -> List[DifySegmentItem]:
     """列出某 Dify 文档的所有分段（人工校验中栏）。
 
     透传 Dify 服务端的 keyword/status 过滤。
+    ★ 2026-09 租户隔离：命名租户强制路由到自己的 dataset。
     """
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置（backend/.env 的 RAG_DIFY_API_KEY）")
     log.info(
         "api /dify/documents/{doc_id}/segments called",
-        extra={"step": "api", "status": "list_segments", "document_id": doc_id},
+        extra={"step": "api", "status": "list_segments", "document_id": doc_id,
+               "tenant_id": tenant.tenant_id},
     )
     try:
-        client = DifyClient()
+        client = DifyClient(dataset_id=_tenant_dataset_id(tenant))
         items = client.list_segments(doc_id, keyword=keyword, status=status)
         out: List[DifySegmentItem] = []
         for i, seg in enumerate(items):
@@ -351,11 +377,13 @@ def post_update_dify_segment(
     doc_id: str,
     seg_id: str,
     body: DifySegmentUpdateRequest,
+    tenant: Tenant = Depends(require_tenant),
 ) -> Dict[str, Any]:
     """更新单个 Dify 分段（人工校验保存按钮）。
 
     转发到 ``DifyClient.update_segment()``，保留 update_segment 关于
     attachment_ids 的所有行为（含 2026-07-31 修复）。
+    ★ 2026-09 租户隔离：命名租户强制路由到自己的 dataset。
     """
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置（backend/.env 的 RAG_DIFY_API_KEY）")
@@ -373,10 +401,11 @@ def post_update_dify_segment(
             "segment_id": seg_id,
             "has_content": body.content is not None,
             "has_enabled": body.enabled is not None,
+            "tenant_id": tenant.tenant_id,
         },
     )
     try:
-        client = DifyClient()
+        client = DifyClient(dataset_id=_tenant_dataset_id(tenant))
         return client.update_segment(
             document_id=doc_id,
             segment_id=seg_id,

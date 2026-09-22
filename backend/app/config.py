@@ -20,7 +20,7 @@ from __future__ import annotations
 import platform
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import (
@@ -316,6 +316,12 @@ class Settings(BaseSettings):
     # 可选 CDN / 自定义域名；空则用 endpoint+bucket 拼
     oss_public_domain: str = ""
 
+    # ---- ★ 2026-09：租户隔离 ----
+    # 管理员 API Key（保护 /api/tenants 管理接口）。为空时管理接口整体 403。
+    # 租户调业务接口用各自的 rt-xxx key（tenants 表签发，X-API-Key 头），
+    # 与本配置无关。未带 X-API-Key 的匿名请求视为 default 租户（存量行为不变）。
+    admin_api_key: str = ""
+
     # ---- ★ 2026-08-04：Dify /files/upload 跳过开关 ----
     # 默认 False：保留旧行为（调用 /files/upload 拿 file_id + attachment_ids）
     # 设为 True：完全跳过 /files/upload，content 里**只**写 OSS 永久 URL，**不带 attachment_ids**
@@ -462,6 +468,33 @@ class Settings(BaseSettings):
     @property
     def logs_dir(self) -> Path:
         return (self.data_root / self.logs_dirname).resolve()
+
+    # ---- ★ 2026-09 租户隔离：按租户派生存储路径 ----
+    # default 租户直接用根目录（与存量数据/既有测试完全兼容）；
+    # 其他租户在对应存储目录下开 {tenant_id}/ 子目录。
+    @staticmethod
+    def tenant_dir(base: Path, tenant_id: Optional[str]) -> Path:
+        if not tenant_id or tenant_id == "default":
+            return base
+        return base / tenant_id
+
+    def pending_dir_of(self, tenant_id: Optional[str]) -> Path:
+        return self.tenant_dir(self.pending_dir, tenant_id)
+
+    def input_dir_of(self, tenant_id: Optional[str]) -> Path:
+        return self.tenant_dir(self.input_dir, tenant_id)
+
+    def parsed_dir_of(self, tenant_id: Optional[str]) -> Path:
+        return self.tenant_dir(self.parsed_dir, tenant_id)
+
+    def chunks_dir_of(self, tenant_id: Optional[str]) -> Path:
+        return self.tenant_dir(self.chunks_dir, tenant_id)
+
+    def output_dir_of(self, tenant_id: Optional[str]) -> Path:
+        return self.tenant_dir(self.output_dir, tenant_id)
+
+    def error_dir_of(self, tenant_id: Optional[str]) -> Path:
+        return self.tenant_dir(self.error_dir, tenant_id)
 
     @property
     def doc_metadata_excel_path(self) -> Path:
