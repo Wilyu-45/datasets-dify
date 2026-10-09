@@ -191,7 +191,12 @@ def verify_api_key(api_key: Optional[str]) -> Optional[Tenant]:
 
 
 def bootstrap_default_tenant() -> None:
-    """启动时确保 default 租户存在，绑定全局 dataset（幂等）。"""
+    """启动时确保 default 租户存在（幂等）。
+
+    ★ dify_dataset_id 不落库：default 租户动态映射全局 settings.dify_dataset_id
+    （含配置中心 apply_config 的运行时覆盖）。若在启动时把 .env 值固化进行里，
+    入库侧优先读租户行会导致用户所选知识库永远被忽略。
+    """
     if get_tenant(DEFAULT_TENANT_ID) is not None:
         return
     from app.services.manifest_store import now_iso as _now
@@ -206,8 +211,8 @@ def bootstrap_default_tenant() -> None:
                 else "INSERT IGNORE INTO tenants (tenant_id, name, dify_dataset_id,"
                 " api_key_hash, status, create_time, update_time)"
                 " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (DEFAULT_TENANT_ID, "默认租户（全局）", settings.dify_dataset_id,
+                (DEFAULT_TENANT_ID, "默认租户（全局）", None,
                  None, "active", _now(), _now()),
             )
             conn.commit()
-    log.info("default 租户已就绪（dataset=%s）", settings.dify_dataset_id)
+    log.info("default 租户已就绪（dataset 动态跟随全局配置）")

@@ -819,6 +819,11 @@ def upload_all_docs(
     doc_meta_caches: Dict[str, Dict[str, Any]] = {}  # tenant_id → doc_meta_cache
 
     def _tenant_dataset_id(tid: str) -> str:
+        # default 租户动态跟随 settings.dify_dataset_id（配置方案经 apply_config
+        # 临时覆盖的值也在这里生效），不读租户行——bootstrap 会在行里固化启动时
+        # 的 .env dataset_id，若优先读行会导致前端所选知识库永远被忽略。
+        if tid == tenant_store.DEFAULT_TENANT_ID:
+            return settings.dify_dataset_id
         tenant = tenant_store.get_tenant(tid)
         ds = (tenant.dify_dataset_id or "").strip() if tenant else ""
         return ds or settings.dify_dataset_id

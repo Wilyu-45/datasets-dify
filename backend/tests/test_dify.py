@@ -1905,6 +1905,49 @@ def test_list_chunk_dirs_dedup_when_in_both(fresh_settings):
     assert matches[0].parent == s.chunks_dir, f"应优先 chunks/，实际={matches[0].parent}"
 
 
+def test_upload_all_docs_default_tenant_follows_settings_dataset(fresh_settings, monkeypatch):
+    """default 租户的 dataset 动态跟随 settings.dify_dataset_id（配置方案运行时
+    覆盖也写在这里），不读 tenants 表里 bootstrap 固化的 dataset_id。
+
+    回归背景（2026-10）：docker 部署首次启动时 bootstrap_default_tenant 把 .env 的
+    dataset_id 写进了 default 租户行，入库侧优先读行导致前端所选知识库永远被忽略，
+    文件总是入到启动时 .env 的那个知识库。
+    """
+    from app.services import dify_ingest, tenant_store
+    from app.services.tenant_store import Tenant
+
+    s = fresh_settings
+    s.dify_dataset_id = "selected-dataset-id"
+    # 模拟生产环境：default 租户行存在，且固化着启动时 .env 的 dataset_id
+    monkeypatch.setattr(
+        tenant_store,
+        "get_tenant",
+        lambda tid: (
+            Tenant({"tenant_id": tid, "dify_dataset_id": "env-baked-dataset"})
+            if tid == "default"
+            else None
+        ),
+    )
+
+    created_with: list = []
+
+    class RecordingClient(FakeDifyClient):
+        def __init__(self, dataset_id: Optional[str] = None, **kwargs: Any) -> None:
+            super().__init__()
+            self.dataset_id = dataset_id
+            created_with.append(dataset_id)
+
+    monkeypatch.setattr(dify_ingest, "DifyClient", RecordingClient)
+
+    _make_chunks_dir(s.chunks_dir, "docA", [{"content": "a"}])
+    report = dify_ingest.upload_all_docs(dry_run=False, force=True)
+    assert report.uploaded == 1
+    assert created_with and created_with[0] == "selected-dataset-id", (
+        f"应路由到 settings.dify_dataset_id（用户所选），实际={created_with}"
+    )
+    assert report.dataset_id == "selected-dataset-id"
+
+
 # ============ 7. 回归保护：log.info(extra={...}) 不能用 LogRecord 内置字段名 ============
 
 
