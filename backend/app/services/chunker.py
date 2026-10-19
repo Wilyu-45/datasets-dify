@@ -771,19 +771,20 @@ def _find_source_pdf(stem: str, manifest_filename: Optional[str] = None,
     """在 pending_dir / input_dir 下找原 PDF。
 
     优先级：
-    1) pending/{stem}.pdf（命名租户优先搜 pending/{tenant}/）
-    2) input/{stem}.pdf（命名租户优先搜 input/{tenant}/）
+    1) pending/{stem}.pdf（命名租户只搜 pending/{tenant}/）
+    2) input/{stem}.pdf（命名租户只搜 input/{tenant}/）
     3) pending/*.{pdf} 中 stem 前缀匹配的（防 stem 截断）
+
+    ★ 2026-09 租户隔离：只搜索该租户自己的目录，不回退全局目录，
+    避免误用 default/其他租户的同名 PDF。
 
     Returns:
         找到的 PDF 路径；都找不到返回 None
     """
     candidates: List[Path] = []
-    # 命名租户优先搜自己的租户目录，再回落全局目录（default 与根目录相同，自动去重）
-    pending_roots = [settings.pending_dir_of(tenant_id), settings.pending_dir]
-    input_roots = [settings.input_dir_of(tenant_id), settings.input_dir]
+    roots = (settings.pending_dir_of(tenant_id), settings.input_dir_of(tenant_id))
     # 1) 直匹配
-    for d in (*pending_roots, *input_roots):
+    for d in roots:
         if not d.exists():
             continue
         for ext in (".pdf", ".PDF"):
@@ -791,7 +792,7 @@ def _find_source_pdf(stem: str, manifest_filename: Optional[str] = None,
             if p.is_file():
                 return p
     # 2) 前缀匹配（防 stem 被截断 / 含特殊字符）
-    for d in (*pending_roots, *input_roots):
+    for d in roots:
         if not d.exists():
             continue
         for p in d.iterdir():
@@ -2772,24 +2773,17 @@ def _resolve_chunks_dir_from_manifest(row: ManifestRow) -> Optional[Path]:
     if not text:
         return None
     text = text.replace("\\", "/").rstrip("/")
-    # ★ 2026-09 租户隔离：非 default 租户的产物在 chunks/{tenant}/、output/{tenant}/ 下
+    # ★ 2026-09 租户隔离：非 default 租户的产物在 chunks/{tenant}/、output/{tenant}/ 下，
+    # 只查自己的目录，避免同名文件误命中 default 租户的产物。
     tenant = getattr(row, "tenant_id", None) or "default"
-    candidates: List[Path] = []
     # 去掉 "output/" 前缀（兼容 dify_ingest 写入的形式）
     if text.startswith("output/"):
         stem = text[len("output/"):].strip()
-        candidates.append(settings.output_dir / stem)
-        if tenant != "default":
-            candidates.append(settings.output_dir_of(tenant) / stem)
+        candidate = settings.output_dir_of(tenant) / stem
     else:
         # 旧形式：纯 stem，文件在 data/chunks/{stem}/
-        candidates.append(settings.chunks_dir / text)
-        if tenant != "default":
-            candidates.append(settings.chunks_dir_of(tenant) / text)
-    for candidate in candidates:
-        if _is_chunks_dir_valid(candidate):
-            return candidate
-    return None
+        candidate = settings.chunks_dir_of(tenant) / text
+    return candidate if _is_chunks_dir_valid(candidate) else None
 
 
 def _is_chunks_dir_valid(chunks_dir: Path) -> bool:
@@ -2916,6 +2910,7 @@ def chunk_parsed(
     force: bool = False,
     target_stems: Optional[List[str]] = None,
     strategy: str = "",
+    tenant_id: Optional[str] = None,
 ) -> ChunkReport:
     """§3.3 主入口：遍历 manifest，对解析成功（parse 列非空）的文档执行切分。
 
@@ -2928,6 +2923,7 @@ def chunk_parsed(
     ★ 2026-08-24 多策略切分：strategy 指定切分策略
       （structure/recursive/fixed/sentence/semantic/parent_child/late_chunking/llm），
       空 → 使用 settings.chunk_strategy。
+    ★ 2026-09 tenant_id：仅处理该租户的行（None = 全部租户，管理视角）。
     """
     started = time.perf_counter()
     log.info(
@@ -2937,7 +2933,7 @@ def chunk_parsed(
     )
     settings.ensure_dirs()
     manifest_store.bootstrap(settings.data_root)
-    manifest: Dict[str, ManifestRow] = manifest_store.load()
+    rows: List[ManifestRow] = manifest_store.load_all(tenant_id=tenant_id)
 
     # ★ target_stems 白名单：转 set 提高查找效率
     target_stem_set: Optional[set] = (
@@ -2947,7 +2943,8 @@ def chunk_parsed(
     actions: List[ChunkActionRecord] = []
     chunked_count = skipped_count = failed_count = 0
 
-    for fname, row in manifest.items():
+    for row in rows:
+        fname = row.filename
         t0 = time.perf_counter()
 
         # ★ 0) target_stems 白名单过滤：白名单外的行直接跳过

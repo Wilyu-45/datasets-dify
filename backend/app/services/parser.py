@@ -139,48 +139,43 @@ def _resolve_pending_path(
     3) ★ stem 模糊匹配：把 manifest 中的 stem 与 pending/ 中所有文件做 stem 比较。
        场景：用户把 .doc 转成 .docx 后放回 pending/，但 manifest filename 还是 .doc。
 
-    ★ 2026-09 租户隔离：tenant_id 非 default 时优先搜 pending/{tenant}/，
-    找不到再回退 pending/ 根目录（兼容旧文件）。
+    ★ 2026-09 租户隔离：只搜索 pending/{tenant}/（default 即 pending/ 根目录），
+    不再回退全局目录——否则命名租户会误取到 default/其他租户的同名文件。
 
     返回值：用 Path（真实找到的文件）。调用方负责在 stem 匹配时同步 manifest.filename。
     """
-    roots: List[Path] = []
-    tenant_root = settings.pending_dir_of(tenant_id)
-    if tenant_root != settings.pending_dir and tenant_root.exists():
-        roots.append(tenant_root)
-    roots.append(settings.pending_dir)
+    root = settings.pending_dir_of(tenant_id)
+    if not root.exists():
+        return None
 
-    for root in roots:
-        exact = root / name_in_manifest
-        if exact.is_file():
-            return exact
-        for ext in settings.allowed_extensions:
-            candidate = root / f"{name_in_manifest}{ext}"
-            if candidate.is_file():
-                return candidate
+    exact = root / name_in_manifest
+    if exact.is_file():
+        return exact
+    for ext in settings.allowed_extensions:
+        candidate = root / f"{name_in_manifest}{ext}"
+        if candidate.is_file():
+            return candidate
 
     # ★ stem 模糊匹配：去掉 .doc 之类后缀，在 pending/ 中找同 stem 的任意文件
     # 防止类似 "name.doc" vs "name.docx" 在用户手动转换扩展名后找不到
     name_stem = Path(name_in_manifest).stem
-    for root in roots:
-        candidates: List[Path] = []
-        for f in root.iterdir():
-            if not f.is_file():
-                continue
-            if f.stem == name_stem:
-                candidates.append(f)
-        if len(candidates) == 1:
-            return candidates[0]
-        if len(candidates) > 1:
-            # 多个候选（同一 stem 但不同扩展名）：按 allowed_extensions 优先级取第一个
-            # 优先级排序后返回
-            def _ext_rank(p: Path) -> int:
-                try:
-                    return settings.allowed_extensions.index(p.suffix.lower())
-                except ValueError:
-                    return len(settings.allowed_extensions) + 1
-            candidates.sort(key=_ext_rank)
-            return candidates[0]
+    candidates: List[Path] = []
+    for f in root.iterdir():
+        if not f.is_file():
+            continue
+        if f.stem == name_stem:
+            candidates.append(f)
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        # 多个候选（同一 stem 但不同扩展名）：按 allowed_extensions 优先级取第一个
+        def _ext_rank(p: Path) -> int:
+            try:
+                return settings.allowed_extensions.index(p.suffix.lower())
+            except ValueError:
+                return len(settings.allowed_extensions) + 1
+        candidates.sort(key=_ext_rank)
+        return candidates[0]
     return None
 
 
@@ -500,7 +495,7 @@ def _try_pymupdf_fallback(
     except Exception as fb_exc:  # noqa: BLE001
         log.warning(
             "PyMuPDF fallback 抛出异常（已忽略）: %s — %s",
-            src.name, fb_exc,
+            src.name, str(fb_exc),
         )
         return False, None
     if fb_result is None:
@@ -546,7 +541,7 @@ def _move_to_error(src: Path, err: str, tenant_id: Optional[str] = None) -> Path
         # 兜底：先复制内容到目标，再 unlink 源（unlink 比 move 更不容易锁失败）
         log.warning(
             "shutil.move 遇到文件锁（%s），降级为 copy+unlink: %s",
-            perm_err, src.name,
+            str(perm_err), src.name,
         )
         shutil.copyfile(str(src), str(dst))
         # 删除源（允许多次重试，处理短暂锁）
@@ -580,6 +575,7 @@ def parse_pending(
     client: Optional[MinerUClient] = None,
     force: bool = False,
     target_stems: Optional[List[str]] = None,
+    tenant_id: Optional[str] = None,
 ) -> ParseReport:
     """§3.2 主入口。
 
@@ -596,6 +592,7 @@ def parse_pending(
         - target_stems=[stem1, stem2, ...]：只处理这些 stem 对应的行，其他行被跳过
           用于「单文件上传 + 一键入库」场景——用户上传单文件后，流水线只处理这一个文件，
           不应该处理 manifest 里其他待解析/已解析的文档（那些需要走完整 Excel 流程）。
+    ★ 2026-09 tenant_id：仅处理该租户的行（None = 全部租户，管理视角）。
     """
     started = time.perf_counter()
     log.info(
@@ -609,7 +606,7 @@ def parse_pending(
 
     client = client or MinerUClient()
 
-    manifest: Dict[str, ManifestRow] = manifest_store.load()
+    rows: List[ManifestRow] = manifest_store.load_all(tenant_id=tenant_id)
 
     # ★ target_stems 白名单：转 set 提高查找效率
     target_stem_set: Optional[set] = (
@@ -619,7 +616,8 @@ def parse_pending(
     actions: List[ParseActionRecord] = []
     parsed_count = skipped_count = failed_count = 0
 
-    for fname, row in manifest.items():
+    for row in rows:
+        fname = row.filename
         t0 = time.perf_counter()
 
         # ★ 0) target_stems 白名单过滤：白名单外的行直接跳过
@@ -658,7 +656,6 @@ def parse_pending(
                     shutil.rmtree(str(old_parse_dir), ignore_errors=True)
                 # 清空后 manifest 的 parse 列不再有效，重置为 None（避免下次再走"已解析"分支时被旧值误导）
                 row = row.model_copy(update={"parse": None})
-                manifest[fname] = row
 
         # 2) 在 pending/ 找原文件
         src = _resolve_pending_path(fname, tenant_id)
@@ -686,7 +683,6 @@ def parse_pending(
         #      场景：用户手动把 .doc 转为 .docx 放回 pending/，manifest 还记录着 .doc
         if src.name != fname:
             _sync_manifest_filename(fname, src.name, row)
-            # 不动 manifest 字典（迭代中），仅本次循环用 effective_row 替换
             row = row.model_copy(update={"filename": src.name})
             fname = src.name
 

@@ -68,6 +68,8 @@ class PipelineRequest:
     dify: PipelineStep = None  # type: ignore
     stop_on_error: bool = False
     target_stems: Optional[list] = None  # type: ignore
+    # ★ 2026-09 租户隔离：只处理该租户的文档（None = 全部租户，管理视角）
+    tenant_id: Optional[str] = None  # type: ignore
 
     def __post_init__(self) -> None:
         # 默认全开 + dry_run=False；但 scan 步骤默认关闭——
@@ -187,7 +189,7 @@ def run_pipeline(req: PipelineRequest) -> PipelineReport:
         report.parse, err = _run_step(
             "parse", parser.parse_pending,
             dry_run=req.parse.dry_run, force=req.parse.force,
-            target_stems=req.target_stems,
+            target_stems=req.target_stems, tenant_id=req.tenant_id,
         )
         if err:
             errors.append(("parse", err))
@@ -207,6 +209,7 @@ def run_pipeline(req: PipelineRequest) -> PipelineReport:
             dry_run=req.chunk.dry_run, force=req.chunk.force,
             target_stems=req.target_stems,
             strategy=req.chunk.strategy or "",
+            tenant_id=req.tenant_id,
         )
         if err:
             errors.append(("chunk", err))
@@ -224,7 +227,7 @@ def run_pipeline(req: PipelineRequest) -> PipelineReport:
         report.dify, err = _run_step(
             "dify", dify_ingest.upload_all_docs,
             dry_run=req.dify.dry_run, force=req.dify.force,
-            target_stems=req.target_stems,
+            target_stems=req.target_stems, tenant_id=req.tenant_id,
         )
         if err:
             errors.append(("dify", err))

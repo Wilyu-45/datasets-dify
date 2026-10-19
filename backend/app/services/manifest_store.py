@@ -152,23 +152,38 @@ def _fill_timestamps(data: Dict) -> None:
         data["update_time"] = now
 
 
-def load(path: Optional[Path] = None, tenant_id: Optional[str] = None) -> Dict[str, ManifestRow]:
-    """读取 manifest，返回 {filename: ManifestRow}。
+def load_all(
+    path: Optional[Path] = None, tenant_id: Optional[str] = None
+) -> List[ManifestRow]:
+    """读取 manifest 的全部行（列表形式，不做 filename 去重）。
 
-    tenant_id=None（全局/管理视角）：读全部租户，同 filename 先到先得；
-    指定 tenant_id：仅该租户的行。
+    ★ 2026-10 修复（多租户流水线漏处理）：不同租户可以有同名文件（主键是
+    (tenant_id, filename)），而 load() 返回 {filename: row} 会让后读到的租户
+    覆盖先读到的租户，导致 parse/chunk/dify 流水线漏处理文档。
+    流水线遍历必须用本函数；按文件名查单行仍用 load() / fetch()。
     """
     sql = "SELECT * FROM manifest"
     params = None
     if tenant_id is not None:
         sql += " WHERE tenant_id = %s"
         params = (tenant_id,)
+    # 稳定排序：同 tenant 内按 filename，跨租户按 tenant_id
+    sql += " ORDER BY tenant_id, filename"
     with db.get_conn() as conn:
         cur = conn.execute(sql, params)
         records = cur.fetchall()
+    return [ManifestRow(**rec) for rec in records]
+
+
+def load(path: Optional[Path] = None, tenant_id: Optional[str] = None) -> Dict[str, ManifestRow]:
+    """读取 manifest，返回 {filename: ManifestRow}。
+
+    tenant_id=None（全局/管理视角）：读全部租户，同名文件只保留排序后的最后一行；
+    指定 tenant_id：仅该租户的行。
+    ★ 流水线遍历请改用 load_all()，避免多租户同名文件互相覆盖导致漏处理。
+    """
     result: Dict[str, ManifestRow] = {}
-    for rec in records:
-        row = ManifestRow(**rec)
+    for row in load_all(path, tenant_id=tenant_id):
         result[row.filename] = row
     return result
 

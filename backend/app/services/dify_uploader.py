@@ -764,8 +764,8 @@ class DifyClient:
                     "step": "dify",
                     "status": "segments_vanished",
                     "document_id": document_id,
-                    "created": len(created),
-                    "vanished": len(vanished),
+                    "created_count": len(created),
+                    "vanished_count": len(vanished),
                     "previews": [s.content[:60] for s in vanished[:10]],
                 },
             )

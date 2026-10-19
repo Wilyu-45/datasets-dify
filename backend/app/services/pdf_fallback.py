@@ -180,14 +180,16 @@ def vlm_image_fallback(
     try:
         render_pdf_to_image_pdf(pdf_path, image_pdf_path, dpi=_IMAGE_RENDER_DPI)
     except Exception as e:  # noqa: BLE001
-        log.error("PyMuPDF 渲染失败: %s", e)
+        # str(e)：不要把异常对象交给 logging（LogRecord 会持有 traceback，
+        # 进而延长 PyMuPDF 失败打开时泄漏的文件句柄生命周期 → Windows 无法删除源文件）
+        log.error("PyMuPDF 渲染失败: %s", str(e))
         return None
 
     # 2) 用 MinerU vlm-engine 解析图片 PDF
     try:
         result = client.parse_file(image_pdf_path, parsed_dir)
     except Exception as e:  # noqa: BLE001
-        log.error("MinerU vlm-engine 解析图片 PDF 失败: %s", e)
+        log.error("MinerU vlm-engine 解析图片 PDF 失败: %s", str(e))
         return None
     finally:
         # 清理临时图片 PDF
@@ -471,7 +473,7 @@ def text_to_mineru_fallback(
     try:
         extracted = extract_with_pymupdf(pdf_path)
     except Exception as e:  # noqa: BLE001
-        log.error("PyMuPDF 文本提取失败: %s", e)
+        log.error("PyMuPDF 文本提取失败: %s", str(e))
         return None
 
     if extracted["total_chars"] < _PYMU_FALLBACK_MIN_CHARS:
@@ -489,14 +491,14 @@ def text_to_mineru_fallback(
     try:
         write_text_to_pdf(extracted["pages"], text_pdf_path)
     except Exception as e:  # noqa: BLE001
-        log.error("write_text_to_pdf 失败: %s", e)
+        log.error("write_text_to_pdf 失败: %s", str(e))
         return None
 
     # 3) MinerU 解析文本 PDF
     try:
         result = client.parse_file(text_pdf_path, parsed_dir)
     except Exception as e:  # noqa: BLE001
-        log.error("MinerU 解析文本 PDF 失败: %s", e)
+        log.error("MinerU 解析文本 PDF 失败: %s", str(e))
         return None
     finally:
         # 清理临时文本 PDF
@@ -790,7 +792,7 @@ def maybe_fallback_after_mineru_failure(
     try:
         extracted = extract_with_pymupdf(pdf_path)
     except Exception as e:  # noqa: BLE001
-        log.error("PyMuPDF 纯文本 fallback 失败: %s", e)
+        log.error("PyMuPDF 纯文本 fallback 失败: %s", str(e))
         return None
 
     if extracted["total_chars"] < _PYMU_FALLBACK_MIN_CHARS:

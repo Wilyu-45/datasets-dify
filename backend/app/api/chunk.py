@@ -15,9 +15,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.auth import require_default_tenant
 from app.config import settings, REPO_ROOT
 from app.models.schemas import (
     ChunkFile,
@@ -30,7 +31,7 @@ from app.models.schemas import (
 )
 from app.services import chunker, chunk_strategies
 
-router = APIRouter(tags=["chunk"])
+router = APIRouter(tags=["chunk"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.chunk")
 
 

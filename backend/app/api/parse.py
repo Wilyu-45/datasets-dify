@@ -11,13 +11,14 @@ import logging
 from pathlib import Path
 from typing import Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.auth import require_default_tenant
 from app.config import settings
 from app.models.schemas import ParseReport, ParseRequest
 from app.services import parser
 
-router = APIRouter(tags=["parse"])
+router = APIRouter(tags=["parse"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.parse")
 
 

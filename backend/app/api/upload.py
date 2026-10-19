@@ -126,13 +126,14 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _build_pipeline_request(target_stem: str) -> Any:
+def _build_pipeline_request(target_stem: str, tenant_id: Optional[str] = None) -> Any:
     """构造一个针对单文件的 PipelineRequest（仅跑 parse + chunk + dify）。
 
     ★ 2026-08 单文件上传 + 一键入库：
         - scan 阶段：enabled=False（不执行扫描流程）
         - parse/chunk/dify：enabled=True，但通过 target_stems 白名单只处理这一个文件
           —— 这样 manifest 里其他待处理的文档不会被处理（那些要走完整清单流程）
+    ★ 2026-09 租户隔离：tenant_id 限定只处理该租户的行/目录。
     """
     from app.services.pipeline import PipelineRequest, PipelineStep
 
@@ -143,6 +144,7 @@ def _build_pipeline_request(target_stem: str) -> Any:
         dify=PipelineStep(enabled=True, dry_run=False, force=False),
         stop_on_error=False,
         target_stems=[target_stem],  # ★ 只处理这个 stem 对应的文件
+        tenant_id=tenant_id,
     )
 
 
@@ -170,6 +172,7 @@ def _run_single_file_pipeline(
     target_stem: str,
     profile: Optional[Dict[str, Any]] = None,
     source: str = config_run_log.SOURCE_UPLOAD_SINGLE,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """对单文件运行 parse → chunk → dify 流水线（只处理这一个文件）。
 
@@ -183,7 +186,7 @@ def _run_single_file_pipeline(
     """
     from app.services.pipeline import run_pipeline
 
-    req = _build_pipeline_request(target_stem)
+    req = _build_pipeline_request(target_stem, tenant_id=tenant_id)
     t0 = time.perf_counter()
     with config_store.apply_config(profile["config"] if profile else None):
         try:
@@ -211,7 +214,9 @@ def _run_single_file_pipeline(
             raise
 
 
-def _build_batch_pipeline_request(target_stems: List[str]) -> Any:
+def _build_batch_pipeline_request(
+    target_stems: List[str], tenant_id: Optional[str] = None
+) -> Any:
     """构造一个针对多个 stem 的 PipelineRequest（只跑 parse + chunk + dify）。"""
     from app.services.pipeline import PipelineRequest, PipelineStep
 
@@ -222,6 +227,7 @@ def _build_batch_pipeline_request(target_stems: List[str]) -> Any:
         dify=PipelineStep(enabled=True, dry_run=False, force=False),
         stop_on_error=False,
         target_stems=target_stems,  # ★ 一次只处理这批 stem
+        tenant_id=tenant_id,
     )
 
 
@@ -229,6 +235,7 @@ def _run_batch_pipeline(
     target_stems: List[str],
     profile: Optional[Dict[str, Any]] = None,
     source: str = config_run_log.SOURCE_UPLOAD_BATCH,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """对一批文件运行 parse → chunk → dify 流水线（只处理这批文件）。
 
@@ -240,7 +247,7 @@ def _run_batch_pipeline(
     """
     from app.services.pipeline import run_pipeline
 
-    req = _build_batch_pipeline_request(target_stems)
+    req = _build_batch_pipeline_request(target_stems, tenant_id=tenant_id)
     t0 = time.perf_counter()
     with config_store.apply_config(profile["config"] if profile else None):
         try:
@@ -528,7 +535,9 @@ async def post_upload_single(
         # ★ 2026-08 配置中心：处理前必须已配置好方案（显式 profile_id > 激活方案）
         profile = _resolve_run_config(profile_id or None)
         try:
-            pipeline_report = _run_single_file_pipeline(stem, profile)
+            pipeline_report = _run_single_file_pipeline(
+                stem, profile, tenant_id=tenant.tenant_id
+            )
             log.info(
                 "single upload: pipeline done, status=%s",
                 pipeline_report.get("status"),
@@ -672,7 +681,9 @@ async def post_upload_batch(
         # ★ 2026-08 配置中心：处理前必须已配置好方案（显式 profile_id > 激活方案）
         profile = _resolve_run_config(profile_id or None)
         try:
-            pipeline_report = _run_batch_pipeline(successful_stems, profile)
+            pipeline_report = _run_batch_pipeline(
+                successful_stems, profile, tenant_id=tenant.tenant_id
+            )
             log.info(
                 "batch upload: pipeline done, status=%s stems=%d",
                 pipeline_report.get("status"), len(successful_stems),
@@ -767,7 +778,9 @@ def post_upload_single_ingest(
         )
     try:
         return _run_single_file_pipeline(
-            target_stem, profile, source=config_run_log.SOURCE_UPLOAD_REINGEST
+            target_stem, profile,
+            source=config_run_log.SOURCE_UPLOAD_REINGEST,
+            tenant_id=tenant.tenant_id,
         )
     except Exception as e:  # noqa: BLE001
         log.exception(

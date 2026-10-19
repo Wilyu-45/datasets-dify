@@ -14,13 +14,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.auth import require_default_tenant
 from app.services import config_run_log, config_store
 from app.services.pipeline import PipelineReport, PipelineRequest, PipelineStep, run_pipeline
 
-router = APIRouter(tags=["pipeline"])
+router = APIRouter(tags=["pipeline"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.pipeline")
 
 

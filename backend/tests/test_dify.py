@@ -47,9 +47,10 @@ def fresh_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    # ★ .env 优先级高于环境变量（settings_customise_sources），
-    #   必须用 init kwargs 覆盖 data_root 才能真正隔离测试目录
-    settings = cfg_mod.Settings(data_root=test_data_root)
+    # ★ 测试必须完全由 monkeypatch.setenv 控制配置：
+    #   `_env_file=None` 禁用 backend/.env（否则 .env 优先级更高，
+    #   会覆盖上面的 RAG_DIFY_SKIP_FILE_UPLOAD / RAG_IMAGE_HOST_BACKEND 等）。
+    settings = cfg_mod.Settings(data_root=test_data_root, _env_file=None)
     cfg_mod.settings = settings
 
     from app.services import scanner, parser, chunker, dify_uploader, dify_ingest, image_host, manifest_store
@@ -635,7 +636,8 @@ def test_dify_client_create_document(fresh_settings, monkeypatch):
 
     import httpx
     monkeypatch.setattr(httpx.Client, "post", fake_post)
-    doc = client.create_document_by_text("test", "hello")
+    # reuse_existing=False：避免走 find_document_by_name 的真实 GET 请求
+    doc = client.create_document_by_text("test", "hello", reuse_existing=False)
     assert doc.document_id == "doc-xyz"
     assert doc.batch == "batch-1"
 
@@ -2244,8 +2246,11 @@ def _reload_with_env(monkeypatch, **env):
             monkeypatch.setenv(k, v)
     from app import config as cfg_mod
     importlib.reload(cfg_mod)
-    from app.services import image_host
+    from app.services import dify_ingest, dify_uploader, image_host
+    # reload 后必须同步所有持有 settings 引用的模块（否则它们仍用旧配置）
     image_host.settings = cfg_mod.settings
+    dify_ingest.settings = cfg_mod.settings
+    dify_uploader.settings = cfg_mod.settings
     return cfg_mod.settings, image_host
 
 
@@ -2427,6 +2432,8 @@ def test_is_active_oss_requires_endpoint_and_bucket(monkeypatch):
         monkeypatch,
         RAG_OSS_ENDPOINT="https://oss-cn.aliyuncs.com",
         RAG_OSS_BUCKET="b",
+        RAG_OSS_ACCESS_KEY_ID="ak",
+        RAG_OSS_ACCESS_KEY_SECRET="sk",
     )
     assert image_host.is_active("oss", s) is True
 

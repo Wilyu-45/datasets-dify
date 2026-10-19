@@ -434,7 +434,7 @@ def test_pipeline_passes_target_stems_to_all_stages(
     # 记录三阶段收到的 target_stems
     received: Dict[str, Any] = {}
 
-    def fake_parse_pending(*, dry_run, force, target_stems):
+    def fake_parse_pending(*, dry_run, force, target_stems, **kwargs):
         received["parse"] = target_stems
         from app.models.schemas import ParseReport
         return ParseReport(
@@ -442,7 +442,7 @@ def test_pipeline_passes_target_stems_to_all_stages(
             skipped_done=0, failed=0, actions=[],
         )
 
-    def fake_chunk_parsed(*, dry_run, force, target_stems, strategy=""):
+    def fake_chunk_parsed(*, dry_run, force, target_stems, strategy="", **kwargs):
         received["chunk"] = target_stems
         from app.models.schemas import ChunkReport
         return ChunkReport(
@@ -450,7 +450,7 @@ def test_pipeline_passes_target_stems_to_all_stages(
             skipped_done=0, failed=0, actions=[],
         )
 
-    def fake_upload_all_docs(*, dry_run, force, client=None, target_stems):
+    def fake_upload_all_docs(*, dry_run, force, client=None, target_stems, **kwargs):
         received["dify"] = target_stems
         from app.models.schemas import DifyUploadReport
         return DifyUploadReport(
@@ -492,7 +492,7 @@ def test_pipeline_without_target_stems_passes_none(
 
     received: Dict[str, Any] = {}
 
-    def fake_parse_pending(*, dry_run, force, target_stems):
+    def fake_parse_pending(*, dry_run, force, target_stems, **kwargs):
         received["parse"] = target_stems
         from app.models.schemas import ParseReport
         return ParseReport(
@@ -500,7 +500,7 @@ def test_pipeline_without_target_stems_passes_none(
             skipped_done=0, failed=0, actions=[],
         )
 
-    def fake_chunk_parsed(*, dry_run, force, target_stems, strategy=""):
+    def fake_chunk_parsed(*, dry_run, force, target_stems, strategy="", **kwargs):
         received["chunk"] = target_stems
         from app.models.schemas import ChunkReport
         return ChunkReport(
@@ -508,7 +508,7 @@ def test_pipeline_without_target_stems_passes_none(
             skipped_done=0, failed=0, actions=[],
         )
 
-    def fake_upload_all_docs(*, dry_run, force, client=None, target_stems):
+    def fake_upload_all_docs(*, dry_run, force, client=None, target_stems, **kwargs):
         received["dify"] = target_stems
         from app.models.schemas import DifyUploadReport
         return DifyUploadReport(
@@ -564,7 +564,7 @@ def test_single_upload_only_processes_target_file(
     # 用 fake pipeline 拦截，记录接收到的 stem
     received_stems: List[str] = []
 
-    def fake_pipeline(target_stem: str, profile=None):
+    def fake_pipeline(target_stem: str, profile=None, **kwargs):
         received_stems.append(target_stem)
         return {
             "status": "ok",
@@ -615,7 +615,7 @@ def test_single_ingest_endpoint_passes_stem(
 
     received: List[str] = []
 
-    def fake_pipeline(target_stem: str, profile=None):
+    def fake_pipeline(target_stem: str, profile=None, **kwargs):
         received.append(target_stem)
         return {"status": "ok", "target_stems": [target_stem]}
 

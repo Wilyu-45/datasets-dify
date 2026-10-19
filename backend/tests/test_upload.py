@@ -225,7 +225,7 @@ def test_upload_endpoint_auto_ingest_called(
 
     call_args: list = []
 
-    def fake_pipeline(target_stem: str, profile=None):
+    def fake_pipeline(target_stem: str, profile=None, **kwargs):
         call_args.append(target_stem)
         return {
             "status": "ok",
@@ -267,7 +267,7 @@ def test_ingest_endpoint_invokes_pipeline(
 
     call_args: list = []
 
-    def fake_pipeline(target_stem: str, profile=None):
+    def fake_pipeline(target_stem: str, profile=None, **kwargs):
         call_args.append(target_stem)
         return {"status": "ok", "scan": {}, "parse": {}, "chunk": {}, "dify": {}}
 

@@ -26,7 +26,9 @@ dify_dataset_id 等），运行时用 contextmanager 临时覆盖 settings 属�
 
 from __future__ import annotations
 
+import functools
 import logging
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -36,6 +38,21 @@ from typing import Any, Dict, Iterator, List, Optional
 from app.config import Settings, settings
 
 log = logging.getLogger("ragsystem.config_store")
+
+# ★ 2026-10：profiles.json 的读-改-写串行化，避免并发创建/更新丢更新。
+_STORE_LOCK = threading.RLock()
+# ★ 2026-10：apply_config 会临时改写全局 settings；同一进程内并发 pipeline
+# 必须串行，否则 A 请求恢复配置时会把 B 请求的覆盖值一并还原。
+_APPLY_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    """同一进程内串行执行 profiles.json 读改写（RLock 允许嵌套调用）。"""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _STORE_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # data/configs/ 下保存 profiles.json
 CONFIGS_DIRNAME = "configs"
@@ -488,6 +505,7 @@ def resolve_profile(profile_id: Optional[str] = None) -> Optional[Dict[str, Any]
     return get_active_profile()
 
 
+@_locked
 def create_profile(
     name: str,
     config: Optional[Dict[str, Any]] = None,
@@ -515,6 +533,7 @@ def create_profile(
     return profile
 
 
+@_locked
 def update_profile(profile_id: str, name: Optional[str], config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     data = _load()
     for p in data["profiles"]:
@@ -533,6 +552,7 @@ def update_profile(profile_id: str, name: Optional[str], config: Optional[Dict[s
     return None
 
 
+@_locked
 def delete_profile(profile_id: str) -> bool:
     data = _load()
     before = len(data["profiles"])
@@ -555,6 +575,7 @@ def delete_profile(profile_id: str) -> bool:
     return True
 
 
+@_locked
 def activate_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     profile = get_profile(profile_id)
     if not profile:
@@ -610,18 +631,23 @@ def apply_config(config: Optional[Dict[str, Any]]) -> Iterator[None]:
     适用于「上传处理使用所选配置方案」：pipeline 各阶段（chunker / dify_ingest）
     直接读 settings.chunk_* / settings.dify_*，本函数临时覆盖这些属性即可生效。
     恢复逻辑保证即使 pipeline 抛异常也不会污染后续请求。
+
+    ★ 2026-10 并发修复：全局 settings 是进程级单例，多个 pipeline 同时用不同
+    配置方案时，先结束的请求会把后开始请求的覆盖值还原掉。这里用进程级
+    RLock 序列化整个 with 块（同一线程内可重入）。
     """
     if not config:
         yield
         return
-    saved: Dict[str, Any] = {}
-    for key, value in config.items():
-        if not hasattr(settings, key):
-            continue
-        saved[key] = getattr(settings, key)
-        setattr(settings, key, value)
-    try:
-        yield
-    finally:
-        for key, value in saved.items():
+    with _APPLY_LOCK:
+        saved: Dict[str, Any] = {}
+        for key, value in config.items():
+            if not hasattr(settings, key):
+                continue
+            saved[key] = getattr(settings, key)
             setattr(settings, key, value)
+        try:
+            yield
+        finally:
+            for key, value in saved.items():
+                setattr(settings, key, value)

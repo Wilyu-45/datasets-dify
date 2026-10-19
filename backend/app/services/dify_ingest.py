@@ -67,7 +67,10 @@ class ChunkUploadInfo:
 # ============ 工具函数 ============
 
 
-def _list_chunk_dirs(target_stems: Optional[List[str]] = None) -> List[Tuple[Path, str]]:
+def _list_chunk_dirs(
+    target_stems: Optional[List[str]] = None,
+    tenant_id: Optional[str] = None,
+) -> List[Tuple[Path, str]]:
     """列出 data/chunks/ 与 data/output/ 下所有文档目录（每目录对应 1 个 Dify 文档）。
 
     来源：
@@ -81,17 +84,26 @@ def _list_chunk_dirs(target_stems: Optional[List[str]] = None) -> List[Tuple[Pat
     ★ 2026-08 新增 target_stems 白名单（单文件上传 + 一键入库）：
         - target_stems=None（默认）：返回所有目录
         - target_stems=[stem1, stem2, ...]：只返回 stem 在白名单内的目录
+    ★ 2026-09 新增 tenant_id：只列该租户的目录（None = 全部租户，管理视角）。
     """
     out: Dict[str, Tuple[Path, str]] = {}
-    for root in (settings.chunks_dir, settings.output_dir):
+    if tenant_id is not None:
+        roots = (settings.chunks_dir_of(tenant_id), settings.output_dir_of(tenant_id))
+        scan_tenant_subdirs = False
+    else:
+        roots = (settings.chunks_dir, settings.output_dir)
+        scan_tenant_subdirs = True
+    for root in roots:
         if not root.exists():
             continue
         for p in root.iterdir():
             if not p.is_dir():
                 continue
             if (p / "chunk_metadata.json").is_file():
-                # default 租户的 stem 目录
-                out.setdefault(str(p), (p, "default"))
+                # stem 目录（default 租户或指定租户的根层）
+                out.setdefault(str(p), (p, tenant_id or "default"))
+                continue
+            if not scan_tenant_subdirs:
                 continue
             # 租户目录：下钻一层找 stem 目录
             for sub in p.iterdir():
@@ -339,11 +351,6 @@ def _cleanup_after_upload(chunks_dir: Path, was_copied: bool, success: bool,
         if output_subdir.is_dir():
             shutil.rmtree(str(output_subdir))
         return f"已删除预复制的 output/{stem}/（保留 chunks/{stem}/ 原始以便重试）"
-
-
-def _load_manifest_index() -> Dict[str, Any]:
-    """读取 manifest（dict 形式），用于按 stem 关联 dify 状态。"""
-    return manifest_store.load()
 
 
 def upload_one_doc(
@@ -787,6 +794,7 @@ def upload_all_docs(
     force: bool = False,
     client: Optional[DifyClient] = None,
     target_stems: Optional[List[str]] = None,
+    tenant_id: Optional[str] = None,
 ) -> DifyUploadReport:
     """扫描 data/chunks/ 下所有目录，逐个入库到 Dify。
 
@@ -794,21 +802,22 @@ def upload_all_docs(
         - target_stems=None（默认）：处理 data/chunks/ + data/output/ 下所有目录
         - target_stems=[stem1, stem2, ...]：只处理这些 stem 对应的目录
           用于「单文件上传 + 一键入库」场景——只入库这一个文件。
+    ★ 2026-09 tenant_id：只处理该租户的目录/行（None = 全部租户，管理视角）。
     """
     started = time.perf_counter()
     log.info(
         "dify upload all start",
         extra={"step": "dify", "status": "start", "dry_run": dry_run,
-               "target_stems": target_stems},
+               "target_stems": target_stems, "tenant_id": tenant_id},
     )
 
-    chunk_dirs = _list_chunk_dirs(target_stems=target_stems)
+    chunk_dirs = _list_chunk_dirs(target_stems=target_stems, tenant_id=tenant_id)
     actions: List[DifyActionRecord] = []
     uploaded = skipped = failed = 0
     used_datasets: set = set()  # 本次实际路由到的 dataset（租户隔离后可能多个）
 
-    # 加载 manifest（写 dify_doc_id / dify_status 用）
-    manifest = _load_manifest_index()
+    # 加载 manifest（列表形式：不同租户允许同名文件，不能用 filename 字典去重）
+    manifest_rows: List[Any] = manifest_store.load_all(tenant_id=tenant_id)
     rows_to_write: List[Any] = []
 
     # ★ 加载文档元数据 + 确保 Dify 元数据字段存在
@@ -826,22 +835,25 @@ def upload_all_docs(
             return settings.dify_dataset_id
         tenant = tenant_store.get_tenant(tid)
         ds = (tenant.dify_dataset_id or "").strip() if tenant else ""
-        return ds or settings.dify_dataset_id
+        # ★ 2026-10 修复（跨租户写入）：命名租户未绑定 dataset 时不再回落全局
+        # settings.dify_dataset_id——否则会把该租户文档写进 default 的知识库。
+        # 返回空串，由 upload_all_docs 记录失败并跳过。
+        return ds
 
     def _ensure_field_map(tid: str) -> Optional[Dict[str, Any]]:
         ds = _tenant_dataset_id(tid)
+        if not ds:
+            return {}
         if ds in field_maps:
             return field_maps[ds]
         try:
             cache = doc_meta_caches.get(tid)
             if cache is None:
-                cache = doc_metadata.load_doc_metadata(
-                    tenant_id=None if tid == "default" else tid
-                )
+                cache = doc_metadata.load_doc_metadata(tenant_id=tid)
                 doc_meta_caches[tid] = cache
             manifest_has_meta = any(
                 doc_metadata.build_merged_metadata(row, {})
-                for row in manifest.values()
+                for row in manifest_rows
                 if (getattr(row, "tenant_id", None) or "default") == tid
             )
             if not cache and not manifest_has_meta:
@@ -870,7 +882,7 @@ def upload_all_docs(
         t0 = time.perf_counter()
 
         # 1) 幂等检查
-        existing_row = _find_manifest_row_by_stem(manifest, stem, tenant_id=tenant_id)
+        existing_row = _find_manifest_row_by_stem(manifest_rows, stem, tenant_id=tenant_id)
         if existing_row is not None and not force:
             existing_status = (existing_row.dify_status or "").strip()
             if existing_status == "done":
@@ -898,6 +910,22 @@ def upload_all_docs(
             )
             continue
 
+        # ★ 2026-10 修复（跨租户写入）：命名租户未绑定 dataset → 拒绝入库，
+        # 不回落全局知识库。
+        tenant_ds = _tenant_dataset_id(tenant_id)
+        if not tenant_ds:
+            failed += 1
+            actions.append(
+                DifyActionRecord(
+                    stem=stem,
+                    action="failed",
+                    chunks_dir=str(chunks_dir.resolve()),
+                    error=f"租户 {tenant_id} 未绑定 Dify 知识库（dify_dataset_id 为空）",
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                )
+            )
+            continue
+
         # 2) 实际入库
         # 2a) 预复制 chunks/ → output/（让 Dify 拉图的 URL 始终指向 output/）
         try:
@@ -921,7 +949,6 @@ def upload_all_docs(
 
         # 如果没有传 client，则现场创建（★ 按租户 dataset 路由）
         own_client = client is None
-        tenant_ds = _tenant_dataset_id(tenant_id)
         if client is None:
             used_datasets.add(tenant_ds)
         c = client or DifyClient(dataset_id=tenant_ds)
@@ -1001,7 +1028,11 @@ def upload_all_docs(
                 update_kwargs["status"] = "done"
             updated = existing_row.model_copy(update=update_kwargs)
             rows_to_write.append(updated)
-            manifest[existing_row.filename] = updated
+            # 同步本次批次的内存索引（list，按对象替换）
+            for i, r in enumerate(manifest_rows):
+                if r is existing_row:
+                    manifest_rows[i] = updated
+                    break
         else:
             new_row = ManifestRow(
                 filename=stem,
@@ -1017,7 +1048,7 @@ def upload_all_docs(
                 process_note="(manifest 无原记录，入库成功后自动补建)" if err is None else None,
             )
             rows_to_write.append(new_row)
-            manifest[new_row.filename] = new_row
+            manifest_rows.append(new_row)
 
     # 3) 批量写 manifest
     if rows_to_write:
@@ -1055,32 +1086,36 @@ def upload_all_docs(
 
 
 def _find_manifest_row_by_stem(
-    manifest: Dict[str, Any], stem: str, tenant_id: Optional[str] = None
+    manifest: Any, stem: str, tenant_id: Optional[str] = None
 ) -> Optional[Any]:
     """根据 chunks 目录的 stem 在 manifest 里找对应行。
 
     ★ 2026-09 租户隔离：tenant_id 非 None 时只匹配该租户的行。
+    ★ 2026-10：manifest 既可以是 {filename: row} 字典（兼容旧调用），
+      也可以是 ManifestRow 列表（多租户同名文件不会互相覆盖）。
     匹配规则：
     1) 先按 chunks 列完全匹配
     2) 再按 chunks 列的 basename（即 directory 名）
     3) 再按 filename stem 包含 stem
     """
+    rows = manifest.values() if isinstance(manifest, dict) else manifest
+
     def _same_tenant(row: Any) -> bool:
         if tenant_id is None:
             return True
         return (getattr(row, "tenant_id", None) or "default") == tenant_id
 
     # 1) chunks == stem
-    for fname, row in manifest.items():
+    for row in rows:
         if (row.chunks or "").strip() == stem and _same_tenant(row):
             return row
     # 2) chunks 末尾段 == stem
-    for fname, row in manifest.items():
+    for row in rows:
         c = (row.chunks or "").replace("\\", "/").rstrip("/")
         if c and Path(c).name == stem and _same_tenant(row):
             return row
     # 3) filename stem 包含 stem（兜底）
-    for fname, row in manifest.items():
-        if Path(fname).stem == stem and _same_tenant(row):
+    for row in rows:
+        if Path(row.filename).stem == stem and _same_tenant(row):
             return row
     return None

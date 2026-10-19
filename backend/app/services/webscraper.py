@@ -1286,7 +1286,7 @@ def _padded_unique_stem(base: str, url: str) -> str:
     """生成不与 manifest/parsed 冲突的 stem（重复时追加 URL hash 短串）。"""
     from app.services import manifest_store
 
-    manifest = manifest_store.load()
+    manifest = manifest_store.load(tenant_id="default")
     stem = base
     while True:
         if not any(Path(fname).stem == stem for fname in manifest) \

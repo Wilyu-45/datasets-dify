@@ -33,15 +33,16 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from urllib.parse import quote
 
+from app.api.auth import require_default_tenant
 from app.config import settings
 from app.services import config_run_log, config_store, file_preview, webscraper, webscrape_store
 
-router = APIRouter(tags=["webscrape"])
+router = APIRouter(tags=["webscrape"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.webscrape")
 
 # 单次请求最多抓取页数
@@ -293,7 +294,7 @@ def _backfill_records_from_manifest(stems: List[str]) -> Dict[str, Dict[str, Any
     """
     from app.services import manifest_store
 
-    manifest = manifest_store.load()
+    manifest = manifest_store.load(tenant_id="default")
     by_stem = {Path(fname).stem: row for fname, row in manifest.items()}
     results: Dict[str, Dict[str, Any]] = {}
     for stem in stems:

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.auth import require_default_tenant
 from app.models.schemas import ScanReport, ScanRequest
 from app.services import scanner
 
-router = APIRouter(tags=["scan"])
+router = APIRouter(tags=["scan"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.scan")
 
 

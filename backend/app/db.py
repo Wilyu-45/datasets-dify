@@ -472,13 +472,19 @@ class _MySQLPool:
         )
 
     def connect(self) -> _MySQLConnection:
-        # 1) 优先复用空闲连接
-        try:
-            raw = self._idle.get_nowait()
-            self._ensure_alive(raw)
-            return _MySQLConnection(self, raw)
-        except queue.Empty:
-            pass
+        # 1) 优先复用空闲连接（坏连接关闭并扣减计数后继续尝试）
+        while True:
+            try:
+                raw = self._idle.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._ensure_alive(raw)
+                return _MySQLConnection(self, raw)
+            except Exception:  # noqa: BLE001
+                # _ensure_alive 已关闭坏连接；同步归还池容量
+                with self._lock:
+                    self._size -= 1
         # 2) 未达上限则新建
         can_grow = False
         with self._lock:
@@ -486,13 +492,24 @@ class _MySQLPool:
             if can_grow:
                 self._size += 1
         if can_grow:
-            return _MySQLConnection(self, self._new_connection())
+            try:
+                return _MySQLConnection(self, self._new_connection())
+            except Exception:
+                # 建立连接失败 → 归还刚占用的容量，避免池永久缩水
+                with self._lock:
+                    self._size -= 1
+                raise
         # 3) 达到上限，带超时等待空闲连接
         try:
             raw = self._idle.get(timeout=self._timeout)
         except queue.Empty:
             raise TimeoutError(f"MySQL 连接池获取超时（{self._timeout:g}s，max={self._max}）")
-        self._ensure_alive(raw)
+        try:
+            self._ensure_alive(raw)
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                self._size -= 1
+            raise
         return _MySQLConnection(self, raw)
 
     def release(self, wrapped: _MySQLConnection) -> None:

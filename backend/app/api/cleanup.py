@@ -10,12 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.auth import require_default_tenant
 from app.models.schemas import CleanupRequest
 from app.services.cleanup import get_last_report, run_cleanup
 
-router = APIRouter(tags=["cleanup"])
+router = APIRouter(tags=["cleanup"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.cleanup")
 
 

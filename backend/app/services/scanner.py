@@ -280,7 +280,9 @@ def scan_and_stage(dry_run: bool = False, force: bool = False) -> ScanReport:
     manifest_store.bootstrap(settings.data_root)
 
     # 1) 加载 manifest
-    manifest: Dict[str, ManifestRow] = manifest_store.load()
+    # ★ 2026-09 租户隔离：input/ 目录扫描是 default 租户的遗留入口，
+    # 不遍历命名租户的行，避免跨租户读写（命名租户走上传接口）。
+    manifest: Dict[str, ManifestRow] = manifest_store.load(tenant_id="default")
 
     actions: List[FileActionRecord] = []
     new_count = staged_count = skipped_count = renamed_count = failed_count = 0
@@ -400,7 +402,7 @@ def scan_and_stage(dry_run: bool = False, force: bool = False) -> ScanReport:
     if not dry_run and old_keys_to_remove:
         for k in set(old_keys_to_remove):
             try:
-                manifest_store.delete(k)
+                manifest_store.delete(k, tenant_id="default")
             except Exception as e:  # noqa: BLE001
                 log.warning(
                     "删除旧清单行失败",

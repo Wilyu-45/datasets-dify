@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from pathlib import Path
@@ -402,8 +403,15 @@ class Settings(BaseSettings):
     app_name: str = "RAG Batch Ingestion"
     app_version: str = "0.4.0"
 
+    # 测试/CI 可设 RAG_DISABLE_DOTENV=1 关闭 .env 读取，
+    # 使配置完全由进程环境变量决定（避免 .env 覆盖 monkeypatch.setenv）。
     model_config = SettingsConfigDict(
-        env_file=str(REPO_ROOT / "backend" / ".env"),
+        env_file=(
+            None
+            if os.environ.get("RAG_DISABLE_DOTENV", "").strip().lower()
+            in ("1", "true", "yes", "on")
+            else str(REPO_ROOT / "backend" / ".env")
+        ),
         env_file_encoding="utf-8",
         env_prefix="RAG_",
         extra="ignore",

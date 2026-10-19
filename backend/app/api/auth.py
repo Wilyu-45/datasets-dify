@@ -13,7 +13,7 @@ config 写接口），挂 `require_admin` 或保持匿名（default 全权）—
 
 from __future__ import annotations
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from app.config import settings
 from app.services import tenant_store
@@ -47,3 +47,19 @@ async def require_admin(
         )
     if not x_admin_key or x_admin_key != settings.admin_api_key:
         raise HTTPException(status_code=401, detail="管理员密钥无效")
+
+
+async def require_default_tenant(
+    tenant: Tenant = Depends(require_tenant),
+) -> Tenant:
+    """全局管理类接口依赖：仅 default 租户（匿名调用即 default）可用。
+
+    用于全局配置、目录扫描/解析/切分、网站抓取、清理等不按租户分区的接口，
+    防止命名租户越权操作全局资源或其他租户的数据。
+    """
+    if tenant.tenant_id != DEFAULT_TENANT_ID:
+        raise HTTPException(
+            status_code=403,
+            detail="该接口为全局管理接口，仅限 default 租户（匿名调用）使用",
+        )
+    return tenant

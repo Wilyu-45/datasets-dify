@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.auth import require_tenant
+from app.api.auth import require_default_tenant, require_tenant
 from app.config import settings, REPO_ROOT
 from app.models.schemas import (
     DifyConfigInfo,
@@ -32,6 +32,7 @@ from app.models.schemas import (
     DifyConfigUpdate,
 )
 from app.services import dify_ingest
+from app.services import manifest_store
 from app.services import tenant_store
 from app.services.dify_uploader import DifyClient, DifyError
 from app.services import doc_metadata
@@ -46,15 +47,34 @@ def _tenant_dataset_id(tenant: Tenant, requested: Optional[str] = None) -> Optio
 
     default 租户：尊重显式传入的 dataset_id（旧行为），缺省用全局配置；
     命名租户：强制使用其绑定的 dataset（防止凭 dataset_id 越权浏览他人知识库）。
+    ★ 2026-10 修复（跨租户越权）：命名租户未绑定 dataset 时返回 None，
+    不再回落全局 settings.dify_dataset_id——否则会读写 default 的知识库。
     """
     if tenant.tenant_id == DEFAULT_TENANT_ID:
         return requested or None
     tid = tenant.tenant_id
     tenant_rec = tenant_store.get_tenant(tid)
     ds = (tenant_rec.dify_dataset_id or "").strip() if tenant_rec else ""
-    if not ds:
-        ds = (settings.dify_dataset_id or "").strip()
     return ds or None
+
+
+def _require_tenant_dataset(tenant: Tenant, requested: Optional[str] = None) -> str:
+    """取本次请求必须使用的 dataset；解析不到时抛 400（命名租户不回落全局）。"""
+    ds = _tenant_dataset_id(tenant, requested)
+    if ds:
+        return ds
+    if tenant.tenant_id == DEFAULT_TENANT_ID:
+        ds = (settings.dify_dataset_id or "").strip()
+        if ds:
+            return ds
+        raise HTTPException(
+            status_code=400,
+            detail="dify_dataset_id 未配置（backend/.env 的 RAG_DIFY_DATASET_ID）",
+        )
+    raise HTTPException(
+        status_code=400,
+        detail=f"租户 {tenant.tenant_id} 未绑定 Dify 知识库（dify_dataset_id 为空），请联系管理员配置",
+    )
 
 
 # ============ §3.5 人工校验相关 schema ============
@@ -96,7 +116,9 @@ class DifySegmentUpdateRequest(BaseModel):
 
 
 @router.get("/dify/config", response_model=DifyConfigInfo)
-def get_dify_config() -> DifyConfigInfo:
+def get_dify_config(
+    tenant: Tenant = Depends(require_default_tenant),
+) -> DifyConfigInfo:
     """返回当前 Dify 配置（API Key 仅返回是否已配置，不回显明文）。"""
     chunk_dirs: List = []
     output_dirs: List = []
@@ -118,7 +140,9 @@ def get_dify_config() -> DifyConfigInfo:
 
 
 @router.get("/dify/test")
-def get_dify_test() -> DifyTestResult:
+def get_dify_test(
+    tenant: Tenant = Depends(require_default_tenant),
+) -> DifyTestResult:
     """测试 Dify 连通性：GET /datasets/{id}。
 
     用途：在「执行入库」之前快速验证：
@@ -155,7 +179,9 @@ def get_dify_test() -> DifyTestResult:
 
 
 @router.get("/dify/datasets", response_model=List[DifyDatasetItem])
-def get_dify_datasets() -> List[DifyDatasetItem]:
+def get_dify_datasets(
+    tenant: Tenant = Depends(require_default_tenant),
+) -> List[DifyDatasetItem]:
     """列出当前 API Key 可见的知识库，供用户选择目标知识库。
 
     Dify 分页 limit 上限 100，这里最多拉取 5 页（500 个知识库）。
@@ -212,7 +238,10 @@ def _persist_env(key: str, value: str) -> None:
 
 
 @router.post("/dify/config", response_model=DifyConfigInfo)
-def post_dify_config(body: Optional[DifyConfigUpdate] = None) -> DifyConfigInfo:
+def post_dify_config(
+    body: Optional[DifyConfigUpdate] = None,
+    tenant: Tenant = Depends(require_default_tenant),
+) -> DifyConfigInfo:
     """更新 Dify 运行配置：切换目标知识库。
 
     Body:
@@ -237,31 +266,45 @@ def post_dify_config(body: Optional[DifyConfigUpdate] = None) -> DifyConfigInfo:
 
 
 @router.post("/dify/upload", response_model=DifyUploadReport)
-def post_dify_upload(body: Optional[DifyUploadRequest] = None) -> DifyUploadReport:
+def post_dify_upload(
+    body: Optional[DifyUploadRequest] = None,
+    tenant: Tenant = Depends(require_tenant),
+) -> DifyUploadReport:
     """执行 §3.4 Dify 入库。
 
     Body:
         - dry_run: bool = False  不实际调用 Dify
         - force:   bool = False  强制重传（默认跳过 manifest dify_status=done 的行）
         - target_stems: Optional[List[str]] = None  ★ 2026-08-07：指定文件列表
+
+    ★ 2026-09 租户隔离：default（匿名）触发全量；命名租户只处理自己的目录。
     """
     body = body or DifyUploadRequest()
+    tenant_scope = (
+        None if tenant.tenant_id == DEFAULT_TENANT_ID else tenant.tenant_id
+    )
     log.info(
         "api /dify/upload called",
         extra={"step": "api", "status": "dify_upload", "dry_run": body.dry_run, "force": body.force,
-               "target_stems": body.target_stems},
+               "target_stems": body.target_stems, "tenant_id": tenant.tenant_id},
     )
     # 预检：API Key / dataset_id 是否配置（dry_run 也可预检以友好提示）
     if not body.dry_run:
         if not settings.dify_api_key:
             raise HTTPException(status_code=400, detail="dify_api_key 未配置（backend/.env 的 RAG_DIFY_API_KEY）")
-        if not settings.dify_dataset_id:
+        if tenant_scope is None and not settings.dify_dataset_id:
             raise HTTPException(status_code=400, detail="dify_dataset_id 未配置（backend/.env 的 RAG_DIFY_DATASET_ID）")
+        if tenant_scope is not None and not _tenant_dataset_id(tenant):
+            raise HTTPException(
+                status_code=400,
+                detail=f"租户 {tenant.tenant_id} 未绑定 Dify 知识库（dify_dataset_id 为空）",
+            )
     try:
         return dify_ingest.upload_all_docs(
             dry_run=body.dry_run,
             force=body.force,
             target_stems=body.target_stems,  # ★ 2026-08-07：传递 target_stems
+            tenant_id=tenant_scope,
         )
     except DifyError as e:  # noqa: BLE001
         log.exception("dify upload 接口异常", extra={"step": "api", "error_msg": str(e)})
@@ -289,18 +332,16 @@ def get_dify_documents(
     元数据页切换知识库时传入对应 ID。
     ★ 2026-09 租户隔离：命名租户强制路由到自己的 dataset。
     """
-    effective_ds = _tenant_dataset_id(tenant, dataset_id)
+    effective_ds = _require_tenant_dataset(tenant, dataset_id)
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置（backend/.env 的 RAG_DIFY_API_KEY）")
-    if not (effective_ds or settings.dify_dataset_id):
-        raise HTTPException(status_code=400, detail="dify_dataset_id 未配置（backend/.env 的 RAG_DIFY_DATASET_ID）")
     log.info(
         "api /dify/documents called",
         extra={"step": "api", "status": "list_documents", "page": page, "limit": limit,
                "tenant_id": tenant.tenant_id},
     )
     try:
-        client = DifyClient(dataset_id=effective_ds or None)
+        client = DifyClient(dataset_id=effective_ds)
         payload = client.list_documents(page=page, limit=limit, keyword=keyword)
         items = payload.get("data") or []
         out: List[DifyDocumentItem] = []
@@ -346,7 +387,7 @@ def get_dify_document_segments(
                "tenant_id": tenant.tenant_id},
     )
     try:
-        client = DifyClient(dataset_id=_tenant_dataset_id(tenant))
+        client = DifyClient(dataset_id=_require_tenant_dataset(tenant))
         items = client.list_segments(doc_id, keyword=keyword, status=status)
         out: List[DifySegmentItem] = []
         for i, seg in enumerate(items):
@@ -405,7 +446,7 @@ def post_update_dify_segment(
         },
     )
     try:
-        client = DifyClient(dataset_id=_tenant_dataset_id(tenant))
+        client = DifyClient(dataset_id=_require_tenant_dataset(tenant))
         return client.update_segment(
             document_id=doc_id,
             segment_id=seg_id,
@@ -424,12 +465,14 @@ def post_update_dify_segment(
 
 
 @router.get("/dify/metadata/fields")
-def get_dify_metadata_fields() -> Dict[str, Any]:
+def get_dify_metadata_fields(
+    tenant: Tenant = Depends(require_tenant),
+) -> Dict[str, Any]:
     """列出知识库所有元数据字段（含内置 + 自定义）。"""
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置")
     try:
-        client = DifyClient()
+        client = DifyClient(dataset_id=_require_tenant_dataset(tenant))
         fields = client.list_metadata_fields()
         return {"fields": fields, "defined_fields": list(doc_metadata.METADATA_FIELD_DEFS.keys())}
     except DifyError as e:
@@ -437,12 +480,14 @@ def get_dify_metadata_fields() -> Dict[str, Any]:
 
 
 @router.post("/dify/metadata/init-fields")
-def post_init_metadata_fields() -> Dict[str, Any]:
+def post_init_metadata_fields(
+    tenant: Tenant = Depends(require_tenant),
+) -> Dict[str, Any]:
     """初始化文档元数据字段（自动创建缺失的字段到 Dify 知识库）。"""
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置")
     try:
-        client = DifyClient()
+        client = DifyClient(dataset_id=_require_tenant_dataset(tenant))
         field_map = doc_metadata.ensure_metadata_fields(client)
         return {
             "ok": True,
@@ -475,7 +520,10 @@ def _list_all_dify_documents(client: DifyClient, max_pages: int = 100) -> List[D
 
 
 @router.post("/dify/metadata/sync")
-def post_sync_metadata(body: Optional[MetadataSyncRequest] = None) -> Dict[str, Any]:
+def post_sync_metadata(
+    body: Optional[MetadataSyncRequest] = None,
+    tenant: Tenant = Depends(require_tenant),
+) -> Dict[str, Any]:
     """把元数据导入 Dify 知识库（★ 2026-08-31 重写：以 Dify 库内文档清单为准）。
 
     文档清单直接来自目标知识库（分页拉取），按**文档名（stem）**匹配本地元数据：
@@ -484,20 +532,28 @@ def post_sync_metadata(body: Optional[MetadataSyncRequest] = None) -> Dict[str, 
     好处：文档 ID 全部来自 Dify 自身（不会因台账里的陈旧 dify_doc_id 报 404）；
     知识库里存在但台账没有的文档（后续迁移场景）同样可同步。
     缺失的 Dify 元数据字段自动创建；批量写入失败时逐篇重试隔离错误（如单篇被删）。
+    ★ 2026-09 租户隔离：命名租户强制自己的 dataset + 只读自己的本地元数据。
     """
     if not settings.dify_api_key:
         raise HTTPException(status_code=400, detail="dify_api_key 未配置")
     body = body or MetadataSyncRequest()
-    log.info("api /dify/metadata/sync called", extra={"target_stems": body.target_stems})
+    # 只同步当前租户自己的本地元数据（default 也只看 default 行，避免同名串到全局库）
+    tid = tenant.tenant_id
+    log.info(
+        "api /dify/metadata/sync called",
+        extra={"target_stems": body.target_stems, "tenant_id": tenant.tenant_id},
+    )
     try:
-        client = DifyClient(dataset_id=body.dataset_id or None)
+        client = DifyClient(
+            dataset_id=_require_tenant_dataset(tenant, body.dataset_id)
+        )
         # 1) 确保字段存在（doc_metadata 字段 + manifest 用户列，缺失自动创建）
         field_map = doc_metadata.ensure_metadata_fields(client)
         # 2) 本地元数据来源：doc_metadata 表 + manifest 用户填写列（按 stem 建索引）
-        doc_meta = doc_metadata.load_doc_metadata()
+        doc_meta = doc_metadata.load_doc_metadata(tenant_id=tid)
         manifest_by_stem: Dict[str, Any] = {}
-        for fname, row in dify_ingest._load_manifest_index().items():
-            stem = Path(fname).stem
+        for row in manifest_store.load_all(tenant_id=tid):
+            stem = Path(row.filename).stem
             if stem not in manifest_by_stem:
                 manifest_by_stem[stem] = row
             chunks_clean = (row.chunks or "").replace("\\", "/").strip()
