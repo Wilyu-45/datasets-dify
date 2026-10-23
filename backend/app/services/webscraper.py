@@ -1543,10 +1543,18 @@ def _land_content_as_document(it: Dict[str, Any], stem: str, url: str, task_dir:
 
 def save_task(task: Dict[str, Any]) -> None:
     """插入或更新一条抓取任务（幂等，按 id 覆盖）。"""
+    import json
+
     from psycopg.types.json import Jsonb
 
     from app import db
 
+    # ★ 2026-10 修复（MySQL 生产兼容）：
+    #   - items 列：pymysql 不能转义 psycopg 的 Jsonb 对象，MySQL 侧改传 JSON 字符串
+    #   - 冲突子句：ON CONFLICT ... DO UPDATE 为 PostgreSQL 独有，
+    #     MySQL 用 ON DUPLICATE KEY UPDATE ... = VALUES()
+    is_mysql = settings.rag_db_type == "mysql"
+    items_payload = task.get("items") or []
     row = {
         "id": task["id"],
         "created_at": task.get("created_at"),
@@ -1557,27 +1565,32 @@ def save_task(task: Dict[str, Any]) -> None:
         "status": task.get("status"),
         "confirm_time": task.get("confirm_time"),
         "confirm_profile": task.get("confirm_profile"),
-        "items": Jsonb(task.get("items") or []),
+        "items": (
+            json.dumps(items_payload, ensure_ascii=False, default=str)
+            if is_mysql else Jsonb(items_payload)
+        ),
     }
+    update_clause = (
+        "ON DUPLICATE KEY UPDATE " + ", ".join(
+            f"{c} = VALUES({c})"
+            for c in ("updated_at", "profile_id", "profile_name", "site_url",
+                      "status", "confirm_time", "confirm_profile", "items")
+        )
+        if is_mysql else
+        "ON CONFLICT (id) DO UPDATE SET "
+        "updated_at = EXCLUDED.updated_at, profile_id = EXCLUDED.profile_id, "
+        "profile_name = EXCLUDED.profile_name, site_url = EXCLUDED.site_url, "
+        "status = EXCLUDED.status, confirm_time = EXCLUDED.confirm_time, "
+        "confirm_profile = EXCLUDED.confirm_profile, items = EXCLUDED.items"
+    )
     with db.get_conn() as conn:
         conn.execute(
-            """
-            INSERT INTO webscrape_tasks
-                (id, created_at, updated_at, profile_id, profile_name, site_url,
-                 status, confirm_time, confirm_profile, items)
-            VALUES
-                (%(id)s, %(created_at)s, %(updated_at)s, %(profile_id)s, %(profile_name)s, %(site_url)s,
-                 %(status)s, %(confirm_time)s, %(confirm_profile)s, %(items)s)
-            ON CONFLICT (id) DO UPDATE SET
-                updated_at = EXCLUDED.updated_at,
-                profile_id = EXCLUDED.profile_id,
-                profile_name = EXCLUDED.profile_name,
-                site_url = EXCLUDED.site_url,
-                status = EXCLUDED.status,
-                confirm_time = EXCLUDED.confirm_time,
-                confirm_profile = EXCLUDED.confirm_profile,
-                items = EXCLUDED.items
-            """,
+            "INSERT INTO webscrape_tasks "
+            "(id, created_at, updated_at, profile_id, profile_name, site_url, "
+            "status, confirm_time, confirm_profile, items) VALUES "
+            "(%(id)s, %(created_at)s, %(updated_at)s, %(profile_id)s, %(profile_name)s, "
+            "%(site_url)s, %(status)s, %(confirm_time)s, %(confirm_profile)s, %(items)s) "
+            + update_clause,
             row,
         )
         conn.commit()

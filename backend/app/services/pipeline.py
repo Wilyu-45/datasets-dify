@@ -138,9 +138,10 @@ def run_pipeline(req: PipelineRequest) -> PipelineReport:
     )
 
     timings: Dict[str, int] = {}
+    enabled_steps = [s for s in (req.scan, req.parse, req.chunk, req.dify) if s.enabled]
     report = PipelineReport(
         status="pending",
-        dry_run=all(s.dry_run for s in (req.scan, req.parse, req.chunk, req.dify) if s.enabled),
+        dry_run=bool(enabled_steps) and all(s.dry_run for s in enabled_steps),
         duration_ms=0,
         step_timings_ms=timings,
         target_stems=req.target_stems,
@@ -240,9 +241,18 @@ def run_pipeline(req: PipelineRequest) -> PipelineReport:
         timings["dify"] = 0
 
     # 5) 汇总状态
-    if not errors:
+    # ★ 2026-10 修复：失败/跳过判定基于「实际启用的步骤数」，而不是写死的 4。
+    #   上传/抓取驱动的流水线默认关闭 scan，最多只有 3 步会跑；旧实现
+    #   ``len(errors) == 4`` 在这种场景下永远不成立，于是「启用的步骤全部
+    #   失败」会被误报成 partial，导致下游（如 webscrape 入库回填依赖
+    #   status=="failed" 兜底 pipeline_error）拿不到整体失败信号。
+    #   同时补上文档里承诺却从未产生的 skipped 状态：所有步骤都被禁用时。
+    enabled_count = len(enabled_steps)
+    if enabled_count == 0:
+        report.status = "skipped"
+    elif not errors:
         report.status = "ok"
-    elif len(errors) == 4:
+    elif len(errors) == enabled_count:
         report.status = "failed"
     else:
         report.status = "partial"

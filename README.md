@@ -267,6 +267,7 @@ npm run dev        # 默认 http://localhost:5173
 | `RAG_DB_TYPE` | `postgres` | 数据库方言：`postgres`（本地开发）/ `mysql`（生产） |
 | `RAG_MYSQL_*` | - | MySQL 连接与连接池（`RAG_MYSQL_POOL_TIMEOUT` 默认 30s；`RAG_DB_TYPE=mysql` 时生效） |
 | `RAG_ADMIN_API_KEY` | `""` | 租户管理接口（`/api/tenants`）的管理员密钥（`X-Admin-Key` 请求头）；留空则管理接口整体 403。租户业务调用用各自 `rt-xxx` Key（`X-API-Key`），见 [API.md](./API.md) |
+| `RAG_REQUIRE_ADMIN_FOR_GLOBAL` | `false` | 全局管理接口（清理 / 扫描 / 解析 / 切分 / 流水线 / 网站抓取 / 配置写入）是否额外要求 `X-Admin-Key`。默认 `false` 保持存量行为（匿名即 `default` 租户）；`true` 时匿名请求 401，若同时未配 `RAG_ADMIN_API_KEY` 则整体 403（fail-closed）。详见 [deploy/README.md](./deploy/README.md)「全局接口访问控制」 |
 | `RAG_MINERU_PROVIDER` | `local` | 解析 provider：`local` / `mineru_net` / `auto`（本地优先，失败降级官方） |
 | `RAG_MINERU_NET_TOKEN` | `""` | 官方 mineru.net API Key（`mineru_net` / `auto` 时需要） |
 | `RAG_MINERU_NET_MODEL` / `RAG_MINERU_NET_BASE_URL` | `vlm` / `https://mineru.net` | 官方 API 解析模型 / 地址 |
@@ -352,6 +353,8 @@ npm run dev        # 默认 http://localhost:5173
 - 前端构建：`cd frontend; npm install; npm run build`。
 - 图片托管建议使用阿里云 OSS 永久外链（`RAG_IMAGE_HOST_BACKEND=oss`）。
 - 启动前务必确认 `RAG_DATA_ROOT` 指向真实的运行数据目录——清理服务以它为安全边界。
+- **后端不适合水平扩容**：解析进度是进程内存态、切分配置写回 `backend/.env`，多副本会互相看不到状态；请以单实例 + `--workers 1` 运行（两套 Dockerfile 已固定），不要用 `docker compose scale --scale backend=N`。
+- **全局接口收紧**：默认所有全局管理接口匿名可用（视作 `default` 租户）。服务暴露到公网/半信任内网时，建议 `RAG_REQUIRE_ADMIN_FOR_GLOBAL=true` 并由 Nginx 注入 `X-Admin-Key`（配 `allow/deny` 限源），开关行为与反代示例见 [deploy/README.md](./deploy/README.md)「全局接口访问控制」。
 
 ## API 概览
 

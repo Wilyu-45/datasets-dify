@@ -25,6 +25,9 @@ services:
       args:
         BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
         VCS_REF: ${VCS_REF:-$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")}
+        # ★ Playwright Chromium 下载源（镜像现会安装浏览器供抓取降级用）：
+        #   国内网络建议改为 https://cdn.npmmirror.com/binaries/playwright
+        PLAYWRIGHT_DOWNLOAD_HOST: ${PLAYWRIGHT_DOWNLOAD_HOST:-https://cdn.playwright.dev/pw-cdn}
     image: ragsystem-backend:${TAG:-latest}
     container_name: ragsystem-backend
     restart: unless-stopped
@@ -58,6 +61,12 @@ services:
       # ★ MinerU：生产默认官方网页端 API（mineru.net，token 由 backend/.env 注入）
       #   本地开发不受影响（backend/.env 未设 RAG_MINERU_PROVIDER 时，代码默认 local）
       - RAG_MINERU_PROVIDER=${MINERU_PROVIDER:-mineru_net}
+
+      # ★ 全局管理接口凭据开关（清理/扫描/解析/切分/流水线/网站抓取/配置写）：
+      #   默认 false 保持存量匿名可调；设 true 后调用方必须带 X-Admin-Key，
+      #   前端不持密钥时需由 Nginx 注入（见 deploy/nginx-ragsystem.conf）。
+      #   开启前请先读 deploy/README.md「全局接口访问控制」一节。
+      - RAG_REQUIRE_ADMIN_FOR_GLOBAL=${REQUIRE_ADMIN_FOR_GLOBAL:-false}
       
       # ★ 存储清理：定时任务由 RAG_CLEANUP_* 控制（默认开启，24h 周期），
       #   参数由 backend/.env 注入，如需覆盖取消下行注释

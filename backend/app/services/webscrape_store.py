@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
+from app.config import settings
+
 log = logging.getLogger("ragsystem.webscrape_store")
 
 # 台账状态机：landed(已落地待流水线) → parsed(已解析) → ingested(已入库) / error(失败)
@@ -33,6 +35,37 @@ STATUS_ERROR = "error"
 def _now() -> str:
     import time
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# upsert 语句按方言分两套（★ 2026-10 修复 MySQL 生产兼容）：
+#   PostgreSQL：INSERT ... ON CONFLICT (task_id, url) DO UPDATE SET x = EXCLUDED.x
+#   MySQL     ：INSERT ... ON DUPLICATE KEY UPDATE x = VALUES(x)（依赖
+#               UNIQUE KEY uq_webscrape_task_url，见 app.db._MYSQL_WEBSCRAPE_RECORD）
+# 列名与占位符完全一致，仅冲突子句不同，故由同一份列清单生成。
+_UPSERT_COLUMNS = [
+    "task_id", "url", "title", "kind", "depth", "filename", "stem",
+    "dataset_id", "dataset_name", "profile_id", "profile_name",
+    "page_time", "content_hash", "status", "error_msg", "created_at", "updated_at",
+]
+# 冲突时覆盖的列：task_id/url 是幂等键，created_at 保留首次插入时间
+_UPSERT_UPDATE_COLUMNS = [
+    c for c in _UPSERT_COLUMNS if c not in ("task_id", "url", "created_at")
+]
+_UPSERT_INSERT_VALUES = ", ".join(f"%({c})s" for c in _UPSERT_COLUMNS)
+
+_UPSERT_SQL_PG = (
+    f"INSERT INTO webscrape_records ({', '.join(_UPSERT_COLUMNS)}) "
+    f"VALUES ({_UPSERT_INSERT_VALUES}) "
+    f"ON CONFLICT (task_id, url) DO UPDATE SET "
+    + ", ".join(f"{c} = EXCLUDED.{c}" for c in _UPSERT_UPDATE_COLUMNS)
+)
+
+_UPSERT_SQL_MYSQL = (
+    f"INSERT INTO webscrape_records ({', '.join(_UPSERT_COLUMNS)}) "
+    f"VALUES ({_UPSERT_INSERT_VALUES}) "
+    f"ON DUPLICATE KEY UPDATE "
+    + ", ".join(f"{c} = VALUES({c})" for c in _UPSERT_UPDATE_COLUMNS)
+)
 
 
 def upsert_record(
@@ -82,33 +115,7 @@ def upsert_record(
     }
     with db.get_conn() as conn:
         conn.execute(
-            """
-            INSERT INTO webscrape_records
-                (task_id, url, title, kind, depth, filename, stem,
-                 dataset_id, dataset_name, profile_id, profile_name,
-                 page_time, content_hash,
-                 status, error_msg, created_at, updated_at)
-            VALUES
-                (%(task_id)s, %(url)s, %(title)s, %(kind)s, %(depth)s,
-                 %(filename)s, %(stem)s, %(dataset_id)s, %(dataset_name)s,
-                 %(profile_id)s, %(profile_name)s, %(page_time)s, %(content_hash)s,
-                 %(status)s, %(error_msg)s, %(created_at)s, %(updated_at)s)
-            ON CONFLICT (task_id, url) DO UPDATE SET
-                title = EXCLUDED.title,
-                kind = EXCLUDED.kind,
-                depth = EXCLUDED.depth,
-                filename = EXCLUDED.filename,
-                stem = EXCLUDED.stem,
-                dataset_id = EXCLUDED.dataset_id,
-                dataset_name = EXCLUDED.dataset_name,
-                profile_id = EXCLUDED.profile_id,
-                profile_name = EXCLUDED.profile_name,
-                page_time = EXCLUDED.page_time,
-                content_hash = EXCLUDED.content_hash,
-                status = EXCLUDED.status,
-                error_msg = EXCLUDED.error_msg,
-                updated_at = EXCLUDED.updated_at
-            """,
+            _UPSERT_SQL_MYSQL if settings.rag_db_type == "mysql" else _UPSERT_SQL_PG,
             row,
         )
         conn.commit()
@@ -195,18 +202,25 @@ def fetch_latest_ingested_by_url(
         return {}
     from app import db
 
+    # ★ 2026-10 修复（MySQL 生产兼容）：原写法用 PostgreSQL 独有的
+    #   `SELECT DISTINCT ON (url)` 与 `url = ANY(%s::text[])`，MySQL 下直接语法报错。
+    #   改为两库通用的 IN + ORDER BY url, id DESC，「每个 URL 取最新一条」
+    #   在 Python 侧完成（首次出现即该 URL 的 id 最大行）。
+    placeholders = ", ".join(f"%(u{i})s" for i in range(len(urls)))
+    params: Dict[str, Any] = {f"u{i}": u for i, u in enumerate(urls)}
     with db.get_conn() as conn:
         cur = conn.execute(
-            """
-            SELECT DISTINCT ON (url) url, page_time, content_hash,
-                   dataset_name, created_at
-            FROM webscrape_records
-            WHERE url = ANY(%(urls)s::text[])
-              AND (status = 'ingested'
-                   OR (dify_doc_id IS NOT NULL AND dify_doc_id <> ''))
-            ORDER BY url, id DESC
-            """,
-            {"urls": urls},
+            "SELECT url, page_time, content_hash, dataset_name, created_at "
+            "FROM webscrape_records "
+            f"WHERE url IN ({placeholders}) "
+            "AND (status = 'ingested' OR (dify_doc_id IS NOT NULL AND dify_doc_id <> '')) "
+            "ORDER BY url, id DESC",
+            params,
         )
         rows = cur.fetchall()
-    return {r["url"]: dict(r) for r in rows}
+    latest: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        url = r["url"]
+        if url not in latest:
+            latest[url] = dict(r)
+    return latest

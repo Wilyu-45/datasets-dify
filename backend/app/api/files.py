@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Literal
 
 from app.api.auth import require_tenant
 from app.config import settings

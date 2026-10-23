@@ -404,7 +404,7 @@ _MYSQL_PK_MIGRATIONS = [
 class _MySQLConnection:
     """把 pymysql 连接封装成与 psycopg PoolConnection 兼容的最小接口。
 
-    仅实现本代码库实际用到的方法：execute / commit / rollback，
+    仅实现本代码库实际用到的方法：execute / commit / rollback / cursor，
     并支持 with 语句（异常时回滚，退出时归还连接池；显式 commit 由调用方负责，
     与 psycopg PoolConnection 的语义保持一致）。execute 返回的 cursor
     支持 fetchone / fetchall（DictCursor 返回 dict 行）。
@@ -421,6 +421,17 @@ class _MySQLConnection:
         else:
             cursor.execute(sql)
         return cursor
+
+    def cursor(self) -> Any:
+        """返回原始 pymysql 游标（兼容 psycopg3 的 `with conn.cursor() as cur` 用法）。
+
+        ★ 2026-10 修复（MySQL 生产兼容）：psycopg3 的 executemany 只在 Cursor 上，
+        因此 services/doc_metadata.save_doc_metadata 走的是
+        `with conn.cursor() as cur: cur.executemany(...)`；本封装类原先没有
+        cursor()，导致 MySQL 下批量写元数据直接 AttributeError。
+        pymysql 游标自带 with 支持（退出时 close）与 executemany。
+        """
+        return self._raw.cursor()
 
     def commit(self) -> None:
         self._raw.commit()
@@ -661,6 +672,18 @@ def get_conn() -> Any:
     if isinstance(pool, _MySQLPool):
         return pool.connect()
     return pool.connection()
+
+
+def describe_target() -> str:
+    """返回当前方言的连接目标描述（不含账号密码），供启动日志 / 运维展示。
+
+    ★ 2026-10 修复：启动日志原先写死 ``postgresql://host:port/db``，而生产默认跑
+    MySQL（RAG_DB_TYPE=mysql），排查连错库时会拿到一条误导性的 PG 连接串。
+    方言属于 db 层知识，因此统一由本函数输出，调用方不再拼具体字段。
+    """
+    if settings.rag_db_type == "mysql":
+        return f"mysql://{settings.mysql_host}:{settings.mysql_port}/{settings.mysql_dbname}"
+    return f"postgresql://{settings.pg_host}:{settings.pg_port}/{settings.pg_dbname}"
 
 
 def init_db() -> None:

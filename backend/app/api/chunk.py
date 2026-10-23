@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api.auth import require_default_tenant
-from app.config import settings, REPO_ROOT
+from app.config import settings
 from app.models.schemas import (
     ChunkFile,
     ChunkMeta,
@@ -29,10 +30,27 @@ from app.models.schemas import (
     ChunkStrategyOption,
     ChunkSummary,
 )
-from app.services import chunker, chunk_strategies
+from app.services import chunker, chunk_strategies, env_store, pathguard
 
 router = APIRouter(tags=["chunk"], dependencies=[Depends(require_default_tenant)])
 log = logging.getLogger("ragsystem.api.chunk")
+
+# chunk 文件名安全字符集（★ 2026-10）：只允许字母/数字/下划线/中划线/点，
+# 排除 / \ 路径分隔符与 * ? [ 等 glob 元字符（chunk_id 会被拼进 glob 模式）。
+_CHUNK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _resolve_within(base: Path, sub: str) -> Path:
+    """把用户传入的 stem 解析到 base 目录下，越界则 400。
+
+    ★ 2026-10 修复（路径逃逸）：原先用 ``str(target).startswith(str(base))`` 判断，
+    前缀匹配会被同前缀的兄弟目录绕过（如 data/chunks_backup）；现统一走
+    services.pathguard.resolve_within（基于 Path.is_relative_to）。
+    """
+    try:
+        return pathguard.resolve_within(base, sub)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="非法 stem") from e
 
 
 @router.post("/chunk", response_model=ChunkReport)
@@ -75,23 +93,6 @@ def list_chunk_strategies() -> ChunkStrategyListResponse:
     )
 
 
-def _persist_env(key: str, value: str) -> None:
-    """把 ``key=value`` 写回 backend/.env（不存在则追加），UTF-8 无 BOM。"""
-    env_file = REPO_ROOT / "backend" / ".env"
-    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
-    replaced = False
-    out: List[str] = []
-    for line in lines:
-        if line.strip().startswith(f"{key}="):
-            out.append(f"{key}={value}")
-            replaced = True
-        else:
-            out.append(line)
-    if not replaced:
-        out.append(f"{key}={value}")
-    env_file.write_text("\n".join(out) + "\n", encoding="utf-8")
-
-
 class ChunkConfigUpdate(BaseModel):
     """保存默认切分策略的入参。"""
 
@@ -122,27 +123,51 @@ def get_chunk_config() -> Dict[str, Any]:
 
 @router.post("/chunk/config")
 def save_chunk_config(body: ChunkConfigUpdate) -> Dict[str, Any]:
-    """保存默认切分策略，写回 backend/.env 的 RAG_CHUNK_STRATEGY 并热更新。"""
+    """保存默认切分策略，写回 backend/.env 的 RAG_CHUNK_STRATEGY 并热更新。
+
+    ★ 2026-10：写 .env 失败不再整个接口 500。容器部署（镜像内无 backend/.env、
+    且该目录属主为 root）下回不到盘，但内存热更新仍然生效；原先直接抛错会让
+    前端“保存策略”永久失败。现降级为警告 + persisted=False 返给前端提示。
+    """
     valid = {m["key"] for m in chunk_strategies.list_strategies()}
     if body.strategy not in valid:
         raise HTTPException(status_code=400, detail=f"不支持的切分策略: {body.strategy}，可选: {sorted(valid)}")
+    settings.chunk_strategy = body.strategy  # 热更新内存中的默认值
+    persisted = True
     try:
-        _persist_env("RAG_CHUNK_STRATEGY", body.strategy)
-        settings.chunk_strategy = body.strategy  # 热更新内存中的默认值
-        log.info(
-            "api /chunk/config saved strategy=%s",
-            body.strategy,
-            extra={"step": "api", "status": "chunk_config_save", "strategy": body.strategy},
-        )
-        return {"strategy": body.strategy}
+        env_store.set_env_value("RAG_CHUNK_STRATEGY", body.strategy)
     except Exception as e:  # noqa: BLE001
-        log.exception("保存切分策略失败", extra={"step": "api", "error_msg": str(e)})
-        raise HTTPException(status_code=500, detail=f"保存切分策略失败: {e}") from e
+        persisted = False
+        log.warning(
+            "持久化 RAG_CHUNK_STRATEGY 到 backend/.env 失败（仅本次进程生效）: %s", e,
+            extra={"step": "api", "status": "chunk_config_persist_failed", "error_msg": str(e)},
+        )
+    log.info(
+        "api /chunk/config saved strategy=%s persisted=%s",
+        body.strategy, persisted,
+        extra={"step": "api", "status": "chunk_config_save", "strategy": body.strategy,
+               "persisted": persisted},
+    )
+    return {
+        "strategy": body.strategy,
+        "persisted": persisted,
+        "message": (
+            "" if persisted else
+            "已在本服务内生效，但无法写回 backend/.env（容器环境常见）；重启后失效，"
+            "请改用镜像环境变量 RAG_CHUNK_STRATEGY 或挂载可写的 backend/.env"
+        ),
+    }
 
 
 @router.get("/chunks", response_model=List[ChunkSummary])
 def list_chunks() -> List[ChunkSummary]:
-    """列出 data/chunks/ 下的所有切分目录（一文档一文件夹）。"""
+    """列出 data/chunks/ 下的所有切分目录（一文档一文件夹）。
+
+    ★ 2026-10：一个目录只走一遍文件树。原先对同一个目录调了 3~4 次
+    rglob/glob（chunks / images / total_size / file_count 各一遍），文档多、
+    图片多时这一个是页面上最慢的接口；现在一次遍历同时算出四个数字。
+    stat() 加try：清理任务可能正在删同一目录，不能因此把列表页 500。
+    """
     root = settings.chunks_dir
     if not root.exists():
         return []
@@ -150,35 +175,51 @@ def list_chunks() -> List[ChunkSummary]:
     for p in sorted(root.iterdir(), key=lambda x: x.name.lower()):
         if not p.is_dir():
             continue
-        chunks = list(p.glob("chunk_*.md"))
-        images = list((p / "images").rglob("*")) if (p / "images").exists() else []
-        images = [f for f in images if f.is_file()]
-        total_size = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+        images_dir = p / "images"
+        chunk_count = image_count = file_count = 0
+        total_size = 0
+        for f in p.rglob("*"):
+            try:
+                if not f.is_file():
+                    continue
+                total_size += f.stat().st_size
+            except OSError:  # noqa: BLE001 文件刚被清理任务删掉，跳过即可
+                continue
+            file_count += 1
+            if f.parent == p and f.name.startswith("chunk_") and f.suffix == ".md":
+                chunk_count += 1
+            elif images_dir in f.parents:
+                image_count += 1
         items.append(
             ChunkSummary(
                 stem=p.name,
                 dir=str(p.resolve()),
-                chunk_count=len(chunks),
-                image_count=len(images),
+                chunk_count=chunk_count,
+                image_count=image_count,
                 total_size=total_size,
-                file_count=sum(1 for f in p.rglob("*") if f.is_file()),
+                file_count=file_count,
             )
         )
     return items
 
 
+def _iter_files_tolerant(base: Path):
+    """递归列出 base 下的文件，返回 (路径, 大小) 列表，按文件名排序。
+
+    ★ 2026-10：实现已统一收口到 services.pathguard.iter_files_tolerant（与
+    api/parse.py 共用同一份容错逻辑），这里保留名字只做委托，避免回归。
+    """
+    return pathguard.iter_files_tolerant(base)
+
+
 @router.get("/chunks/{stem}/files", response_model=List[ChunkFile])
 def list_chunk_files(stem: str) -> List[ChunkFile]:
     """列出某文档切分产物的所有文件。"""
-    target = (settings.chunks_dir / stem).resolve()
-    if not str(target).startswith(str(settings.chunks_dir.resolve())):
-        raise HTTPException(status_code=400, detail="非法 stem")
+    target = _resolve_within(settings.chunks_dir, stem)
     if not target.is_dir():
         raise HTTPException(status_code=404, detail=f"chunks/{stem} 不存在")
     out: List[ChunkFile] = []
-    for f in sorted(target.rglob("*"), key=lambda x: (x.is_file(), x.name.lower())):
-        if not f.is_file():
-            continue
+    for f, size in _iter_files_tolerant(target):
         rel = f.relative_to(target)
         rel_str = str(rel).replace("\\", "/")
         ext = f.suffix.lower()
@@ -194,7 +235,7 @@ def list_chunk_files(stem: str) -> List[ChunkFile]:
             ChunkFile(
                 name=f.name,
                 rel_path=rel_str,
-                size=f.stat().st_size,
+                size=size,
                 ext=ext,
                 kind=kind,
             )
@@ -205,9 +246,7 @@ def list_chunk_files(stem: str) -> List[ChunkFile]:
 @router.get("/chunks/{stem}/chunks", response_model=List[ChunkMeta])
 def list_chunk_meta(stem: str) -> List[ChunkMeta]:
     """读取 chunk_metadata.json，返回所有 chunk 的元数据。"""
-    target = (settings.chunks_dir / stem).resolve()
-    if not str(target).startswith(str(settings.chunks_dir.resolve())):
-        raise HTTPException(status_code=400, detail="非法 stem")
+    target = _resolve_within(settings.chunks_dir, stem)
     meta_path = target / "chunk_metadata.json"
     if not meta_path.is_file():
         raise HTTPException(status_code=404, detail=f"chunks/{stem}/chunk_metadata.json 不存在")
@@ -238,11 +277,9 @@ def list_chunk_meta(stem: str) -> List[ChunkMeta]:
 @router.get("/chunks/{stem}/preview/{chunk_id}")
 def preview_chunk(stem: str, chunk_id: str) -> dict:
     """返回某个 chunk 的内容（用于前端预览）。"""
-    target = (settings.chunks_dir / stem).resolve()
-    if not str(target).startswith(str(settings.chunks_dir.resolve())):
-        raise HTTPException(status_code=400, detail="非法 stem")
-    # 防止路径逃逸
-    if "/" in chunk_id or "\\" in chunk_id or ".." in chunk_id:
+    target = _resolve_within(settings.chunks_dir, stem)
+    # 防止路径逃逸与 glob 元字符注入
+    if not _CHUNK_ID_RE.match(chunk_id) or ".." in chunk_id:
         raise HTTPException(status_code=400, detail="非法 chunk_id")
     matches = list(target.glob(f"{chunk_id}_*.md"))
     if not matches:

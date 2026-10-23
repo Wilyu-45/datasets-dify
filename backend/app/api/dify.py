@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api.auth import require_default_tenant, require_tenant
-from app.config import settings, REPO_ROOT
+from app.config import settings
 from app.models.schemas import (
     DifyConfigInfo,
     DifyTestResult,
@@ -32,6 +32,7 @@ from app.models.schemas import (
     DifyConfigUpdate,
 )
 from app.services import dify_ingest
+from app.services import env_store
 from app.services import manifest_store
 from app.services import tenant_store
 from app.services.dify_uploader import DifyClient, DifyError
@@ -115,11 +116,14 @@ class DifySegmentUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
 
 
-@router.get("/dify/config", response_model=DifyConfigInfo)
-def get_dify_config(
-    tenant: Tenant = Depends(require_default_tenant),
-) -> DifyConfigInfo:
-    """返回当前 Dify 配置（API Key 仅返回是否已配置，不回显明文）。"""
+def _config_info() -> DifyConfigInfo:
+    """当前 Dify 配置的只读快照（GET / POST 共用）。
+
+    ★ 2026-10：原先 POST 处理器直接 `return get_dify_config()`，会把参数默认值
+    （一个 Depends 对象）当作 tenant 传下去。今天 get_dify_config 不用 tenant 所以
+    没出事，但这是一个定时炸弹：一旦它开始读 tenant 就会拿到 Depends 对象而不是
+    真实租户。抽出公共部分后，两个处理器各自只依赖自己需要的东西。
+    """
     chunk_dirs: List = []
     output_dirs: List = []
     if settings.chunks_dir.exists():
@@ -137,6 +141,14 @@ def get_dify_config(
         chunk_dir_count=len(chunk_dirs),
         output_dir_count=len(output_dirs),
     )
+
+
+@router.get("/dify/config", response_model=DifyConfigInfo)
+def get_dify_config(
+    tenant: Tenant = Depends(require_default_tenant),
+) -> DifyConfigInfo:
+    """返回当前 Dify 配置（API Key 仅返回是否已配置，不回显明文）。"""
+    return _config_info()
 
 
 @router.get("/dify/test")
@@ -220,23 +232,6 @@ def get_dify_datasets(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-def _persist_env(key: str, value: str) -> None:
-    """把 ``key=value`` 写回 backend/.env（不存在则追加），UTF-8 无 BOM。"""
-    env_file = REPO_ROOT / "backend" / ".env"
-    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
-    replaced = False
-    out: List[str] = []
-    for line in lines:
-        if line.strip().startswith(f"{key}="):
-            out.append(f"{key}={value}")
-            replaced = True
-        else:
-            out.append(line)
-    if not replaced:
-        out.append(f"{key}={value}")
-    env_file.write_text("\n".join(out) + "\n", encoding="utf-8")
-
-
 @router.post("/dify/config", response_model=DifyConfigInfo)
 def post_dify_config(
     body: Optional[DifyConfigUpdate] = None,
@@ -254,15 +249,23 @@ def post_dify_config(
             raise HTTPException(status_code=400, detail="dataset_id 不能为空")
         old_id = settings.dify_dataset_id
         settings.dify_dataset_id = new_id
+        # ★ 2026-10：写回统一走 services.env_store（加锁 + 临时文件原子替换）。
+        #   容器内无 backend/.env 时写不了，仍保持“内存生效 + 告警”的降级语义。
+        persisted = True
         try:
-            _persist_env("RAG_DIFY_DATASET_ID", new_id)
+            env_store.set_env_value("RAG_DIFY_DATASET_ID", new_id)
         except Exception as e:  # noqa: BLE001
-            log.warning("持久化 RAG_DIFY_DATASET_ID 到 backend/.env 失败: %s", e)
+            persisted = False
+            log.warning(
+                "持久化 RAG_DIFY_DATASET_ID 到 backend/.env 失败（仅本次进程生效）: %s", e,
+                extra={"step": "api", "status": "dify_config_persist_failed",
+                       "error_msg": str(e)},
+            )
         log.info(
             "dify dataset_id 已切换",
-            extra={"step": "api", "old": old_id, "new": new_id},
+            extra={"step": "api", "old": old_id, "new": new_id, "persisted": persisted},
         )
-    return get_dify_config()
+    return _config_info()
 
 
 @router.post("/dify/upload", response_model=DifyUploadReport)

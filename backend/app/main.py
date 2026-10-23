@@ -74,14 +74,17 @@ async def _cleanup_loop(interval_hours: int) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
-    """启动时初始化数据目录、PostgreSQL 表结构（manifest / doc_metadata）与日志。"""
+    """启动时初始化数据目录、数据库表结构（manifest / doc_metadata）与日志。
+
+    方言由 settings.rag_db_type 决定（本地 postgres / 生产 mysql）。
+    """
     setup_logging(
         logs_dir=settings.logs_dir,
         level=settings.log_level,
         retention_days=settings.log_retention_days,
     )
     settings.ensure_dirs()
-    # 初始化 PostgreSQL 表结构（manifest / doc_metadata 持久化层）
+    # 初始化数据库表结构（manifest / doc_metadata 持久化层，方言跟随 rag_db_type）
     manifest_store.bootstrap()
     # ★ 2026-09 租户隔离：确保 default 租户存在（绑定全局 dataset，幂等）
     tenant_store.bootstrap_default_tenant()
@@ -91,9 +94,36 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
             "step": "startup",
             "status": "ok",
             "data_root": str(settings.data_root),
-            "manifest": f"postgresql://{settings.pg_host}:{settings.pg_port}/{settings.pg_dbname}#manifest",
+            "manifest": f"{db.describe_target()}#manifest",
         },
     )
+    # ★ 2026-10 全局接口凭据开关：两种“看似坏了”的状态都在启动时说明白，
+    #   避免运维只能从一堆 401/403 反推配置。
+    if settings.require_admin_for_global and not settings.admin_api_key:
+        log.error(
+            "已开启 RAG_REQUIRE_ADMIN_FOR_GLOBAL 但未配置 RAG_ADMIN_API_KEY："
+            "清理/扫描/解析/切分/流水线/网站抓取/配置写等全局接口将全部 403",
+            extra={"step": "startup", "status": "admin_guard_misconfigured"},
+        )
+    elif settings.require_admin_for_global:
+        log.info(
+            "全局管理接口已要求 X-Admin-Key 凭据（匿名请求 401）",
+            extra={"step": "startup", "status": "admin_guard_on"},
+        )
+        # HTTP 头只能是 ASCII，密钥里混进中文/全角字符时任何客户端都传不进来，
+        # 只会留下一排无法解释的 401，因此启动时直接报出来。
+        if not settings.admin_api_key.isascii():
+            log.error(
+                "RAG_ADMIN_API_KEY 含非 ASCII 字符：X-Admin-Key 请求头只能传 ASCII，"
+                "全局接口将永远返回 401，请改为字母数字密钥",
+                extra={"step": "startup", "status": "admin_key_non_ascii"},
+            )
+    else:
+        log.warning(
+            "全局管理接口当前匿名可调（请确保服务只在内网/反代后面）；"
+            "如需收紧：RAG_REQUIRE_ADMIN_FOR_GLOBAL=true + RAG_ADMIN_API_KEY",
+            extra={"step": "startup", "status": "admin_guard_off"},
+        )
     # ★ 2026-09 生产部署改造：按配置启动周期性文件清理后台任务
     cleanup_task: asyncio.Task | None = None
     if settings.cleanup_enabled and settings.cleanup_schedule_hours > 0:

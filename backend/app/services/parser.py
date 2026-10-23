@@ -59,19 +59,27 @@ def _safe_stem(name: str) -> str:
     stem = Path(name).stem
     return stem.rstrip(". ")
 
-# ★ 2026-08-08：解析进度追踪（供 /api/parse/progress 查询）
-# key=filename, value={progress, msg, status}
-_parse_progress: Dict[str, Dict[str, Any]] = {}
+# ★ 2026-08-08：解析进度跟踪（供 /api/parse/progress 查询）
+# ★ 2026-10 修复（进度双写）：以前这里自己维护一个 _parse_progress 字典，
+#   而 MinerU 路径写的是 services.parse_progress 的全局 tracker，两个存储各自
+#   一半：本地解析（.html/.xlsx）只写进了没人读的那个（对外接口早已被
+#   api/parse_progress.py 的同路径路由覆盖），所以前端进度条对这些文件一直空的。
+#   现统一写同一个 tracker，单一事实来源，顺便拿到 tracker 的 30 秒自动清理。
+def _tracker():
+    # 函数内 import：避开模块加载顺序问题，也与 mineru_client 的写法一致
+    from app.services.parse_progress import get_tracker
+
+    return get_tracker()
 
 
 def get_parse_progress() -> Dict[str, Dict[str, Any]]:
     """返回当前解析进度快照。"""
-    return dict(_parse_progress)
+    return _tracker().get_all()
 
 
 def _set_progress(fname: str, progress: int, msg: str, status: str) -> None:
     """更新单文件解析进度。"""
-    _parse_progress[fname] = {"progress": progress, "msg": msg, "status": status}
+    _tracker().update(fname, progress, msg, status)
 
 
 def _is_already_parsed(row: ManifestRow) -> bool:

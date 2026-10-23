@@ -1,18 +1,27 @@
 # ═══════════════════════════════════════════
 # Docker Compose 编排（docker/ 目录，容器化部署）
 #
-# 服务：backend(FastAPI) + frontend(Nginx 托管 React + 反代) + postgres
+# 服务：backend(FastAPI) + frontend(Nginx 托管 React + 反代) + 数据库
+#
+# ★ 数据库（2026-10 起与 deploy/ 对齐）：默认 MySQL 8.0（生产口径），
+#   PostgreSQL 改为可选兼容模式（--profile postgres + DB_TYPE=postgres）。
 #
 # 用法（在仓库根目录执行）：
 #   1) 准备后端配置：cp backend/.env.production.example backend/.env  并按需修改
-#      （关键：数据库用本编排内置的 PostgreSQL，compose 已用 environment 覆盖
-#        RAG_DB_TYPE / RAG_PG_HOST 等，backend/.env 里填 mysql 也会被覆盖为 postgres）
+#      （数据库方言/主机由下方 environment 覆盖：backend/.env 里填什么都不影响
+#        容器内连的是本编排的 mysql / postgres）
 #   2) 准备 compose 变量：cp docker/.env.example docker/.env  并改密码/端口
 #   3) 构建并启动：docker compose -f docker/docker-compose.yaml up -d --build
 #   4) 查看日志：  docker compose -f docker/docker-compose.yaml logs -f backend
 #   5) 访问前端：  http://localhost:${FRONTEND_PORT:-8080}
 #      访问后端文档：http://localhost:${BACKEND_PORT:-8000}/docs
 #   停止：        docker compose -f docker/docker-compose.yaml down
+#
+# 可选：兼容模式（改用编排内置 PostgreSQL，默认 MySQL）：
+#   DB_TYPE=postgres docker compose -f docker/docker-compose.yaml --profile postgres up -d
+#   （PowerShell: $env:DB_TYPE="postgres"; docker compose -f docker/docker-compose.yaml --profile postgres up -d）
+#   ★ 从既有 PG 卷切到 MySQL 不是无损迁移：表数据仍在 pg_data 卷里，
+#     切方言后应用会在一空库上重新建表，请按 deploy/README.md 做数据迁移。
 #
 # ★ compose 会自动加载「compose 文件同目录」的 .env（即 docker/.env）作为变量来源。
 # ═══════════════════════════════════════════
@@ -45,9 +54,17 @@ services:
       - RAG_DATA_ROOT=/opt/ragsystem/data
       - RAG_LOG_LEVEL=${RAG_LOG_LEVEL:-info}
 
-      # ★ 数据库：本编排内置 PostgreSQL（覆盖 backend/.env 中可能的 mysql 配置）
-      - RAG_DB_TYPE=postgres
-      - RAG_PG_HOST=postgres             # 容器网络下用 compose 服务名，而非 127.0.0.1
+      # ★ 数据库：默认 MySQL（与生产口径、deploy/ 编排一致），可 DB_TYPE=postgres 切换
+      #   主机指向 compose 服务名，而非 backend/.env 里的 127.0.0.1
+      - RAG_DB_TYPE=${DB_TYPE:-mysql}
+      - RAG_MYSQL_HOST=${MYSQL_SERVICE_HOST:-mysql}
+      - RAG_MYSQL_PORT=${MYSQL_PORT:-3306}
+      - RAG_MYSQL_DBNAME=${MYSQL_DBNAME:-ragsystem_production}
+      - RAG_MYSQL_USER=${MYSQL_USER:-ragsystem_app}
+      - RAG_MYSQL_PASSWORD=${MYSQL_PASSWORD:-ragsystem_password}
+
+      # ★ 兼容模式（--profile postgres + DB_TYPE=postgres）下使用；MySQL 模式下不被读取
+      - RAG_PG_HOST=${PG_SERVICE_HOST:-postgres}
       - RAG_PG_PORT=5432
       - RAG_PG_DBNAME=${POSTGRES_DB:-ragsystem}
       - RAG_PG_USER=${POSTGRES_USER:-ragsystem}
@@ -57,6 +74,11 @@ services:
 
       # ★ 前端由独立 Nginx 容器托管，后端不挂载 dist/
       - RAG_SERVE_FRONTEND=false
+
+      # ★ 全局管理接口凭据开关（默认 false = 匿名可调，存量行为）：
+      #   true 时清理/扫描/解析/切分/流水线/网站抓取/配置写接口必须带 X-Admin-Key，
+      #   由前端 Nginx 注入（docker/nginx.conf）或调用方自行携带。
+      - RAG_REQUIRE_ADMIN_FOR_GLOBAL=${REQUIRE_ADMIN_FOR_GLOBAL:-false}
 
       # 同源反代部署下浏览器不跨域，CORS 非必需；如需放行独立前端/后端域名，
       # 在 backend/.env 里设置 RAG_CORS_ORIGINS=["https://your-domain"] 即可（经 env_file 注入）。
@@ -83,7 +105,7 @@ services:
 
     # ★ 等数据库就绪后再启动，避免建表失败
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
 
     networks:
@@ -120,8 +142,48 @@ services:
     networks:
       - ragsystem-network
 
-  # ──── PostgreSQL 数据库 ──────────────────────
+  # ──── MySQL 数据库（生产默认，8.0）──────────────
+  mysql:
+    image: mysql:8.0
+    container_name: ragsystem-mysql
+    restart: unless-stopped
+
+    # 建库建用户（应用启动时幂等建表，无需手工建表）
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DBNAME:-ragsystem_production}
+      MYSQL_USER: ${MYSQL_USER:-ragsystem_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ragsystem_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ragsystem_root_password}
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+    # 宿主机 3306 常被本机 MySQL 占用，默认映射到 13306（可用 MYSQL_HOST_PORT 覆盖；
+    # 不需要从宿主机直连时注释掉）
+    ports:
+      - "${MYSQL_HOST_PORT:-13306}:3306"
+
+    # 字符集 + 容器环境调优（与 deploy/ 一致）
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=${MYSQL_MAX_CONNECTIONS:-200}
+      --innodb_buffer_pool_size=${MYSQL_INNODB_BUFFER_POOL_SIZE:-512M}
+
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    networks:
+      - ragsystem-network
+
+  # PostgreSQL 数据库（可选兼容模式，默认不启动）
+  # 仅在使用 --profile postgres 时启动（同时需 DB_TYPE=postgres）。
   postgres:
+    profiles: ["postgres"]
     image: postgres:15-alpine
     container_name: ragsystem-postgres
     restart: unless-stopped
@@ -158,6 +220,9 @@ volumes:
   ragsystem_data:
     driver: local
     name: ragsystem_data
+  mysql_data:
+    driver: local
+    name: ragsystem_mysql_data
   pg_data:
     driver: local
     name: ragsystem_pg_data

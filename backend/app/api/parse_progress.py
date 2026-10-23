@@ -16,13 +16,20 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.auth import require_default_tenant
 from app.services.parse_progress import get_tracker
 
 log = logging.getLogger("ragsystem.parse_progress_api")
 
-router = APIRouter(prefix="/parse", tags=["parse"])
+# ★ 2026-10：补上全局接口守卫。进度表内容是全量文件名，属于跨租户信息；
+#   而 POST /api/parse 本身就挂 require_default_tenant（命名租户无法触发解析），
+#   所以这个只读端点没有理由不收。前端始终匿名调用（不带 X-API-Key），
+#   仍走 default 租户，行为不变。
+router = APIRouter(
+    prefix="/parse", tags=["parse"], dependencies=[Depends(require_default_tenant)]
+)
 
 
 @router.get("/progress")

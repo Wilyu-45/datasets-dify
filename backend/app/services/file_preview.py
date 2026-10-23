@@ -334,6 +334,7 @@ def xlsx_to_html(path: Path) -> str:
     except Exception as e:  # noqa: BLE001
         return _info_page_html("Excel 工作簿", f"缺少 openpyxl，暂不能在线预览（{e}）。")
     sections: list[str] = []
+    wb = None  # ★ 2026-10：read_only 工作簿持有文件句柄，必须在 finally 里关
     try:
         wb = load_workbook(path, read_only=True, data_only=True)
         for idx, ws in enumerate(wb.worksheets[:50]):
@@ -363,9 +364,17 @@ def xlsx_to_html(path: Path) -> str:
                     1,
                 )
             sections.append(head)
-        wb.close()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        log.warning("xlsx 预览解析失败: %s (%s)", path.name, e)
         return _info_page_html("Excel 工作簿", "该 Excel 文件无法解析，暂不能在线预览。")
+    finally:
+        # 原实现只在成功路径 wb.close()：中途报错（加密/损坏/超大）时句柄不关，
+        # Windows 下会把源 .xlsx 一直占用，导致清理/重解析/覆盖写入全部失败。
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:  # noqa: BLE001
+                pass
     if not sections:
         return _info_page_html("Excel 工作簿", "工作簿中没有可预览的工作表。")
     return _wrap_html("Excel 工作簿预览", "".join(sections))

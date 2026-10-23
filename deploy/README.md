@@ -18,6 +18,7 @@
 - [故障排查](#故障排查)
 - [租户隔离（多租户）](#-租户隔离多租户2026-09-新增)
 - [生产方定制前端](#生产方定制前端)
+- [全局接口访问控制](#全局接口访问控制)
 
 ---
 
@@ -131,7 +132,12 @@ docker run --rm -v ragsystem_data:/data -v $(pwd):/backup \
 
 ### 扩展部署
 
-**多实例高可用**：
+> ⚠ 后端不适合水平扩容：解析进度（`parse_progress`）为**进程内存态**，且配置接口会
+> 写回 `backend/.env`。多实例下「提交在 A 实例、查进度在 B 实例」会永远看不到进度，
+> 配置写回也会相互覆盖。如需提升吞吐，请优先调大配置中的连接池 / 异步并发，
+> 而不是 `--scale backend=N`。
+
+**多实例部署（不推荐，仅用于说明上述限制）**：
 
 ```bash
 # 启动 3 个后端实例（负载均衡由 Nginx 自动处理）
@@ -153,6 +159,72 @@ docker compose up -d --no-deps --build frontend
 ```
 
 参考 [nginx-ragsystem.conf](nginx-ragsystem.conf) 模式二配置。
+
+---
+
+## 🔐 全局接口访问控制
+
+### 背景：默认「匿名即 default 租户全权」
+
+租户鉴权的设计是「无 `X-API-Key` 的匿名请求视为 default 租户」（存量兼容）。
+而下列**全局管理类接口**挂的是 `require_default_tenant`，因此只要服务端口可达，
+无需任何凭据就能调用（能删数据、改配置、向外部站点发起抓取）：
+
+| 路由 | 风险 |
+| :--- | :--- |
+| `POST /api/cleanup/*` | 定期清理与手动清理（删中间产物/产物） |
+| `POST /api/scan`、`/api/parse`、`/api/chunk` | 目录扫描与重跑处理（可批量 force） |
+| `GET /api/parse/progress` | 解析进度快照（返回体含全量文件名，跨租户信息） |
+| `POST /api/pipeline/run`、`/api/pipeline/dry` | 一键流水线 |
+| `/api/webscrape/*` | 网站抓取 + 确认入库 |
+| `PUT /api/config/*`、`PUT /api/chunk/config` | 改配置方案、写回 `backend/.env` |
+| `/api/dify/config`、`/api/dify/datasets` | 读/写知识库配置、枚举知识库 |
+
+### 收紧开关：`RAG_REQUIRE_ADMIN_FOR_GLOBAL`（默认 false）
+
+```bash
+# backend/.env（或 compose 变量 REQUIRE_ADMIN_FOR_GLOBAL=true）
+RAG_ADMIN_API_KEY=ragadm-xxxxxxxx          # 前置条件，没配则开关下全部 403（必须纯 ASCII）
+RAG_REQUIRE_ADMIN_FOR_GLOBAL=true          # 全局接口必须带 X-Admin-Key，匿名 401
+```
+
+> 密钥生成（保证 ASCII）：`python -c "import secrets; print('ragadm-' + secrets.token_urlsafe(24))"`
+
+开启后的行为（fail-closed）：
+
+| 请求 | 结果 |
+| :--- | :--- |
+| 无任何头（匿名） | `401` 需要管理员凭据 |
+| `X-Admin-Key` 错误/缺失 | `401` |
+| `X-Admin-Key` 正确 | 正常访问（仍以 default 租户身份操作） |
+| 命名租户 `X-API-Key`（即使带了正确的管理密钥） | `403`（非 default，越权优先拦截） |
+| 开关开了但 `RAG_ADMIN_API_KEY` 为空 | 全部 `403`（提示先配密钥） |
+| `RAG_ADMIN_API_KEY` 含非 ASCII 字符 | 全部 `401`（HTTP 头传不了中文，启动日志报 `admin_key_non_ascii`） |
+
+> ⚠ 业务侧（上传/列表/入库进度等）挂的是 `require_tenant`，**不受该开关影响**。
+> 网页端默认不发 `X-Admin-Key`，所以开启后必须二选一：由反向代理统一注入，
+> 或只在可信内网/网关后面使用。
+
+**反代注入（推荐，浏览器侧无需持密钥）**——[nginx-ragsystem.conf](nginx-ragsystem.conf) 已内置注释模板：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header X-Admin-Key "ragadm-xxxxxxxx";   # 与 RAG_ADMIN_API_KEY 一致
+    allow 10.0.0.0/8;  deny all;                      # 配合内网/白名单
+}
+```
+
+> 密钥以明文写在配置/编排文件里：请限制文件权限（`chmod 600`），不要把
+> `deploy/.env`、`backend/.env` 提交到仓库；开启后 `/docs` 与健康检查不受影响，
+> 但直接用 curl 调全局接口需手动加 `-H "X-Admin-Key: ..."`。
+
+### 与镜像构建相关的能力对齐（2026-10）
+
+- `Dockerfile.backend` 已安装 **Playwright Chromium**（网站抓取遇 WAF 412/403/502 时降级用）。
+  国内网络构建建议：`PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright`。
+  验证：`docker exec ragsystem-backend sh -c "ls /ms-playwright"`。
+- 启动命令已固定 `--workers 1`（原因见上「扩展部署」警告）。
 
 ---
 

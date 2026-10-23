@@ -48,10 +48,11 @@ class DocMetadataUpdate(BaseModel):
 def list_doc_metadata(tenant: Tenant = Depends(require_tenant)) -> Dict[str, Any]:
     """文档元数据（{stem: {field: value}}，无行的 stem 不出现）。
 
-    default 租户返回全部行（兼容旧行为）；命名租户只返回自己的行。
+    ★ 2026-10 修复（租户语义）：只看本租户自己的行（default 也只看 default），
+    与 POST /api/dify/metadata/sync 的取数口径保持一致——原先 default 返回全表，
+    命名租户的同名行会出现在列表里，但同步时又不会被推送，用户改完看不到效果。
     """
-    tid = None if tenant.tenant_id == "default" else tenant.tenant_id
-    rows = doc_metadata.load_doc_metadata(tenant_id=tid)
+    rows = doc_metadata.load_doc_metadata(tenant_id=tenant.tenant_id)
     return {"total": len(rows), "rows": rows}
 
 
@@ -60,8 +61,7 @@ def get_doc_metadata(
     stem: str, tenant: Tenant = Depends(require_tenant)
 ) -> Dict[str, Any]:
     """单个文档的元数据行（不存在时返回空对象，前端表单据此渲染空值）。"""
-    tid = None if tenant.tenant_id == "default" else tenant.tenant_id
-    return doc_metadata.get_doc_metadata(stem, tenant_id=tid)
+    return doc_metadata.get_doc_metadata(stem, tenant_id=tenant.tenant_id)
 
 
 @router.put("/doc-metadata/{stem}")
@@ -77,8 +77,10 @@ def put_doc_metadata(
         raise HTTPException(status_code=400, detail="stem 不能为空")
     fields = {k: v for k, v in body.model_dump().items()}
     doc_metadata.save_doc_metadata({stem: fields}, tenant_id=tenant.tenant_id)
-    tid = None if tenant.tenant_id == "default" else tenant.tenant_id
-    row = doc_metadata.get_doc_metadata(stem, tenant_id=tid)
+    # ★ 2026-10 修复：回读必须用写入时同一个 tenant_id。原先 default 传 None，
+    #   而 filename 已不再是主键（同名行可属不同租户），不带租户条件时
+    #   返回哪一行由数据库决定，可能把别的租户的同名行回显给本租户。
+    row = doc_metadata.get_doc_metadata(stem, tenant_id=tenant.tenant_id)
     log.info(
         "doc-metadata saved: tenant=%s stem=%s fields=%d",
         tenant.tenant_id, stem, len(row),

@@ -3,16 +3,18 @@
 通过 pydantic-settings 从 `backend/.env` 或环境变量加载。
 所有路径均解析为绝对路径，确保无论从哪里启动都行为一致。
 
-★ 加载优先级（自定义，见 Settings.settings_customise_sources）：
-    1) 进程环境变量（仅作为“启动调试”兑底）
+★ 加载优先级（高 → 低，自定义，见 Settings.settings_customise_sources）：
+    1) init kwargs（测试 / 代码里 Settings(...) 显式传入）
     2) backend/.env 文件（主配置：业务运行时调这里）
-    3) init kwargs（测试 / 代码构造）
+    3) 进程环境变量（.env 里没写这个字段时才生效，作“临时调试/兜底”）
+    4) secrets 目录
 
 背景：pydantic-settings 默认优先级是 环境变量 > .env。
       这导致如果在某个 PowerShell / 终端里 `$env:RAG_DIFY_DATASET_ID=xxx`
       临时设过，即使改了 .env 也不会生效（要重启+关闭那个 shell）。
       为贴合用户直觉“改 .env 就生效”，这里反之：.env 优先于环境变量。
-      如果需要环境变量临时覆盖某个 .env 字段，可以在 .env 改后重启 shell。
+      ★ 反过来说：想只靠环境变量临时覆盖，必须在 backend/.env 里删掉（或注释掉）
+      那个字段，否则它永远被 .env 的值盖着——Docker 的 environment 注入同理。
 """
 
 from __future__ import annotations
@@ -323,6 +325,14 @@ class Settings(BaseSettings):
     # 与本配置无关。未带 X-API-Key 的匿名请求视为 default 租户（存量行为不变）。
     admin_api_key: str = ""
 
+    # ---- ★ 2026-10：全局管理接口的凭据开关 ----
+    # 默认 False：保持存量行为 —— 匿名请求即 default 租户，可调用清理/扫描/
+    #   解析/切分/流水线/网站抓取等全局接口（这些接口能删数据、写配置、向外抓取）。
+    # True：全局接口必须出示有效凭据（X-Admin-Key），匿名请求 401；
+    #   此时若 admin_api_key 仍为空，则全部拒绝（fail-closed，避免误开放）。
+    # 开启前必须先把前端/网关的调用方配上 X-Admin-Key，否则网页功能会整体失效。
+    require_admin_for_global: bool = False
+
     # ---- ★ 2026-08-04：Dify /files/upload 跳过开关 ----
     # 默认 False：保留旧行为（调用 /files/upload 拿 file_id + attachment_ids）
     # 设为 True：完全跳过 /files/upload，content 里**只**写 OSS 永久 URL，**不带 attachment_ids**
@@ -432,7 +442,7 @@ class Settings(BaseSettings):
                      ↑ 环境变量会覆盖 .env ✗ 改 .env 看似无效
 
         本类调整后：init → dotenv → env → secrets
-                                   ↑ 环境变量仅作兑底
+                                   ↑ 环境变量仅作兜底
         含义：
             - 业务上以 .env 为准（它是仓库版本控制的唯一来源）
             - 进程环境变量只用于“临时调试”（启动前 export 一次）

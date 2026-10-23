@@ -62,7 +62,18 @@ def update_tenant(tenant_id: str, body: TenantUpdate,
         raise HTTPException(status_code=404, detail="租户不存在")
     if body.status not in (None, "active", "disabled"):
         raise HTTPException(status_code=400, detail="status 只允许 active / disabled")
-    tenant = tenant_store.update_tenant(tenant_id, body.model_dump(exclude_none=True))
+    # ★ 2026-10：创建时强制要求非空 dataset，但 PATCH 没有同样的校验——传 ""
+    #   或纯空白会直接把租户绑定成空知识库，直到入库才报错。这里提前拦住，
+    #   并与 create 一致地 strip（否则“ ds-1 ”这种带空格的值会落库）。
+    fields = body.model_dump(exclude_none=True)
+    if "dify_dataset_id" in fields:
+        stripped = (fields["dify_dataset_id"] or "").strip()
+        if not stripped:
+            raise HTTPException(
+                status_code=400, detail="dify_dataset_id 不能为空（租户必须绑定知识库）"
+            )
+        fields["dify_dataset_id"] = stripped
+    tenant = tenant_store.update_tenant(tenant_id, fields)
     return tenant.to_public_dict()
 
 

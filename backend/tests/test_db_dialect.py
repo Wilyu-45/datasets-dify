@@ -162,6 +162,290 @@ class TestManifestUpsertDialect:
                 assert f"%({field})s" in sql
 
 
+# ============ 运行期 SQL 方言（★ 2026-10 潜在 bug 排查新增） ============
+
+
+class TestRuntimeSQLDialect:
+    """建表 DDL 做过双方言，**运行期 SQL** 也曾漏：
+
+    - webscrape_records / webscrape_tasks 的 upsert 用 ON CONFLICT ... EXCLUDED
+    - fetch_latest_ingested_by_url 用 DISTINCT ON + `= ANY(%s::text[])`
+    - config_run_log / webscraper 的 JSON 列直接塞 psycopg 的 Jsonb 对象
+
+    这些在 MySQL 下分别报语法错 / TypeError；而 record_run 内部吞异常，
+    表现为「配置追溯记录静默全丢」。本地测试库是 PG，故从未暴露 ——
+    本类用字符串 + captured-SQL 断言把修复固化为回归（无需真实 MySQL）。
+
+    ★ 注意：部分测试文件的 fixture 会 `del sys.modules["app.*"]`，使得本文件顶部
+    import 的 db 成为** stale 副本**；而被测服务在函数内 `from app import db`
+    拿到的是重新导入的新模块。因此下面统一用 _db() 取当前模块再打补丁，
+    否则 monkeypatch 打在旧模块上、真实 PG 会被调用（报 ON DUPLICATE 语法错）。
+    """
+
+    @staticmethod
+    def _db():
+        import app.db as db_mod
+
+        return db_mod
+
+    # ---- webscrape_records：由列清单生成，两条语句必须结构一致 ----
+
+    def test_webscrape_upsert_templates_are_dialect_specific(self):
+        from app.services import webscrape_store as ws
+
+        assert "ON CONFLICT (task_id, url) DO UPDATE SET" in ws._UPSERT_SQL_PG
+        assert "EXCLUDED.status" in ws._UPSERT_SQL_PG
+        assert "ON DUPLICATE KEY" not in ws._UPSERT_SQL_PG
+
+        assert "ON DUPLICATE KEY UPDATE" in ws._UPSERT_SQL_MYSQL
+        assert "status = VALUES(status)" in ws._UPSERT_SQL_MYSQL
+        assert "ON CONFLICT" not in ws._UPSERT_SQL_MYSQL
+        assert "EXCLUDED." not in ws._UPSERT_SQL_MYSQL
+
+    def test_webscrape_upsert_templates_share_columns_and_placeholders(self):
+        """同套列名/具名占位符（漏列会报 Unknown column 或 KeyError）。"""
+        from app.services import webscrape_store as ws
+
+        assert len(ws._UPSERT_COLUMNS) == len(ws._UPSERT_UPDATE_COLUMNS) + 3
+        for sql in (ws._UPSERT_SQL_PG, ws._UPSERT_SQL_MYSQL):
+            for col in ws._UPSERT_COLUMNS:
+                assert f"%({col})s" in sql, f"占位符缺 {col}"
+
+    def test_webscrape_upsert_keeps_first_created_at(self):
+        """task_id/url 是幂等键、created_at 保留首插时间：三者不进冲突更新。"""
+        from app.services import webscrape_store as ws
+
+        for sql in (ws._UPSERT_SQL_PG, ws._UPSERT_SQL_MYSQL):
+            conflict_tail = sql.split("DO UPDATE SET" if "ON CONFLICT" in sql
+                                    else "ON DUPLICATE KEY UPDATE")[-1]
+            for col in ("created_at", "task_id", "url"):
+                assert f"{col} = " not in conflict_tail, f"{col} 不该被覆盖"
+
+    def test_upsert_record_selects_statement_by_dialect(self, monkeypatch):
+        from app.services import webscrape_store as ws
+
+        executed = []
+        conn = MagicMock()
+        conn.execute.side_effect = lambda sql, params: executed.append((sql, params))
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(self._db(), "get_conn", lambda: ctx)
+
+        for db_type, expect_sql, forbid in (
+            ("mysql", ws._UPSERT_SQL_MYSQL, ws._UPSERT_SQL_PG),
+            ("postgres", ws._UPSERT_SQL_PG, ws._UPSERT_SQL_MYSQL),
+        ):
+            monkeypatch.setattr(ws.settings, "rag_db_type", db_type)
+            executed.clear()
+            ws.upsert_record("t1", "https://a/b", title="x")
+            assert executed[0][0] == expect_sql
+            assert executed[0][0] != forbid
+            assert executed[0][1]["task_id"] == "t1"
+            conn.commit.assert_called()
+
+    # ---- fetch_latest_ingested_by_url：PG 独有的 DISTINCT ON / ::text[] ----
+
+    def test_fetch_latest_uses_portable_in_clause(self, monkeypatch):
+        from app.services import webscrape_store as ws
+
+        captured = {}
+
+        class _Cur:
+            def fetchall(self):
+                return []
+
+        def fake_execute(sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+            return _Cur()
+
+        conn = MagicMock()
+        conn.execute.side_effect = fake_execute
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(self._db(), "get_conn", lambda: ctx)
+
+        urls = ["https://a/1", "https://a/2", "  ", "https://a/3"]
+        ws.fetch_latest_ingested_by_url(urls)
+
+        sql = captured["sql"]
+        assert "DISTINCT ON" not in sql.upper()
+        assert "::text[]" not in sql
+        assert "= ANY(" not in sql
+        assert sql.count("%(u") == 3                     # 空白 URL 被过滤
+        assert "ORDER BY url, id DESC" in sql
+        assert captured["params"] == {"u0": "https://a/1", "u1": "https://a/2",
+                                       "u2": "https://a/3"}
+
+    def test_fetch_latest_returns_newest_row_per_url(self, monkeypatch):
+        """每个 URL 取 id 最大（最新）一条：由 ORDER BY id DESC + 首次出现判定。"""
+        from app.services import webscrape_store as ws
+
+        rows = [
+            {"url": "https://a/1", "page_time": "2026-09-02", "content_hash": "b",
+             "dataset_name": "KB", "created_at": "2026-09-02 10:00:00"},
+            {"url": "https://a/1", "page_time": "2026-08-01", "content_hash": "a",
+             "dataset_name": "KB", "created_at": "2026-08-01 10:00:00"},
+        ]
+
+        class _Cur:
+            def fetchall(self):
+                return rows
+
+        conn = MagicMock()
+        conn.execute.return_value = _Cur()
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(self._db(), "get_conn", lambda: ctx)
+
+        got = ws.fetch_latest_ingested_by_url(["https://a/1"])
+        assert got["https://a/1"]["content_hash"] == "b"
+
+    def test_fetch_latest_empty_input_skips_query(self, monkeypatch):
+        from app.services import webscrape_store as ws
+
+        conn = MagicMock()
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(self._db(), "get_conn", lambda: ctx)
+
+        assert ws.fetch_latest_ingested_by_url([]) == {}
+        assert ws.fetch_latest_ingested_by_url(None) == {}
+        conn.execute.assert_not_called()
+
+    # ---- webscrape_tasks：Jsonb + ON CONFLICT ----
+
+    def test_save_task_uses_json_string_on_mysql(self, monkeypatch):
+        from app.services import webscraper
+
+        executed = []
+        conn = MagicMock()
+        conn.execute.side_effect = lambda sql, params: executed.append((sql, params))
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(self._db(), "get_conn", lambda: ctx)
+        monkeypatch.setattr(webscraper.settings, "rag_db_type", "mysql")
+
+        task = {"id": "t1", "created_at": "x", "items": [{"url": "https://a/1", "标题": "中文"}]}
+        webscraper.save_task(task)
+
+        sql, row = executed[0]
+        assert "ON DUPLICATE KEY UPDATE" in sql
+        assert "ON CONFLICT" not in sql and "EXCLUDED." not in sql
+        assert isinstance(row["items"], str)          # pymysql 不能转义 Jsonb
+        assert "中文" in row["items"]                  # ensure_ascii=False
+
+    def test_save_task_still_uses_jsonb_on_postgres(self, monkeypatch):
+        import json
+        from psycopg.types.json import Jsonb
+        from app.services import webscraper
+
+        executed = []
+        conn = MagicMock()
+        conn.execute.side_effect = lambda sql, params: executed.append((sql, params))
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(self._db(), "get_conn", lambda: ctx)
+        monkeypatch.setattr(webscraper.settings, "rag_db_type", "postgres")
+
+        webscraper.save_task({"id": "t1", "items": [{"url": "https://a/1"}]})
+
+        sql, row = executed[0]
+        assert "ON CONFLICT (id) DO UPDATE SET" in sql
+        assert "ON DUPLICATE KEY" not in sql
+        assert isinstance(row["items"], Jsonb)
+
+
+# ============ 配置追溯记录的 JSON 列 ============
+
+
+class TestConfigRunLogJsonParam:
+    """record_run 吞异常 + MySQL Jsonb → 追溯记录静默全丢（★ 2026-10 修复）。"""
+
+    @pytest.fixture()
+    def captured(self, monkeypatch):
+        import app.db as db_mod
+
+        executed = []
+        conn = MagicMock()
+        conn.execute.side_effect = lambda sql, params: executed.append((sql, params))
+        ctx = MagicMock()
+        ctx.__enter__.return_value = conn
+        monkeypatch.setattr(db_mod, "get_conn", lambda: ctx)
+        return executed
+
+    def test_json_param_dialect(self, monkeypatch):
+        from psycopg.types.json import Jsonb
+        from app.services import config_run_log as crl
+
+        monkeypatch.setattr(crl.settings, "rag_db_type", "mysql")
+        got = crl._json_param(["a", "中文"])
+        assert isinstance(got, str) and "中文" in got
+
+        monkeypatch.setattr(crl.settings, "rag_db_type", "postgres")
+        assert isinstance(crl._json_param(["a"]), Jsonb)
+
+    def test_record_run_row_types_on_mysql(self, captured, monkeypatch):
+        from app.services import config_run_log as crl
+
+        monkeypatch.setattr(crl.settings, "rag_db_type", "mysql")
+        crl.record_run(
+            source=crl.SOURCE_PIPELINE_API,
+            config={"llm_api_key": "secret", "chunk_strategy": "structure"},
+            target_stems=["doc_a"],
+            status="ok",
+        )
+        _, row = captured[0]
+        assert isinstance(row["config"], str) and isinstance(row["target_stems"], str)
+        assert "secret" not in row["config"]          # 脱敏仍然生效
+        assert row["target_stems"] == '["doc_a"]'
+
+    def test_record_row_keys_match_placeholders(self, captured, monkeypatch):
+        """列名与 %(col)s 一一对应（写错名字 pymysql 直接报错，且被吞掉）。"""
+        from app.services import config_run_log as crl
+
+        monkeypatch.setattr(crl.settings, "rag_db_type", "mysql")
+        crl.record_run(source=crl.SOURCE_UPLOAD_SINGLE, config={}, target_stems=None)
+        sql, row = captured[0]
+        assert set(re.findall(r"%\((\w+)\)s", sql)) == set(row.keys())
+        assert row["target_stems"] == "[]"
+
+
+# ============ MySQL 连接封装接口完整性 ============
+
+
+class TestMySQLConnectionInterface:
+    """psycopg3 的 executemany 只在 Cursor 上：doc_metadata.save_doc_metadata 走
+    `with conn.cursor() as cur`，封装类缺 cursor() 会让该接口在 MySQL 下报错。"""
+
+    def _conn(self):
+        import app.db as db_mod
+
+        raw = MagicMock()
+        return db_mod._MySQLConnection(MagicMock(), raw), raw
+
+    def test_cursor_delegates_to_raw(self):
+        conn, raw = self._conn()
+        assert conn.cursor() is raw.cursor.return_value
+        raw.cursor.assert_called()
+
+    def test_implements_only_used_methods(self):
+        """本仓库对连接对象只用了这 4 个方法 + with 协议。"""
+        import app.db as db_mod
+
+        for name in ("execute", "commit", "rollback", "cursor", "__enter__", "__exit__"):
+            assert hasattr(db_mod._MySQLConnection, name), name
+
+    def test_describe_target_by_dialect(self, monkeypatch):
+        """启动日志不能写死 postgresql://（MySQL 部署会误导运维）。"""
+        import app.db as db_mod
+
+        monkeypatch.setattr(db_mod.settings, "rag_db_type", "mysql")
+        assert db_mod.describe_target().startswith("mysql://")
+        monkeypatch.setattr(db_mod.settings, "rag_db_type", "postgres")
+        assert db_mod.describe_target().startswith("postgresql://")
+
+
 # ============ 连接池方言分支 ============
 
 

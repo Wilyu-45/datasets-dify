@@ -19,7 +19,6 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-import psycopg
 from psycopg.types.json import Jsonb
 
 from app import db
@@ -31,6 +30,19 @@ log = logging.getLogger("ragsystem.config_run_log")
 SECRET_KEYS = {"llm_api_key", "chunk_embedding_api_key"}
 
 _SECRET_MASK = "******"
+
+
+def _json_param(value: Any) -> Any:
+    """JSON 列的占位参数。
+
+    ★ 2026-10 修复（MySQL 方言）：psycopg 的 Jsonb 适配器只对 PostgreSQL 生效，
+    pymysql 无法转义该对象（TypeError），而 record_run 内部吞异常，导致 MySQL
+    生产环境下配置追溯记录「静默全丢」。MySQL 侧改为传 JSON 字符串（列类型 JSON）。
+    """
+    if settings.rag_db_type == "mysql":
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return Jsonb(value)
+
 
 # 记录来源标识（source 字段取值）
 SOURCE_UPLOAD_SINGLE = "upload_single"      # 单文件上传 + 一键入库
@@ -93,8 +105,8 @@ def record_run(
             "profile_name": (profile or {}).get("name"),
             "dataset_id": eff_config.get("dify_dataset_id") or None,
             "chunk_strategy": eff_config.get("chunk_strategy") or None,
-            "config": Jsonb(_mask_secrets(eff_config)),
-            "target_stems": Jsonb(target_stems or []),
+            "config": _json_param(_mask_secrets(eff_config)),
+            "target_stems": _json_param(target_stems or []),
             "status": status,
             "error": error,
             "duration_ms": duration_ms,

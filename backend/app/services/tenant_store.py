@@ -172,8 +172,15 @@ def delete_tenant(tenant_id: str) -> bool:
     with _write_lock:
         with db.get_conn() as conn:
             cur = conn.execute("DELETE FROM tenants WHERE tenant_id = %s", (tenant_id,))
+            # ★ 2026-10 修复：rowcount 必须在连接归还池前读。
+            #   原先在 with db.get_conn() 块外取 cur.rowcount，连接已回收、游标状态未定义；
+            #   而且 hasattr 失败时兼返 True，会把「删除失败」掩盖成成功（接口回 204）。
+            rowcount = getattr(cur, "rowcount", -1)
             conn.commit()
-    return cur.rowcount > 0 if hasattr(cur, "rowcount") else True
+    if rowcount >= 0:
+        return rowcount > 0
+    # 驱动未提供 rowcount（理论上不会发生）→ 回查确认，不默认成功
+    return get_tenant(tenant_id) is None
 
 
 def verify_api_key(api_key: Optional[str]) -> Optional[Tenant]:

@@ -397,12 +397,33 @@ def _ensure_profiles_file() -> None:
 
 
 def _write(data: Dict[str, Any]) -> None:
+    """写 profiles.json（★ 2026-10：先写临时文件再同目录原子替换）。
+
+    原实现直接 ``open(path, "w")``：打开即截断，写入过程有窗口期。读侧与写侧
+    并发时可能读到空文件/半截 JSON，而 _load 的异常分支会“重置为默认”，
+    等于把用户全部配置方案静默清掉。原子替换从根源消除该窗口。
+    """
     import json
+    import os
 
     path = _profiles_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fp:
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fp:
         json.dump(data, fp, ensure_ascii=False, indent=2)
+        fp.flush()
+        os.fsync(fp.fileno())
+    os.replace(tmp, path)  # 同一文件系统内原子替换（Windows / POSIX 均可）
+
+
+def _backup_corrupt_file(path: Path) -> Optional[Path]:
+    """把解析失败的 profiles.json 改名保留，避免“重置为默认”顺手销毁原件。"""
+    try:
+        backup = path.with_name(f"{path.name}.corrupt.{int(time.time())}")
+        path.replace(backup)
+        return backup
+    except OSError:  # noqa: BLE001
+        return None
 
 
 def _normalize_active_ids(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -424,7 +445,13 @@ def _normalize_active_ids(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+@_locked
 def _load() -> Dict[str, Any]:
+    """读 profiles.json。
+
+    ★ 2026-10：读侧也加 _STORE_LOCK（RLock，与写操作互斥；create/update 等已持锁
+    的调用方可重入）。原先只有写操作加锁，读-改-写与并发读会造成脏读。
+    """
     import json
 
     _ensure_profiles_file()
@@ -433,7 +460,11 @@ def _load() -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as fp:
             return _normalize_active_ids(json.load(fp))
     except Exception as e:  # noqa: BLE001
-        log.exception("config_store: 读取 profiles.json 失败，重置为默认: %s", e)
+        backup = _backup_corrupt_file(path)
+        log.exception(
+            "config_store: 读取 profiles.json 失败，重置为默认: %s（原件已备份到 %s）",
+            e, backup or "备份失败，仍在原路径",
+        )
         default_profile = {
             "id": uuid.uuid4().hex,
             "name": "默认配置",
@@ -459,6 +490,7 @@ def get_profile_types() -> List[Dict[str, Any]]:
     return [dict(t) for t in PROFILE_TYPES]
 
 
+@_locked
 def list_profiles() -> List[Dict[str, Any]]:
     profiles = _load().get("profiles", [])
     # 返回时补全 type 键（旧数据无 type 视为 upload），保证 API 模型可正常序列化
@@ -467,6 +499,7 @@ def list_profiles() -> List[Dict[str, Any]]:
     return profiles
 
 
+@_locked
 def get_active_profile_id(profile_type: Optional[str] = None) -> Optional[str]:
     """按类型取激活方案 ID；不传类型时按 upload（文档处理）语义取（兼容旧调用）。"""
     by_type = _load().get("active_by_type") or {}
@@ -475,11 +508,13 @@ def get_active_profile_id(profile_type: Optional[str] = None) -> Optional[str]:
     return by_type.get(PROFILE_TYPE_UPLOAD)
 
 
+@_locked
 def get_active_profile_ids() -> Dict[str, str]:
     """全部类型的激活方案 ID 映射（upload/webscrape 各自独立，互不顶替）。"""
     return dict(_load().get("active_by_type") or {})
 
 
+@_locked
 def get_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     for p in list_profiles():
         if p.get("id") == profile_id:

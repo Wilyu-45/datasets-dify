@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -44,6 +44,10 @@ class PipelineRunRequest(BaseModel):
     stop_on_error: bool = False
     # ★ 2026-08 配置中心：指定配置方案 ID；空 → 使用当前激活方案（都没有则用 .env 默认）
     profile_id: Optional[str] = None
+    # ★ 2026-10 修复：只处理指定文档（stem 列表）；空 → 处理所有待处理文档。
+    #   之前没开放该入参，而下方的配置记录又写了 req.target_stems，
+    #   导致 process_config_log 里的目标文档永远为空，追溯不到当时处理了哪些文件。
+    target_stems: Optional[List[str]] = None
 
 
 def _to_step(in_step: PipelineStepIn) -> PipelineStep:
@@ -67,9 +71,10 @@ def post_pipeline_run(body: Optional[PipelineRunRequest] = None) -> Dict[str, An
     """
     body = body or PipelineRunRequest()
     log.info(
-        "api /pipeline/run called: scan=%s parse=%s chunk=%s dify=%s stop_on_error=%s",
-        body.scan.enabled, body.parse.enabled, body.chunk.enabled, body.dify.enabled, body.stop_on_error,
-        extra={"step": "api", "status": "pipeline_run"},
+        "api /pipeline/run called: scan=%s parse=%s chunk=%s dify=%s stop_on_error=%s stems=%s",
+        body.scan.enabled, body.parse.enabled, body.chunk.enabled, body.dify.enabled,
+        body.stop_on_error, body.target_stems,
+        extra={"step": "api", "status": "pipeline_run", "target_stems": body.target_stems},
     )
     # 显式 profile_id 不存在 → 404；两者都没有 → 用 .env 默认（profile=None）
     profile = None
@@ -86,6 +91,7 @@ def post_pipeline_run(body: Optional[PipelineRunRequest] = None) -> Dict[str, An
             chunk=_to_step(body.chunk),
             dify=_to_step(body.dify),
             stop_on_error=body.stop_on_error,
+            target_stems=body.target_stems,
         )
         with config_store.apply_config(profile["config"] if profile else None):
             report: PipelineReport = run_pipeline(req)

@@ -28,6 +28,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ── 阶段 2: Runtime ──
 FROM python:3.10-slim AS runtime
 
+# Playwright 浏览器统一装到固定路径，非 root 运行用户也可读；
+# 下载源可用 --build-arg 覆盖（默认官方 CDN，国内网络建议走 npmmirror）
+ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.playwright.dev/pw-cdn
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 # 安装运行时系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -40,6 +48,14 @@ WORKDIR /opt/ragsystem/backend
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
+# ★ 2026-10 补齐：安装 Playwright Chromium 内核 + 系统库。
+#   网站抓取遇到 WAF（412/403/502）时会从 httpx 降级到 Playwright，
+#   镜像里没有浏览器时该降级路径直接失败（与 docker/ 编排的镜像不一致）。
+#   未装 LibreOffice：旧版 .doc/.xls/.ppt 在线预览会退回「文件信息 + 下载自查」，
+#   如需该能力在此追加：apt-get install -y libreoffice --no-install-recommends
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 # 复制应用代码
 COPY backend/app ./app
 
@@ -51,7 +67,7 @@ RUN useradd --create-home ragsystemuser
 #   将无法在其中创建子目录（ensure_dirs 失败），必须提前 chown。
 RUN mkdir -p /opt/ragsystem/data/{chunks,parsed,logs,input,pending,output,error,manual_fix,webscrape,single_uploads} \
     && mkdir -p /opt/ragsystem/backend/logs \
-    && chown -R ragsystemuser:ragsystemuser /opt/ragsystem/data /opt/ragsystem/backend/logs
+    && chown -R ragsystemuser:ragsystemuser /opt/ragsystem/data /opt/ragsystem/backend/logs /ms-playwright
 
 USER ragsystemuser
 
@@ -62,5 +78,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# 启动命令
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+# ★ 固定 --workers 1：解析进度（parse_progress）为进程内存态，
+#   多 worker 下「提交在 A 进程、查进度在 B 进程」会导致进度永远为空。
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--log-level", "info"]
